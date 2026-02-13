@@ -1,0 +1,56 @@
+{
+  "document": "COMMON Module 3 Characteristics of LNG",
+  "stages": {
+    "manifest": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_manifest.json"
+    },
+    "validation": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_validation.json",
+      "confidence": 0.75,
+      "total_issues": 50,
+      "critical_issues": 28
+    },
+    "image_descriptions": {
+      "status": "failed",
+      "error": "2026-01-30 15:37:27,997 - INFO - ================================================================================\n2026-01-30 15:37:27,997 - INFO - \ud83d\uddbc\ufe0f  VLM IMAGE DESCRIPTION GENERATOR\n2026-01-30 15:37:"
+    },
+    "table_figure": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_tables_figures.json",
+      "tables": 5,
+      "figures": 0
+    },
+    "review_workspace": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_review",
+      "total_sections": 51,
+      "sections_with_tables": 6,
+      "sections_with_images": 0
+    },
+    "versioning": {
+      "status": "complete",
+      "version": 1,
+      "versions_dir": "hitl_workspace/COMMON Module 3 Characteristics of LNG_versions"
+    },
+    "qa_pre_review": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_qa_pre_review.json",
+      "decision": "rejected",
+      "passed_criteria": 1,
+      "failed_criteria": 5
+    },
+    "audit": {
+      "status": "complete",
+      "output": "hitl_workspace/COMMON Module 3 Characteristics of LNG_audit.txt"
+    }
+  },
+  "summary": {
+    "pipeline_status": "complete",
+    "review_required": true,
+    "workspace": "hitl_workspace",
+    "next_action": "manual_review",
+    "qa_decision": "rejected"
+  }
+}
