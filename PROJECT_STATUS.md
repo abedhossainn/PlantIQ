@@ -1,6 +1,6 @@
 # Project Status
 
-**Last Updated:** January 31, 2026  
+**Last Updated:** February 16, 2026  
 **Phase:** Enhanced HITL Pipeline + Qwen Integration + VLM Image Description - COMPLETE
 
 ## Summary
@@ -176,3 +176,9 @@
   - **Created test suite:** test_vlm_integration.py - comprehensive validation (5/5 tests passed)
   - **Status:** ✅ INTEGRATION COMPLETE - All modules tested and working
   - **Documentation:** Created VLM_INTEGRATION_COMPLETE.md with usage examples and integration summary
+- **2026-02-16:** Completed architecture review and provided end-to-end workflow explanation for the project.
+- **2026-02-16:** Evaluated frontend options (Vercel Next.js AI Chatbot template vs AnythingLLM) and outlined air-gapped UI reuse and minimal replacement architecture.
+- **2026-02-17:** Reformatted `Appendix 2a – Capstone Consent Agreement - Discovery` to structured Markdown in `Documents/`.
+- **2026-02-17:** Populated `Appendix 3 — Sample Agreement Between Client and Student` with sponsor, student, semester, and dates.
+- **2026-02-17:** Added formal signature placeholders to `Appendix 3 — Sample Agreement Between Client and Student`. .
+- **2026-02-17:** Reformatted `Appendix 2b – Capstone Consent Agreement - Proposal` to structured Markdown in `Documents/`.
