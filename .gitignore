@@ -9,11 +9,22 @@
 !.nojekyll
 !README.md
 
-# Allow subdirectories in frontend
+# Allow all files and subdirectories in frontend and .github
 !frontend/**
+!.github/**
 
-# Dependencies to ignore in frontend
+# Ignore only build outputs and dependencies in frontend
 frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+
+# But DO track essential config files
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/tsconfig.json
+!frontend/next.config.ts
+!frontend/postcss.config.mjs
+!frontend/components.json
