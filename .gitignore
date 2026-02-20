@@ -1,19 +1,34 @@
-# Ignore everything by default
-*
-**/
+# Ignore Python & venv
+*.py
+.venv/
+venv/
+__pycache__/
 
-# Exception: Track frontend and deployment files
-!frontend/
-!.github/
-!.gitignore
-!.nojekyll
-!README.md
+# Ignore project configs
+instructions.md
+docker-compose.yml
+docling.env
+docling_convert_with_qwen.py
+check_stack.sh
+text.txt
+*.env
+progress_tracker.py
+verify_hitl_setup.py
+test_vlm_integration.py
 
-# Allow all files and subdirectories in frontend and .github
-!frontend/**
-!.github/**
+# Ignore project folders
+anythingllm-storage/
+hitl_workspace/
+InjestDocs/
+Documents/
+validation_evidence/
+INTEGRATED_ARCHITECTURE.md
+PROJECT_STATUS.md
+RAG_Chatbot_Architecture.md
+rag_*.py
+vlm_*.py
 
-# Ignore only build outputs and dependencies in frontend
+# Frontend dependencies & build
 frontend/node_modules/
 frontend/.next/
 frontend/out/
@@ -21,10 +36,6 @@ frontend/dist/
 frontend/.env.local
 frontend/.env.*.local
 
-# But DO track essential config files
-!frontend/package.json
-!frontend/package-lock.json
-!frontend/tsconfig.json
-!frontend/next.config.ts
-!frontend/postcss.config.mjs
-!frontend/components.json
+# IDE
+.vscode/
+.idea/
