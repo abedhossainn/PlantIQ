@@ -1,159 +1,95 @@
-# LLM RAG Chatbot - Enhanced HITL Pipeline
+# PlantIQ - Air-Gapped RAG System Frontend Prototype
 
-**Production-ready RAG document optimization pipeline with Human-In-The-Loop validation**
+High-fidelity interactive prototype for the Air-Gapped RAG System for Industrial OT Environments (Capstone Project).
 
-## 🎯 Project Overview
+## Features
 
-This project implements a comprehensive document optimization system for RAG (Retrieval-Augmented Generation) applications. It processes PDF documents through a multi-stage pipeline with manual validation gates, VLM-powered quality assurance, and systematic audit trails.
+### Document Ingestion Pipeline (Requirement Set 1)
+- **Upload**: Add vendor manuals with metadata
+- **Validation**: VLM-powered extraction quality report
+- **Review**: Web-based interface to edit and validate sections
+- **Approval**: Lock reviewed versions for RAG ingestion
 
-### Key Features
+### Query Interface (Requirement Set 2)
+- **Chat**: Ask natural language questions
+- **Citations**: Answers include source page references
+- **Multi-turn**: Follow-up questions with context preservation
+- **Bookmarks**: Save answers for future reference
 
-- ✅ **VLM-Powered Validation** - Qwen2.5-VL-32B for visual comparison and image description
-- ✅ **Human Review Workflow** - Section-based review with structured checklists
-- ✅ **QA Gates & Metrics** - Objective acceptance criteria and quality metrics
-- ✅ **Complete Audit Trail** - Lineage tracking from PDF pages to RAG chunks
-- ✅ **Table/Figure Handling** - Advanced extraction and serialization
-- ✅ **Production-Ready Infrastructure** - VLMOptions, progress tracking, robust parsing
+### Admin & Security (Requirement Set 3)
+- **Authentication**: Login with mock credentials
+- **RBAC**: User, Reviewer, Admin roles
+- **Audit Logs**: Track all actions
+- **User Management**: Assign roles and permissions
 
-## 📁 Project Structure
+## User Stories Implemented
 
-```
-.
-├── Core Pipeline Modules
-│   ├── rag_hitl_pipeline.py           # Main orchestrator (10-stage workflow)
-│   ├── rag_validation_enhanced.py     # Per-page validation with evidence
-│   ├── rag_section_review.py          # Section-based review workflow
-│   ├── rag_qa_gates.py                # QA gates and metrics
-│   ├── rag_lineage.py                 # Audit trail and versioning
-│   └── rag_table_figure_handler.py    # Table/figure extraction
-│
-├── VLM Modules
-│   ├── rag_vlm_comparison.py          # VLM validation (Stage 2a)
-│   ├── rag_vlm_image_describer.py     # Image description generation
-│   ├── rag_text_reformatter.py        # RAG optimization (Stage 10)
-│   └── docling_convert_with_qwen.py   # PDF to Markdown conversion
-│
-├── VLM Infrastructure
-│   ├── vlm_options.py                 # Centralized VLM configuration
-│   ├── vlm_response_parser.py         # Robust JSON parsing with Pydantic
-│   ├── progress_tracker.py            # Multi-level progress tracking
-│   └── vlm_config_project.yaml        # Production VLM configuration
-│
-├── Testing & Verification
-│   ├── test_vlm_integration.py        # Integration test suite (5/5 passing)
-│   └── verify_hitl_setup.py           # Setup verification
-│
-├── Documentation
-│   ├── PROJECT_STATUS.md              # Current project status
-│   ├── RAG_Chatbot_Architecture.md    # System architecture
-│   └── instructions.md                # Original requirements
-│
-├── Working Directories
-│   ├── hitl_workspace/                # Review workspace
-│   ├── validation_evidence/           # Validation snapshots
-│   └── InjestDocs/                    # Source documents
-│
-└── Configuration
-    ├── docker-compose.yml             # Docker setup
-    └── docling.env                    # Environment variables
-```
+All 13 user stories are fully interactive:
 
-## 🚀 Quick Start
+| ID | User Story | Route |
+|----|----|---|
+| US-1.1 | Upload document | `/admin/upload` |
+| US-1.2 | VLM validation report | `/admin/validation-report` |
+| US-1.3 | Review interface | `/admin/review` |
+| US-1.4 | Approve document | `/admin/approval` |
+| US-1.5 | Version history | `/admin/versions` |
+| US-1.6 | QA metrics | `/admin/qa-metrics` |
+| US-2.1 | Ask questions | `/chat` |
+| US-2.2 | View citations | `/chat` |
+| US-2.3 | Open source section | `/chat/citation-detail` |
+| US-2.4 | Multi-turn conversation | `/chat` |
+| US-2.5 | Bookmark answers | `/chat/bookmarks` |
+| US-3.1 | Active Directory login | `/login` |
+| US-3.2 | RBAC user management | `/admin/users` |
 
-### 1. Prerequisites
+## Testing the Prototype
 
-```bash
-# Python 3.10+
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+1. **Test Login (US-3.1):**
+   - Visit `/login`
+   - Use any email/password (mock authentication)
 
-# Verify setup
-python3 verify_hitl_setup.py
-```
+2. **Test Document Flow (US-1.1 - US-1.6):**
+   - Login as Admin
+   - `/admin/upload` → Upload a test PDF
+   - `/admin/validation-report` → Review extraction issues
+   - `/admin/review` → Edit sections with inline evidence images
+   - `/admin/approval` → Approve document
+   - `/admin/qa-metrics` → See QA metrics
 
-### 2. Run Pipeline
+3. **Test Query Flow (US-2.1 - US-2.5):**
+   - Login as User
+   - `/chat` → Ask "How do I troubleshoot the pump?"
+   - See response with citations (US-2.2)
+   - Click citation to open source (US-2.3)
+   - Ask follow-up questions (US-2.4)
+   - Bookmark the answer (US-2.5)
 
-```bash
-# Full HITL pipeline
-python3 rag_hitl_pipeline.py run \
-  --pdf input.pdf \
-  --markdown output.md \
-  --reviewer "Your Name"
+4. **Test Admin (US-3.2):**
+   - Login as Admin
+   - `/admin/users` → Add user and assign role
+   - `/admin/audit-logs` → View action history
 
-# Check review status
-python3 rag_hitl_pipeline.py status --doc-name "input"
+## Technologies
 
-# Post-approval reformatting
-python3 rag_hitl_pipeline.py reformat --doc-name "input"
-```
+- **Framework**: Next.js 16 with TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui
+- **State Management**: React Context API + Mock Data
+- **Form Handling**: React Hook Form
+- **Components**: Radix UI + Tailwind
 
-### 3. Review Workflow
+## GitHub Pages Deployment
 
-1. Pipeline generates sections in `hitl_workspace/[document]_review/`
-2. Review each section using provided checklists
-3. Address QA issues flagged by validation
-4. Approve document when ready
-5. Run reformatting for vector DB ingestion
+The repository includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) that:
 
-## 📊 Pipeline Stages
+1. Builds the Next.js app as static HTML/JS
+2. Uploads the build artifact
+3. Deploys to GitHub Pages on every push to `main`
 
-| Stage | Module | Duration | Description |
-|-------|--------|----------|-------------|
-| 1 | Lineage | ~1s | Create document manifest |
-| 2a | VLM Validation | ~70-80min | Visual comparison (optional) |
-| 2b | Image Descriptions | ~47min/page | VLM image analysis (if needed) |
-| 3 | Enhanced Validation | ~5s | Per-page validation with evidence |
-| 4 | Section Review | ~2s | Extract reviewable sections |
-| 5 | Versioning | ~1s | Create initial version |
-| 6 | Table/Figure Handling | ~3s | Extract and serialize tables |
-| 7 | QA Gates | ~1s | Compute metrics and decision |
-| 8 | Review Workspace | ~1s | Generate review checklist |
-| 9 | Audit Report | ~1s | Create audit trail |
-| 10 | Reformatting | ~40-60min | RAG optimization (post-approval) |
+**Live prototype:** https://abedhossainn.github.io/PlantIQ/
 
-## 🎛️ VLM Configuration
+## Notes
 
-Edit `vlm_config_project.yaml` to customize VLM behavior:
+- **Mock Data**: The prototype uses React state and mock data (no backend needed)
+- **Static Export**: Built with `output: "export"` in Next.js config for GitHub Pages compatibility
+- **Responsive**: Works on desktop, tablet, and mobile devices
 
-```yaml
-# Choose preset: balanced, fast, quality, low_memory
-preset: balanced
-
-# Or customize individual settings
-temperature: 0.1
-max_new_tokens: 2048
-batch_size: 1
-image_dpi: 100
-```
-
-## 🧪 Testing
-
-```bash
-# Integration tests (5 test suites)
-python3 test_vlm_integration.py
-
-# Verify all modules
-python3 verify_hitl_setup.py
-```
-
-## 📈 Current Status
-
-- **Phase:** Enhanced HITL Pipeline + VLM Infrastructure - COMPLETE
-- **Test Results:** 5/5 integration tests passing
-- **Production Ready:** Yes
-- **Last Updated:** January 31, 2026
-
-See [PROJECT_STATUS.md](PROJECT_STATUS.md) for detailed status.
-
-## 🏗️ Architecture
-
-See [RAG_Chatbot_Architecture.md](RAG_Chatbot_Architecture.md) for complete system architecture, component diagrams, and design decisions.
-
-## 📝 License
-
-[Add your license here]
-
-## 🤝 Contributing
-
-[Add contribution guidelines here]

@@ -1,69 +1,19 @@
-# Python
-venv/
-env/
-ENV/
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Ignore everything by default
+*
+**/
 
-# Environment variables
-*.env
-.env.local
-.env.*.local
-docling.env
+# Exception: Track frontend and deployment files
+!frontend/
+!.github/
+!.gitignore
+!.nojekyll
+!README.md
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
+# Allow subdirectories in frontend
+!frontend/**
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-
-# Database
-*.db
-*.sqlite
-*.sqlite3
-
-# Logs
-*.log
-logs/
-
-# OS
-Thumbs.db
-.Trash-*
-
-# Project specific
-Anythingllm/storage/*
-!Anythingllm/storage/.gitkeep
-*.tmp
-.cache/
+# Dependencies to ignore in frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
