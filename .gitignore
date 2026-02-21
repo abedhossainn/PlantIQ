@@ -39,3 +39,7 @@ frontend/.env.*.local
 # IDE
 .vscode/
 .idea/
+
+# Copilot agent metadata
+.github/agents/
+.github/copilot-instructions.md
