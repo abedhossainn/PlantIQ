@@ -10,6 +10,7 @@ jobs:
   backend-tests:
     name: Backend (rag-middleware) tests
     runs-on: ubuntu-latest
+    if: hashFiles('rag-middleware/**') != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,6 +46,7 @@ jobs:
   lint:
     name: Lint (basic)
     runs-on: ubuntu-latest
+    if: hashFiles('rag-middleware/**') != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
