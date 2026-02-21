@@ -3,14 +3,38 @@ name: CI
 on:
   push:
     branches: [ main, master, develop, feature/** ]
+    paths:
+      - 'rag-middleware/**'
+      - '.github/workflows/ci.yml'
   pull_request:
     branches: [ main, master, develop ]
+    paths:
+      - 'rag-middleware/**'
+      - '.github/workflows/ci.yml'
 
 jobs:
+  detect-backend:
+    name: Detect backend workspace
+    runs-on: ubuntu-latest
+    outputs:
+      has_backend: ${{ steps.detect.outputs.has_backend }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Detect rag-middleware directory
+        id: detect
+        run: |
+          if [ -d "rag-middleware" ]; then
+            echo "has_backend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_backend=false" >> "$GITHUB_OUTPUT"
+          fi
+
   backend-tests:
     name: Backend (rag-middleware) tests
     runs-on: ubuntu-latest
-    if: hashFiles('rag-middleware/**') != ''
+    needs: detect-backend
+    if: ${{ needs.detect-backend.outputs.has_backend == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,7 +70,8 @@ jobs:
   lint:
     name: Lint (basic)
     runs-on: ubuntu-latest
-    if: hashFiles('rag-middleware/**') != ''
+    needs: detect-backend
+    if: ${{ needs.detect-backend.outputs.has_backend == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
