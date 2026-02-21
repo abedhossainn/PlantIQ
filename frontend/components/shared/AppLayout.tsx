@@ -126,7 +126,7 @@ export function AppLayout({ children }: AppLayoutProps) {
         <div className="p-4 border-b border-sidebar-border">
           <div className="flex flex-col items-center gap-2">
             <Image
-              src="/BHE-logo.png"
+              src="/PlantIQ/BHE-logo.png"
               alt="BHE GT&S"
               width={140}
               height={70}

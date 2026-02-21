@@ -5,12 +5,10 @@ on:
     branches: [ main, master, develop, feature/** ]
     paths:
       - 'rag-middleware/**'
-      - '.github/workflows/ci.yml'
   pull_request:
     branches: [ main, master, develop ]
     paths:
       - 'rag-middleware/**'
-      - '.github/workflows/ci.yml'
 
 jobs:
   detect-backend:

@@ -49,7 +49,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-md border-border">
         <CardHeader className="space-y-1 text-center pb-4">
           <div className="mb-3 flex justify-center">
-            <Image src="/BHE-logo.png" alt="BHE GT&S" width={180} height={90} className="object-contain" />
+            <Image src="/PlantIQ/BHE-logo.png" alt="BHE GT&S" width={180} height={90} className="object-contain" />
           </div>
           <CardTitle className="text-3xl font-bold tracking-tight">PlantIQ</CardTitle>
           <CardDescription className="text-sm">
