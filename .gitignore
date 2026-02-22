@@ -27,6 +27,7 @@ PROJECT_STATUS.md
 RAG_Chatbot_Architecture.md
 rag_*.py
 vlm_*.py
+vlm_config_project.yaml
 
 # Frontend dependencies & build
 frontend/node_modules/

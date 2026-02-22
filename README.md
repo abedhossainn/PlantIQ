@@ -1,95 +1,122 @@
 # PlantIQ - Air-Gapped RAG System Frontend Prototype
 
-High-fidelity interactive prototype for the Air-Gapped RAG System for Industrial OT Environments (Capstone Project).
+High-fidelity interactive prototype for the **PlantIQ Air-Gapped RAG System** in industrial OT environments (Capstone Project).
 
-## Features
+This prototype demonstrates all major workflows and aligned to the three requirement sets from the capstone proposal.
 
-### Document Ingestion Pipeline (Requirement Set 1)
-- **Upload**: Add vendor manuals with metadata
-- **Validation**: VLM-powered extraction quality report
-- **Review**: Web-based interface to edit and validate sections
-- **Approval**: Lock reviewed versions for RAG ingestion
+1. **Document Ingestion & Processing (US-1.x)**
+   - Upload with metadata
+   - VLM validation report
+   - Section review with checklist/evidence UX
+   - QA gate metrics and recommendation
+   - Final approve/reject decision and lock behavior
 
-### Query Interface (Requirement Set 2)
-- **Chat**: Ask natural language questions
-- **Citations**: Answers include source page references
-- **Multi-turn**: Follow-up questions with context preservation
-- **Bookmarks**: Save answers for future reference
+2. **Natural Language Query Interface (US-2.x)**
+   - Plain-language troubleshooting chat
+   - Citation-aware responses
+   - Multi-turn interactions
+   - Bookmarking useful answers
 
-### Admin & Security (Requirement Set 3)
-- **Authentication**: Login with mock credentials
-- **RBAC**: User, Reviewer, Admin roles
-- **Audit Logs**: Track all actions
-- **User Management**: Assign roles and permissions
+3. **Security, Access Control & Operations (US-3.x, MVP baseline)**
+   - Login flow (prototype uses mock/demo identities)
+   - Role-based UI behavior (User, Reviewer, Admin)
+   - User management interface for role assignment
 
-## User Stories Implemented
+## Routes
 
-All 13 user stories are fully interactive:
+### Core
+- `/` (entry/redirect)
+- `/login`
+- `/chat`
+- `/chat/bookmarks`
 
-| ID | User Story | Route |
-|----|----|---|
-| US-1.1 | Upload document | `/admin/upload` |
-| US-1.2 | VLM validation report | `/admin/validation-report` |
-| US-1.3 | Review interface | `/admin/review` |
-| US-1.4 | Approve document | `/admin/approval` |
-| US-1.5 | Version history | `/admin/versions` |
-| US-1.6 | QA metrics | `/admin/qa-metrics` |
-| US-2.1 | Ask questions | `/chat` |
-| US-2.2 | View citations | `/chat` |
-| US-2.3 | Open source section | `/chat/citation-detail` |
+### Admin
+- `/admin/documents`
+- `/admin/documents/upload`
+- `/admin/documents/[id]/validation`
+- `/admin/documents/[id]/review`
+- `/admin/documents/[id]/qa-gates`
+- `/admin/documents/[id]/approve`
+- `/admin/users`
+
+## User Stories Coverage
+
+All 13 proposal user stories are represented in the prototype experience (with mock data + local state simulation where backend integrations are out of scope for static hosting).
+
+| ID | User Story Area | Primary Prototype Route(s) |
+|---|---|---|
+| US-1.1 | Upload document with metadata | `/admin/documents/upload` |
+| US-1.2 | VLM validation report | `/admin/documents/[id]/validation` |
+| US-1.3 | Section review + checklist + evidence UX | `/admin/documents/[id]/review` |
+| US-1.4 | Final approval/rejection | `/admin/documents/[id]/approve` |
+| US-1.5 | Current vs last-approved version behavior | `/admin/documents/[id]/review` |
+| US-1.6 | QA gate metrics/recommendation | `/admin/documents/[id]/qa-gates` |
+| US-2.1 | Ask troubleshooting questions | `/chat` |
+| US-2.2 | Citation display in responses | `/chat` |
+| US-2.3 | Open source context from citation | `/chat` (in-chat source context UX) |
 | US-2.4 | Multi-turn conversation | `/chat` |
-| US-2.5 | Bookmark answers | `/chat/bookmarks` |
-| US-3.1 | Active Directory login | `/login` |
-| US-3.2 | RBAC user management | `/admin/users` |
+| US-2.5 | Bookmark useful answers | `/chat/bookmarks` |
+| US-3.1 | Login/authentication flow | `/login` |
+| US-3.2 | RBAC + user management | `/admin/users` |
 
-## Testing the Prototype
+## Demo Access
 
-1. **Test Login (US-3.1):**
+Prototype is deployed at:
+
+**https://abedhossainn.github.io/PlantIQ/**
+
+Demo identities (as described in proposal artifacts):
+- Field User: `jdoe` / `demo`
+- Reviewer: `mchen` / `demo`
+- Admin: `rholt` / `demo`
+
+> Note: In production design, identity is AD/LDAP-integrated. In this static prototype, authentication/authorization behavior is simulated with mock data and local state.
+
+## How to Test End-to-End
+
+1. **Login & role routing**
    - Visit `/login`
-   - Use any email/password (mock authentication)
+   - Use one of the demo identities above
 
-2. **Test Document Flow (US-1.1 - US-1.6):**
-   - Login as Admin
-   - `/admin/upload` → Upload a test PDF
-   - `/admin/validation-report` → Review extraction issues
-   - `/admin/review` → Edit sections with inline evidence images
-   - `/admin/approval` → Approve document
-   - `/admin/qa-metrics` → See QA metrics
+2. **Document workflow (US-1.x)**
+   - Go to `/admin/documents`
+   - Upload: `/admin/documents/upload`
+   - Validate: `/admin/documents/doc-1/validation`
+   - Review: `/admin/documents/doc-1/review`
+   - QA gates: `/admin/documents/doc-1/qa-gates`
+   - Final approval: `/admin/documents/doc-1/approve`
 
-3. **Test Query Flow (US-2.1 - US-2.5):**
-   - Login as User
-   - `/chat` → Ask "How do I troubleshoot the pump?"
-   - See response with citations (US-2.2)
-   - Click citation to open source (US-2.3)
-   - Ask follow-up questions (US-2.4)
-   - Bookmark the answer (US-2.5)
+3. **Query workflow (US-2.x)**
+   - Go to `/chat`
+   - Ask a troubleshooting question
+   - Verify citations/source context UX
+   - Save an answer and review it in `/chat/bookmarks`
 
-4. **Test Admin (US-3.2):**
-   - Login as Admin
-   - `/admin/users` → Add user and assign role
-   - `/admin/audit-logs` → View action history
+4. **Admin workflow (US-3.2)**
+   - Go to `/admin/users`
+   - Change roles/status in the prototype UI
 
-## Technologies
+## Technology Stack
 
-- **Framework**: Next.js 16 with TypeScript
-- **Styling**: Tailwind CSS + shadcn/ui
-- **State Management**: React Context API + Mock Data
-- **Form Handling**: React Hook Form
-- **Components**: Radix UI + Tailwind
+- **Framework:** Next.js 16 + TypeScript
+- **UI:** Tailwind CSS + shadcn/ui + Radix primitives
+- **State:** React Context + hooks + localStorage
+- **Content Rendering:** React Markdown
+- **Deployment:** GitHub Pages via GitHub Actions static export
 
-## GitHub Pages Deployment
+## Deployment Notes
 
-The repository includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) that:
+The workflow `.github/workflows/deploy.yml`:
+1. Builds `frontend/` as static export (`output: "export"`)
+2. Uploads `frontend/out` as Pages artifact
+3. Deploys to GitHub Pages on push to `main` (frontend/deploy workflow changes)
 
-1. Builds the Next.js app as static HTML/JS
-2. Uploads the build artifact
-3. Deploys to GitHub Pages on every push to `main`
+The Next.js config uses project-site base path support for:
+- `https://abedhossainn.github.io/PlantIQ/`
 
-**Live prototype:** https://abedhossainn.github.io/PlantIQ/
+## Prototype Constraints (Expected)
 
-## Notes
-
-- **Mock Data**: The prototype uses React state and mock data (no backend needed)
-- **Static Export**: Built with `output: "export"` in Next.js config for GitHub Pages compatibility
-- **Responsive**: Works on desktop, tablet, and mobile devices
+- Uses mock data and local persistence; no live backend services on Pages
+- Intended to validate UX/flow and capstone feasibility, not production security controls
+- Backend pipeline, model serving, and full air-gapped operations are represented conceptually and in companion project documents/scripts
 
