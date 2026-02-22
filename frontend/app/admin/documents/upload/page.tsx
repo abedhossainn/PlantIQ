@@ -65,7 +65,24 @@ export default function UploadPage() {
 
     const ts = new Date().toISOString().replace(/[-:T.]/g, "").slice(0, 12);
     const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
-    setJobId(`JOB-${ts}-${rand}`);
+    const generatedJobId = `JOB-${ts}-${rand}`;
+    setJobId(generatedJobId);
+
+    // Persist upload metadata so the review page can display the real doc title
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        "plantiq-upload-preview",
+        JSON.stringify({
+          title: title.trim(),
+          version: version || "1.0",
+          system,
+          docType,
+          uploadedAt: new Date().toISOString(),
+          jobId: generatedJobId,
+        })
+      );
+    }
+
     setDone(true);
   }
 
@@ -320,14 +337,21 @@ export default function UploadPage() {
                       <p className="text-xs text-muted-foreground mt-1">Use this ID to track processing status and audit trail</p>
                     </div>
                     <p className="text-sm text-muted-foreground mb-4">
-                      Document has been processed and queued for engineering review.
+                      Document has been processed and is ready for engineering review.
                     </p>
                     <Button
-                      className="w-full gap-2 font-semibold"
+                      className="w-full gap-2 font-semibold mb-2"
+                      onClick={() => router.push("/admin/documents/doc-3/review")}
+                    >
+                      Begin Engineering Review
+                      <ArrowRight className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full gap-2"
                       onClick={() => router.push("/admin/documents")}
                     >
                       View Document Pipeline
-                      <ArrowRight className="h-4 w-4" />
                     </Button>
                   </div>
                 )}

@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +11,7 @@ import {
   Upload, FileText, CheckCircle2, XCircle, Clock, Loader2, AlertCircle,
   ChevronRight, FileClock, BarChart3, ShieldCheck
 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { mockDocuments } from "@/lib/mock";
 import type { Document } from "@/types";
 
@@ -67,8 +68,33 @@ const STATUS_CONFIG: Record<
   },
 };
 
-export default function DocumentsPage() {
+function DocumentsContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const view = searchParams.get("view") ?? "";
+
+  // Filter documents based on view param
+  const docs =
+    view === "review-queue"
+      ? mockDocuments.filter((d) =>
+          ["validation-complete", "in-review"].includes(d.status)
+        )
+      : view === "qa-gates"
+      ? mockDocuments.filter((d) => d.status === "review-complete")
+      : mockDocuments;
+
+  // Page title/description based on view
+  const pageTitle =
+    view === "review-queue" ? "Review Queue"
+    : view === "qa-gates" ? "QA Gates"
+    : "Document Pipeline";
+
+  const pageDesc =
+    view === "review-queue"
+      ? "Documents awaiting or currently under engineering review"
+      : view === "qa-gates"
+      ? "Documents ready for quality gate assessment"
+      : "VLM validation → engineering review → QA gates → RAG approval";
 
   function handleAction(doc: Document) {
     const cfg = STATUS_CONFIG[doc.status];
@@ -76,8 +102,6 @@ export default function DocumentsPage() {
       router.push(`/admin/documents/${doc.id}/${cfg.action}`);
     }
   }
-
-  const docs = mockDocuments;
 
   const stats = [
     {
@@ -118,9 +142,9 @@ export default function DocumentsPage() {
         {/* Header */}
         <div className="border-b border-border px-6 py-5 flex items-center justify-between bg-card/50">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Document Pipeline</h1>
+            <h1 className="text-2xl font-bold tracking-tight">{pageTitle}</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              VLM validation → engineering review → QA gates → RAG approval
+              {pageDesc}
             </p>
           </div>
           <Button onClick={() => router.push("/admin/documents/upload")} className="gap-2 font-semibold">
@@ -256,11 +280,19 @@ export default function DocumentsPage() {
               {docs.length === 0 && (
                 <div className="text-center py-16 text-muted-foreground">
                   <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                  <p className="text-sm">No documents in the pipeline yet</p>
-                  <Button className="mt-4 gap-2" onClick={() => router.push("/admin/documents/upload")}>
-                    <Upload className="h-4 w-4" />
-                    Upload First Document
-                  </Button>
+                  <p className="text-sm">
+                    {view === "review-queue"
+                      ? "No documents currently in the review queue"
+                      : view === "qa-gates"
+                      ? "No documents ready for QA gate assessment"
+                      : "No documents in the pipeline yet"}
+                  </p>
+                  {!view && (
+                    <Button className="mt-4 gap-2" onClick={() => router.push("/admin/documents/upload")}>
+                      <Upload className="h-4 w-4" />
+                      Upload First Document
+                    </Button>
+                  )}
                 </div>
               )}
             </Card>
@@ -268,5 +300,21 @@ export default function DocumentsPage() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+export default function DocumentsPage() {
+  return (
+    <Suspense
+      fallback={
+        <AppLayout>
+          <div className="flex-1 flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        </AppLayout>
+      }
+    >
+      <DocumentsContent />
+    </Suspense>
   );
 }

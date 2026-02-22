@@ -12,7 +12,7 @@ import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, ArrowRight, CheckCircle2, Clock, AlertCircle, Edit3, Save, X, Image as ImageIcon, GitCompare, ChevronDown, ChevronUp } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { mockDocuments, mockSections } from "@/lib/mock";
+import { mockDocuments, getSectionsByDocId } from "@/lib/mock";
 import { useAuth } from "@/lib/auth/AuthContext";
 import type { DocumentSection, ReviewChecklist } from "@/types";
 import ReactMarkdown from "react-markdown";
@@ -36,7 +36,21 @@ export default function ReviewClient({ docId }: { docId: string }) {
   const { user } = useAuth();
 
   const doc = mockDocuments.find((d) => d.id === docId);
-  const sections = mockSections.filter((s) => s.documentId === docId);
+  const sections = getSectionsByDocId(docId);
+
+  // Read upload preview from localStorage to show real uploaded doc title
+  const [uploadPreview, setUploadPreview] = useState<{
+    title: string; version: string; system: string; docType: string; jobId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (docId === "doc-3" && typeof window !== "undefined") {
+      const stored = localStorage.getItem("plantiq-upload-preview");
+      if (stored) {
+        try { setUploadPreview(JSON.parse(stored)); } catch { /* noop */ }
+      }
+    }
+  }, [docId]);
 
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [checklists, setChecklists] = useState<Record<string, ReviewChecklist>>(() => {
@@ -137,8 +151,13 @@ export default function ReviewClient({ docId }: { docId: string }) {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div>
-                <h1 className="font-bold text-lg leading-tight">{doc.title}</h1>
-                <p className="text-xs text-muted-foreground mt-0.5">Engineering Review · {sections.length} sections</p>
+                <h1 className="font-bold text-lg leading-tight">{uploadPreview?.title ?? doc.title}</h1>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Engineering Review · {sections.length} sections
+                  {uploadPreview && (
+                    <span className="ml-2 text-primary">· Job {uploadPreview.jobId}</span>
+                  )}
+                </p>
               </div>
               <Badge variant="outline" className="text-xs text-primary border-primary/30 bg-primary/10">
                 v{doc.version ?? "1.0"}

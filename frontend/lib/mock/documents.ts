@@ -105,11 +105,11 @@ export const mockDocuments: Document[] = [
     documentType: "Technical Specification",
     uploadedAt: "2026-02-19T07:10:00Z",
     uploadedBy: "Randy Holt",
-    status: "pending",
+    status: "review-complete",
     totalPages: 156,
     totalSections: 28,
-    reviewProgress: 0,
-    notes: "Queued for extraction",
+    reviewProgress: 100,
+    notes: "All sections reviewed and verified — ready for QA gate assessment",
   },
 ];
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,39 @@ export default function QAGatesClient({ docId }: { docId: string }) {
   const hasWarnings = warnCount > 0;
   const recommendation = report?.recommendation ?? "review";
 
+  // --- User decision persistence (overrides automated recommendation) ---
+  const [userDecision, setUserDecision] = useState<"accept" | "reject" | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem(`plantiq-qa-decision-${docId}`);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          setUserDecision(parsed.decision ?? null);
+        } catch { /* noop */ }
+      }
+    }
+  }, [docId]);
+
+  function handleDecision(d: "accept" | "reject") {
+    setUserDecision(d);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        `plantiq-qa-decision-${docId}`,
+        JSON.stringify({ decision: d, timestamp: new Date().toISOString() })
+      );
+    }
+    if (d === "accept") {
+      router.push(`/admin/documents/${docId}/approve`);
+    } else {
+      router.push("/admin/documents");
+    }
+  }
+
+  // Effective recommendation: user override takes priority over automated result
+  const effectiveRecommendation = userDecision ?? recommendation;
+
   const metricIcons: Record<string, React.ReactNode> = {
     "Text Accuracy": <FileText className="h-5 w-5" />,
     "Table Structure Preservation": <TableIcon className="h-5 w-5" />,
@@ -75,36 +109,49 @@ export default function QAGatesClient({ docId }: { docId: string }) {
 
             {/* Recommendation banner */}
             <div className={`rounded-lg border p-5 flex items-center gap-4 ${
-              recommendation === "accept"
+              effectiveRecommendation === "accept"
                 ? "bg-green-400/5 border-green-400/30"
+                : effectiveRecommendation === "reject"
+                ? "bg-red-400/5 border-red-400/30"
                 : hasFails
                 ? "bg-red-400/5 border-red-400/30"
                 : "bg-amber-400/5 border-amber-400/30"
             }`}>
               <div className={`flex h-10 w-10 items-center justify-center rounded-full shrink-0 ${
-                recommendation === "accept" ? "bg-green-400/15" : hasFails ? "bg-red-400/15" : "bg-amber-400/15"
+                effectiveRecommendation === "accept" ? "bg-green-400/15" : (effectiveRecommendation === "reject" || hasFails) ? "bg-red-400/15" : "bg-amber-400/15"
               }`}>
-                {recommendation === "accept" ? (
+                {effectiveRecommendation === "accept" ? (
                   <CheckCircle2 className="h-5 w-5 text-green-400" />
-                ) : hasFails ? (
+                ) : (effectiveRecommendation === "reject" || hasFails) ? (
                   <XCircle className="h-5 w-5 text-red-400" />
                 ) : (
                   <AlertTriangle className="h-5 w-5 text-amber-400" />
                 )}
               </div>
               <div className="flex-1">
-                {recommendation === "accept" ? (
+                {effectiveRecommendation === "accept" ? (
                   <>
-                    <p className="font-bold text-green-400">Recommendation: ACCEPT</p>
+                    <p className="font-bold text-green-400">
+                      Recommendation: ACCEPT
+                      {userDecision === "accept" && recommendation !== "accept" && (
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">(Reviewer Override)</span>
+                      )}
+                    </p>
                     <p className="text-sm text-muted-foreground">
-                      • All QA metrics meet or exceed configured thresholds. This document is ready for final approval.
+                      {userDecision === "accept" && recommendation !== "accept"
+                        ? "• Reviewer has manually overridden the automated recommendation and approved this document for ingestion."
+                        : "• All QA metrics meet or exceed configured thresholds. This document is ready for final approval."
+                      }
                     </p>
                   </>
-                ) : hasFails ? (
+                ) : (effectiveRecommendation === "reject" || hasFails) ? (
                   <>
                     <p className="font-bold text-red-400">Recommendation: REJECT</p>
                     <p className="text-sm text-muted-foreground">
-                      • One or more quality gates failed. Document requires additional processing or re-ingestion.
+                      {userDecision === "reject"
+                        ? "• Reviewer has decided to reject this document. It will not be added to the RAG knowledge base."
+                        : "• One or more quality gates failed. Document requires additional processing or re-ingestion."
+                      }
                     </p>
                   </>
                 ) : (
@@ -116,6 +163,15 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                   </>
                 )}
               </div>
+              {userDecision && (
+                <Badge variant="outline" className={`shrink-0 text-xs ${
+                  userDecision === "accept"
+                    ? "text-green-400 border-green-400/30 bg-green-400/10"
+                    : "text-red-400 border-red-400/30 bg-red-400/10"
+                }`}>
+                  Reviewer Decision Saved
+                </Badge>
+              )}
             </div>
 
             {/* Metric cards */}
@@ -221,25 +277,22 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                 <ArrowLeft className="h-4 w-4" />
                 Back to Review
               </Button>
-              <div className="flex gap-2">
-                {hasFails && (
-                  <Button
-                    variant="destructive"
-                    className="gap-2"
-                    onClick={() => router.push("/admin/documents")}
-                  >
-                    <XCircle className="h-4 w-4" />
-                    Reject Document
-                  </Button>
-                )}
-                {!hasFails && (
-                  <Button
-                    className="gap-2 font-semibold"
-                    onClick={() => router.push(`/admin/documents/${docId}/approve`)}
-                  >
-                    Accept & Proceed to Approval
-                  </Button>
-                )}
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  className="gap-2 border-red-400/30 text-red-400 hover:bg-red-400/10 hover:border-red-400/50"
+                  onClick={() => handleDecision("reject")}
+                >
+                  <XCircle className="h-4 w-4" />
+                  {userDecision === "reject" ? "Rejected (click to re-reject)" : "Reject Document"}
+                </Button>
+                <Button
+                  className="gap-2 font-semibold"
+                  onClick={() => handleDecision("accept")}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  {userDecision === "accept" ? "Accepted — Go to Approval" : "Accept & Proceed to Approval"}
+                </Button>
               </div>
             </div>
           </div>

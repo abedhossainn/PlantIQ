@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import Image from "next/image";
 import { useAuth } from "@/lib/auth/AuthContext";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { RoleBadge } from "./RoleBadge";
@@ -28,6 +28,8 @@ export function AppLayout({ children }: AppLayoutProps) {
   const { user, logout, isAuthenticated } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const viewParam = searchParams.get("view") ?? "";
 
   // RBAC route guard — prevent 'user' role from accessing admin pages (US-3.2)
   useEffect(() => {
@@ -71,9 +73,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       label: "Documents",
       icon: FileText,
       href: "/admin/documents",
-      active:
-        pathname?.startsWith("/admin/documents") &&
-        pathname === "/admin/documents",
+      active: pathname === "/admin/documents" && viewParam === "",
     },
     {
       label: "Upload Document",
@@ -84,14 +84,14 @@ export function AppLayout({ children }: AppLayoutProps) {
     {
       label: "Review Queue",
       icon: CheckCircle2,
-      href: "/admin/documents",
-      active: false,
+      href: "/admin/documents?view=review-queue",
+      active: pathname === "/admin/documents" && viewParam === "review-queue",
     },
     {
       label: "QA Gates",
       icon: BarChart3,
-      href: "/admin/documents",
-      active: false,
+      href: "/admin/documents?view=qa-gates",
+      active: pathname === "/admin/documents" && viewParam === "qa-gates",
     },
     {
       label: "Users",

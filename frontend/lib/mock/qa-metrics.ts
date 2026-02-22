@@ -51,28 +51,6 @@ export const mockQAGateReports: Record<string, QAGateReport> = {
     failingCriteria: [],
     generatedAt: "2026-02-17T14:15:00Z",
   },
-  "doc-3": {
-    documentId: "doc-3",
-    metrics: {
-      textAccuracy: createMetric("Text Accuracy", 97, 95, "High OCR confidence scores"),
-      tableStructure: createMetric(
-        "Table Structure Preservation",
-        91,
-        90,
-        "Minor cell merge issues in Table 2-1"
-      ),
-      imageCoverage: createMetric(
-        "Image Description Coverage",
-        92,
-        90,
-        "P&ID diagrams adequately described"
-      ),
-      overallScore: createMetric("Overall Quality Score", 93, 92, "Above acceptance threshold"),
-    },
-    recommendation: "accept",
-    failingCriteria: [],
-    generatedAt: "2026-02-19T06:55:00Z",
-  },
   "doc-2": {
     documentId: "doc-2",
     metrics: {
@@ -162,6 +140,70 @@ export const mockQAGateReports: Record<string, QAGateReport> = {
     recommendation: "accept",
     failingCriteria: [],
     generatedAt: "2026-02-16T09:25:00Z",
+  },
+  "doc-3": {
+    documentId: "doc-3",
+    metrics: {
+      textAccuracy: createMetric(
+        "Text Accuracy",
+        97,
+        95,
+        "High OCR confidence scores throughout document"
+      ),
+      tableStructure: createMetric(
+        "Table Structure Preservation",
+        91,
+        90,
+        "Minor cell merge in Table 2-1 — acceptable for this document type"
+      ),
+      imageCoverage: createMetric(
+        "Image Description Coverage",
+        92,
+        90,
+        "P&ID diagrams adequately described by VLM pipeline"
+      ),
+      overallScore: createMetric(
+        "Overall Quality Score",
+        93,
+        92,
+        "Above acceptance threshold — document is ready for approval"
+      ),
+    },
+    recommendation: "accept",
+    failingCriteria: [],
+    generatedAt: "2026-02-19T08:00:00Z",
+  },
+  "doc-7": {
+    documentId: "doc-7",
+    metrics: {
+      textAccuracy: createMetric(
+        "Text Accuracy",
+        96,
+        95,
+        "Clean extraction from well-structured technical specification"
+      ),
+      tableStructure: createMetric(
+        "Table Structure Preservation",
+        94,
+        90,
+        "Switchgear specification tables preserved accurately"
+      ),
+      imageCoverage: createMetric(
+        "Image Description Coverage",
+        87,
+        90,
+        "Single-line diagram descriptions partially incomplete — within warning range"
+      ),
+      overallScore: createMetric(
+        "Overall Quality Score",
+        93,
+        92,
+        "Passes overall threshold despite image coverage warning"
+      ),
+    },
+    recommendation: "accept",
+    failingCriteria: [],
+    generatedAt: "2026-02-19T11:00:00Z",
   },
 };
 
