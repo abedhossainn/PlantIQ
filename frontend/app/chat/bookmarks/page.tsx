@@ -6,45 +6,50 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Bookmark, FileText, Trash2, Tag } from "lucide-react";
+import { Bookmark, FileText, Trash2, Tag, Loader2, AlertCircle } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
-import { getBookmarksByUserId } from "@/lib/mock";
+import { getBookmarks, deleteBookmark } from "@/lib/api";
 import type { Bookmark as BookmarkType, Citation } from "@/types";
 import ReactMarkdown from "react-markdown";
 
 export default function BookmarksPage() {
   const { user } = useAuth();
+  
+  const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Prefer localStorage bookmarks; fall back to mock data
-  const mockFallback = user ? getBookmarksByUserId(user.id) : [];
-  const [bookmarks, setBookmarks] = useState<BookmarkType[]>(mockFallback);
-
+  // Fetch bookmarks from API
   useEffect(() => {
-    if (user && typeof window !== "undefined") {
-      const raw = localStorage.getItem(`plantiq-bookmarks-${user.id}`);
-      if (raw) {
-        try {
-          const parsed: BookmarkType[] = JSON.parse(raw);
-          setBookmarks(parsed.length > 0 ? parsed : mockFallback);
-        } catch { /* noop */ }
+    async function fetchBookmarks() {
+      if (!user) {
+        setIsLoading(false);
+        return;
+      }
+      
+      setIsLoading(true);
+      setError(null);
+      try {
+        const data = await getBookmarks();
+        setBookmarks(data);
+      } catch (err) {
+        console.error('Failed to fetch bookmarks:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load bookmarks');
+      } finally {
+        setIsLoading(false);
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    fetchBookmarks();
   }, [user]);
 
-  function removeBookmark(bm: BookmarkType) {
-    const updated = bookmarks.filter((b) => b.id !== bm.id);
-    setBookmarks(updated);
-    if (user && typeof window !== "undefined") {
-      localStorage.setItem(`plantiq-bookmarks-${user.id}`, JSON.stringify(updated));
-      // Also remove from saved-ids
-      const raw = localStorage.getItem(`plantiq-saved-${user.id}`);
-      if (raw) {
-        try {
-          const ids: string[] = JSON.parse(raw);
-          localStorage.setItem(`plantiq-saved-${user.id}`, JSON.stringify(ids.filter((id) => id !== bm.messageId)));
-        } catch { /* noop */ }
-      }
+  async function removeBookmark(bm: BookmarkType) {
+    try {
+      await deleteBookmark(bm.id);
+      setBookmarks(bookmarks.filter((b) => b.id !== bm.id));
+    } catch (err) {
+      console.error('Failed to delete bookmark:', err);
+      // Show error to user (could add toast notification here)
     }
   }
 
@@ -72,7 +77,26 @@ export default function BookmarksPage() {
         {/* Bookmarks List */}
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-4xl mx-auto">
-            {bookmarks.length === 0 ? (
+            {error && (
+              <Card className="p-6 mb-4 border-red-400/50 bg-red-400/5">
+                <div className="flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-red-400" />
+                  <div>
+                    <p className="font-semibold text-red-400">Failed to load bookmarks</p>
+                    <p className="text-sm text-muted-foreground mt-1">{error}</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+            
+            {isLoading ? (
+              <Card className="p-12">
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-sm text-muted-foreground">Loading bookmarks...</p>
+                </div>
+              </Card>
+            ) : bookmarks.length === 0 ? (
               <div className="text-center py-16">
                 <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted/30 mx-auto mb-4">
                   <Bookmark className="h-8 w-8 text-muted-foreground/50" />

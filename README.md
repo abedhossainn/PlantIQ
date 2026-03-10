@@ -1,122 +1,320 @@
-# PlantIQ - Air-Gapped RAG System Frontend Prototype
+# PlantIQ - Air-Gapped RAG System
 
-High-fidelity interactive prototype for the **PlantIQ Air-Gapped RAG System** in industrial OT environments (Capstone Project).
+**AI-Powered Technical Documentation Retrieval for Industrial OT Environments**
 
-This prototype demonstrates all major workflows and aligned to the three requirement sets from the capstone proposal.
+PlantIQ is an enterprise-grade, air-gapped Retrieval-Augmented Generation (RAG) system designed specifically for critical infrastructure facilities. It enables operations technicians to query proprietary equipment manuals using natural language while maintaining strict cybersecurity requirements and ensuring safety-critical accuracy through human-in-the-loop validation.
 
-1. **Document Ingestion & Processing (US-1.x)**
-   - Upload with metadata
-   - VLM validation report
-   - Section review with checklist/evidence UX
-   - QA gate metrics and recommendation
-   - Final approve/reject decision and lock behavior
+---
 
-2. **Natural Language Query Interface (US-2.x)**
-   - Plain-language troubleshooting chat
-   - Citation-aware responses
-   - Multi-turn interactions
-   - Bookmarking useful answers
+## Project Overview
 
-3. **Security, Access Control & Operations (US-3.x, MVP baseline)**
-   - Login flow (prototype uses mock/demo identities)
-   - Role-based UI behavior (User, Reviewer, Admin)
-   - User management interface for role assignment
+**Client:** BHE GT&S (Berkshire Hathaway Energy) - Cove Point LNG Facility  
+**Timeline:** Spring 2026 (11-week MVP development)  
+**Status:** In Development - Backend and Frontend Integration in Progress  
+**Capstone:** UMBC Master's in Information Systems
 
-## Routes
+### Problem Statement
 
-### Core
-- `/` (entry/redirect)
-- `/login`
-- `/chat`
-- `/chat/bookmarks`
+Industrial facilities cannot use cloud-based AI tools due to cybersecurity policies and proprietary data restrictions. Technicians waste 30+ minutes manually searching through hundreds of pages of vendor manuals during time-sensitive troubleshooting scenarios, increasing operational downtime and safety risks.
 
-### Admin
-- `/admin/documents`
-- `/admin/documents/upload`
-- `/admin/documents/[id]/validation`
-- `/admin/documents/[id]/review`
-- `/admin/documents/[id]/qa-gates`
-- `/admin/documents/[id]/approve`
-- `/admin/users`
+### Solution
 
-## User Stories Coverage
+PlantIQ provides instant access to accurate, cited technical information through:
+- **Human-in-the-Loop Pipeline:** VLM-powered validation ensures engineering manuals (with complex tables, diagrams, schematics) are accurately digitized
+- **Natural Language Interface:** Technicians ask questions in plain English and receive cited answers with source verification
+- **Air-Gapped Architecture:** Complete offline operation on local infrastructure with no external network connectivity
+- **Role-Based Access Control:** Integration with facility Active Directory for secure user management
 
-All 13 proposal user stories are represented in the prototype experience (with mock data + local state simulation where backend integrations are out of scope for static hosting).
+---
 
-| ID | User Story Area | Primary Prototype Route(s) |
-|---|---|---|
-| US-1.1 | Upload document with metadata | `/admin/documents/upload` |
-| US-1.2 | VLM validation report | `/admin/documents/[id]/validation` |
-| US-1.3 | Section review + checklist + evidence UX | `/admin/documents/[id]/review` |
-| US-1.4 | Final approval/rejection | `/admin/documents/[id]/approve` |
-| US-1.5 | Current vs last-approved version behavior | `/admin/documents/[id]/review` |
-| US-1.6 | QA gate metrics/recommendation | `/admin/documents/[id]/qa-gates` |
-| US-2.1 | Ask troubleshooting questions | `/chat` |
-| US-2.2 | Citation display in responses | `/chat` |
-| US-2.3 | Open source context from citation | `/chat` (in-chat source context UX) |
-| US-2.4 | Multi-turn conversation | `/chat` |
-| US-2.5 | Bookmark useful answers | `/chat/bookmarks` |
-| US-3.1 | Login/authentication flow | `/login` |
-| US-3.2 | RBAC + user management | `/admin/users` |
+## Repository Structure
 
-## Demo Access
+```
+PlantIQ/
+├── frontend/                    # Next.js/React TypeScript UI
+├── backend/                     # FastAPI middleware + RAG orchestration (Beta+)
+├── pipeline/                    # HITL document processing modules
+│   ├── src/
+│   │   ├── ingestion/          # PDF conversion (Docling)
+│   │   ├── validation/         # VLM validation & image description
+│   │   ├── review/             # Section-based review workspace
+│   │   ├── qa/                 # QA gates & metrics
+│   │   ├── lineage/            # Audit trail & versioning
+│   │   ├── utils/              # VLM options, parsers, progress tracking
+│   │   └── cli/                # Pipeline orchestration & reformatting
+│   ├── configs/                # Configuration files (VLM, Docling)
+│   └── tests/                  # Pipeline test suite
+├── infra/                      # Docker, K8s, deployment scripts
+├── data/                       # Runtime data (git-ignored)
+│   ├── raw/                    # Source PDFs
+│   ├── processed/              # Intermediate outputs
+│   ├── artifacts/              # Validation evidence, review workspaces
+│   └── indexes/                # Vector database persistence
+├── docs/                       # Technical documentation
+│   ├── architecture/           # Architecture plans & diagrams
+│   ├── api/                    # API specifications
+│   ├── operations/             # Runbooks & troubleshooting
+│   ├── security/               # Threat model & compliance
+│   └── capstone/               # Proposal, deliverables, checklists
+├── tests/                      # Cross-system integration tests
+├── tools/                      # Developer utilities
+├── docker-compose.yml          # Unified service orchestration
+├── Makefile                    # Development task automation
+└── .env.example                # Environment configuration template
+```
 
-Prototype is deployed at:
+---
 
-**https://abedhossainn.github.io/PlantIQ/**
+## Development Setup
 
-Demo identities (as described in proposal artifacts):
-- Field User: `jdoe` / `demo`
-- Reviewer: `mchen` / `demo`
-- Admin: `rholt` / `demo`
+### Prerequisites
 
-> Note: In production design, identity is AD/LDAP-integrated. In this static prototype, authentication/authorization behavior is simulated with mock data and local state.
+- **Python 3.10+** with pip
+- **Node.js 18+** with npm
+- **Docker & Docker Compose**
+- **GPU** (NVIDIA, 24GB+ VRAM for VLM models)
 
-## How to Test End-to-End
+### Installation
 
-1. **Login & role routing**
-   - Visit `/login`
-   - Use one of the demo identities above
+```bash
+# Clone repository
+git clone https://github.com/abedhossainn/PlantIQ.git
+cd PlantIQ
 
-2. **Document workflow (US-1.x)**
-   - Go to `/admin/documents`
-   - Upload: `/admin/documents/upload`
-   - Validate: `/admin/documents/doc-1/validation`
-   - Review: `/admin/documents/doc-1/review`
-   - QA gates: `/admin/documents/doc-1/qa-gates`
-   - Final approval: `/admin/documents/doc-1/approve`
+# Install all dependencies
+make install
 
-3. **Query workflow (US-2.x)**
-   - Go to `/chat`
-   - Ask a troubleshooting question
-   - Verify citations/source context UX
-   - Save an answer and review it in `/chat/bookmarks`
+# Or install individually
+make install-pipeline   # Pipeline HITL modules
+make install-backend    # FastAPI backend
+make install-frontend   # Next.js frontend
+```
 
-4. **Admin workflow (US-3.2)**
-   - Go to `/admin/users`
-   - Change roles/status in the prototype UI
+### Environment Configuration
 
-## Technology Stack
+```bash
+# Copy environment template
+cp .env.example .env
 
-- **Framework:** Next.js 16 + TypeScript
-- **UI:** Tailwind CSS + shadcn/ui + Radix primitives
-- **State:** React Context + hooks + localStorage
-- **Content Rendering:** React Markdown
-- **Deployment:** GitHub Pages via GitHub Actions static export
+# Edit .env with your settings
+nano .env
+```
 
-## Deployment Notes
+---
 
-The workflow `.github/workflows/deploy.yml`:
-1. Builds `frontend/` as static export (`output: "export"`)
-2. Uploads `frontend/out` as Pages artifact
-3. Deploys to GitHub Pages on push to `main` (frontend/deploy workflow changes)
+## Testing
 
-The Next.js config uses project-site base path support for:
-- `https://abedhossainn.github.io/PlantIQ/`
+```bash
+# Run all tests
+make test
 
-## Prototype Constraints (Expected)
+# Run specific test suites
+make test-pipeline      # Pipeline module tests
+make test-backend       # Backend API tests
+make test-frontend      # Frontend component tests
+make test-integration   # End-to-end integration tests
 
-- Uses mock data and local persistence; no live backend services on Pages
-- Intended to validate UX/flow and capstone feasibility, not production security controls
-- Backend pipeline, model serving, and full air-gapped operations are represented conceptually and in companion project documents/scripts
+# Check code quality
+make lint               # Linting
+make format             # Code formatting
+make validate           # Lint + test combined
+```
 
+---
+
+
+## Work Completed
+
+### Document Ingestion Pipeline
+- Docling PDF to Markdown conversion with automatic table/figure handling
+- VLM-powered page-by-page validation using Qwen2.5-VL-32B
+- Evidence generation for validation artifacts
+- Section-based review workspace for manual QA
+- QA gates with quantitative metrics
+- Document lineage and audit tracking
+- Complete test suite with 5/5 passing tests
+
+### Backend Infrastructure
+- FastAPI application structure with modular architecture
+- RESTful API endpoints for document management
+- PostgreSQL integration with SQLAlchemy ORM
+- PostgREST API layer for direct database queries
+- Authentication and authorization middleware
+- Observability and logging infrastructure
+- Comprehensive test coverage for API endpoints
+
+### Frontend Application
+- Next.js 14 TypeScript application with modern React patterns
+- Component library using shadcn/ui and Tailwind CSS
+- Document management interface with upload, validation, and review workflows
+- Chat interface with markdown rendering and citation support
+- User management and role-based access control UI
+- Responsive design for desktop and tablet devices
+- Complete user story coverage (13/13 requirements)
+
+### Integration & Testing
+- Docker Compose configuration for local development
+- End-to-end integration tests across backend and frontend
+- Performance testing framework setup
+- CI/CD workflow structure
+- Makefile for common development tasks
+
+---
+
+## RAG Optimization
+```bash
+# After manual review, reformat for RAG optimization
+python pipeline/src/cli/text_reformatter.py \
+  --markdown reviewed_output.md \
+  --validation validation_report.json \
+  --output rag_optimized
+```
+
+### Testing Pipeline Integration
+
+```bash
+# Run VLM integration tests
+pytest pipeline/tests/test_vlm_integration.py -v
+
+# Verify HITL setup
+python pipeline/tests/verify_hitl_setup.py
+
+# Validate import structure
+python pipeline/tests/validate_imports.py
+```
+
+### Pipeline Package Structure
+
+The pipeline is organized as a proper Python package with relative imports:
+
+```python
+# Import utility modules
+from pipeline.src.utils.vlm_options import VLMOptions
+from pipeline.src.utils.progress_tracker import ProgressBar
+
+# Import validation modules  
+from pipeline.src.validation.vlm_comparison import compare_with_vlm
+
+# Import orchestration
+from pipeline.src.cli.hitl_pipeline import HITLPipeline
+```
+
+**Installing as Editable Package:**
+```bash
+# Install pipeline in development mode
+pip install -e pipeline/
+
+# Now imports work from anywhere
+python -c "from pipeline.src.utils.vlm_options import VLMOptions; print('Pipeline installed')"
+```
+
+---
+
+## Architecture
+
+### System Components
+
+```mermaid
+flowchart TB
+    subgraph OT[Industrial OT Environment - Air-Gapped]
+        User[Operations Technician]
+        Frontend[Next.js Frontend]
+        Backend[FastAPI Backend]
+        VLM[vLLM Inference]
+        VectorDB[Qdrant Vector DB]
+        Postgres[PostgreSQL]
+        Pipeline[HITL Pipeline]
+    end
+    
+    User -->|Natural Language Query| Frontend
+    Frontend -->|API Request| Backend
+    Backend -->|Retrieve Context| VectorDB
+    Backend -->|Generate Response| VLM
+    Backend -->|User/Doc Metadata| Postgres
+    Pipeline -->|Approved Chunks| VectorDB
+    Pipeline -->|Review Data| Postgres
+```
+
+### Technology Stack
+
+| Layer | Technologies |
+|-------|-------------|
+| **Frontend** | React 18, Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
+| **Backend** | Python 3.10+, FastAPI, LangChain, Pydantic, SQLAlchemy |
+| **AI/ML** | vLLM, Qwen2.5-VL-32B, Qwen2.5-32B, Sentence Transformers |
+| **Data** | PostgreSQL, Qdrant, Docling, pdfplumber |Pipeline installed')"
+```
+
+---
+
+##
+## Documentation
+
+- **[Capstone Proposal](docs/capstone/Capstone_Proposal_UPDATED.md)** - Complete project proposal with requirements
+- **[Architecture Plan](docs/architecture/rag_architecture.md)** - HITL document optimization architecture
+- **[Restructuring Plan](RESTRUCTURE_PLAN.md)** - Production-grade repository reorganization blueprint
+- **[Checkpoint Strategy](CHECKPOINT_STRATEGY.md)** - Staged verification and submission approach
+- **[Project Status](PROJECT_STATUS.md)** - Current progress and change log
+- **[Enhanced HITL Guide](docs/capstone/ENHANCED_HITL_GUIDE.md)** - Pipeline implementation guide (Alpha deliverable)
+
+---
+
+## Security & Compliance
+
+### Air-Gapped Operation
+- ✅ No external network connectivity required
+- ✅ All AI processing occurs on local hardware
+- ✅ Proprietary data never leaves facility network
+- ✅ Offline model deployment (HuggingFace cache)
+
+### Standards Compliance
+- **IEC 62443** - Industrial Cybersecurity Standards
+- **NERC CIP** - Critical Infrastructure Protection
+- **Vendor Licensing** - Respects proprietary manual restrictions
+
+### Security Features
+- Role-Based Access Control (RBAC)
+- Active Directory / LDAP integration
+- ASecurity & Compliance
+
+### Air-Gapped Operation
+- No external network connectivity required
+- All AI processing occurs on local hardware
+- Proprietary data never leaves facility network
+- Offline model deployment (HuggingFace cache)
+
+### Standards Compliance
+- **IEC 62443** - Industrial Cybersecurity Standards
+- **NERC CIP** - Critical Infrastructure Protection
+- **Vendor Licensing** - Respects proprietary manual restrictions
+
+### Security Features
+- Role-Based Access Control (RBAC)
+- Active Directory / LDAP integration (planned)
+- Audit logging for all document access
+- Version control and approval workflows
+- Encrypted data at rest and in transit
+
+---
+
+##
+
+## Creditsdeveloped for UMBC Master's in Information Systems. All contributions must follow established coding standards and testing requirements documented in the project guidelines.
+
+See [CHECKPOINT_STRATEGY.md](CHECKPOINT_STRATEGY.md) for development workflows and quality gates.
+
+---
+
+##
+- **GitHub Issues:** For bug reports and feature requests
+- **Capstone Documentation:** See `docs/capstone/` for deliverables
+- *Contact & Support
+
+- **GitHub Issues:** For bug reports and feature requests
+- **Capstone Documentation:** See `docs/capstone/` for deliverables and project documentation
+
+---
+
+**Last Updated:** March 10, 2026  
+**Project Status:** In Active Development  
+**Current Focus:** Backend and Frontend Integration

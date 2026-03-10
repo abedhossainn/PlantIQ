@@ -1,0 +1,192 @@
+version: '3.8'
+
+# PlantIQ Air-Gapped RAG System
+# Unified Docker Compose Orchestration
+
+services:
+  # ============================================================================
+  # Backend API Service (FastAPI + LangChain RAG Middleware)
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../infra/docker/backend.Dockerfile
+    container_name: plantiq-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://plantiq:plantiq@postgres:5432/plantiq}
+      - VECTOR_DB_URL=${VECTOR_DB_URL:-http://vector-db:6333}
+      - VLLM_API_URL=${VLLM_API_URL:-http://vllm:8001}
+      - SECRET_KEY=${SECRET_KEY:-changeme-in-production}
+      - LDAP_SERVER=${LDAP_SERVER:-ldap://ad-server:389}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SLOW_REQUEST_THRESHOLD_MS=${SLOW_REQUEST_THRESHOLD_MS:-500}
+      - LOG_REDACTION_ENABLED=${LOG_REDACTION_ENABLED:-true}
+      - SENSITIVE_QUERY_KEYS=${SENSITIVE_QUERY_KEYS:-token,access_token,refresh_token,api_key,key,secret,password,authorization,jwt}
+      - QUIET_LOG_PATHS=${QUIET_LOG_PATHS:-/health,/}
+      - DETAILED_LOG_PATH_PREFIXES=${DETAILED_LOG_PATH_PREFIXES:-/api/v1/chat,/api/v1/pipeline,/api/v1/auth,/api/docs}
+    volumes:
+      - ./data:/app/data
+      - ./backend/app:/app/app
+    depends_on:
+      - postgres
+      - vector-db
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+    # Note: Will be implemented in Beta checkpoint
+
+  # ============================================================================
+  # Frontend UI Service (Next.js TypeScript React)
+  # ============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infra/docker/frontend.Dockerfile
+    container_name: plantiq-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_APP_NAME=PlantIQ
+    depends_on:
+      - backend
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Vector Database (Qdrant for semantic search)
+  # ============================================================================
+  vector-db:
+    image: qdrant/qdrant:latest
+    container_name: plantiq-vector-db
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./data/indexes/qdrant:/qdrant/storage
+    environment:
+      - QDRANT_ALLOW_RECOVERY_MODE=true
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgreSQL Database (User management, review metadata, audit logs)
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: plantiq-postgres
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-plantiq}
+      - POSTGRES_USER=${POSTGRES_USER:-plantiq}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/docker/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-plantiq} -d ${POSTGRES_DB:-plantiq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgREST Data API (PostgreSQL CRUD API with RLS)
+  # ============================================================================
+  postgrest:
+    image: postgrest/postgrest:v14.0
+    container_name: plantiq-postgrest
+    ports:
+      - "${POSTGREST_HOST_PORT:-3000}:3000"
+    environment:
+      - PGRST_DB_URI=postgres://plantig_authenticator:${POSTGRES_AUTHENTICATOR_PASSWORD:-change_me_in_production}@postgres:5432/${POSTGRES_DB:-plantiq}
+      - PGRST_DB_SCHEMA=${PGRST_DB_SCHEMA:-public}
+      - PGRST_DB_ANON_ROLE=${PGRST_DB_ANON_ROLE:-plantig_anon}
+      - PGRST_JWT_SECRET=@/run/secrets/postgrest_jwt_public_key
+      - PGRST_JWT_AUD=${JWT_AUDIENCE:-plantig}
+      - PGRST_ROLE_CLAIM_KEY=.role
+      - PGRST_SERVER_PROXY_URI=${PGRST_SERVER_PROXY_URI:-http://localhost:3000}
+      - PGRST_ADMIN_SERVER_PORT=3001
+      - PGRST_LOG_LEVEL=${PGRST_LOG_LEVEL:-info}
+      - PGRST_LOG_QUERY=${PGRST_LOG_QUERY:-main-query}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/postgrest", "--help"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    secrets:
+      - postgrest_jwt_public_key
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # vLLM Inference Server (Local LLM for RAG generation)
+  # ============================================================================
+  # Note: Requires GPU passthrough, configured separately for air-gapped deployment
+  # vllm:
+  #   build:
+  #     context: ./infra/docker
+  #     dockerfile: vllm.Dockerfile
+  #   container_name: plantiq-vllm
+  #   ports:
+  #     - "8001:8000"
+  #   environment:
+  #     - MODEL_NAME=${MODEL_NAME:-Qwen/Qwen2.5-32B-Instruct}
+  #     - GPU_MEMORY_UTILIZATION=0.9
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   volumes:
+  #     - ~/.cache/huggingface:/root/.cache/huggingface
+  #   networks:
+  #     - plantiq-network
+  #   restart: unless-stopped
+
+  # ============================================================================
+  # Nginx Reverse Proxy (Optional: for production deployment)
+  # ============================================================================
+  # nginx:
+  #   build:
+  #     context: ./infra/docker
+  #     dockerfile: nginx.Dockerfile
+  #   container_name: plantiq-nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./infra/monitoring/nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - frontend
+  #     - backend
+  #   networks:
+  #     - plantiq-network
+  #   restart: unless-stopped
+
+networks:
+  plantiq-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+
+secrets:
+  postgrest_jwt_public_key:
+    file: ${JWT_PUBLIC_KEY_FILE:-./backend/secrets/jwt-public.pem}

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,7 @@ import {
   ChevronRight, FileClock, BarChart3, ShieldCheck
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { mockDocuments } from "@/lib/mock";
+import { getDocuments, getReviewQueueDocuments, getQAGateDocuments } from "@/lib/api";
 import type { Document } from "@/types";
 
 const STATUS_CONFIG: Record<
@@ -72,16 +72,36 @@ function DocumentsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const view = searchParams.get("view") ?? "";
+  
+  const [docs, setDocs] = useState<Document[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filter documents based on view param
-  const docs =
-    view === "review-queue"
-      ? mockDocuments.filter((d) =>
-          ["validation-complete", "in-review"].includes(d.status)
-        )
-      : view === "qa-gates"
-      ? mockDocuments.filter((d) => d.status === "review-complete")
-      : mockDocuments;
+  // Fetch documents based on view
+  useEffect(() => {
+    async function fetchDocuments() {
+      setIsLoading(true);
+      setError(null);
+      try {
+        let documents: Document[];
+        if (view === "review-queue") {
+          documents = await getReviewQueueDocuments();
+        } else if (view === "qa-gates") {
+          documents = await getQAGateDocuments();
+        } else {
+          documents = await getDocuments();
+        }
+        setDocs(documents);
+      } catch (err) {
+        console.error('Failed to fetch documents:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load documents');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchDocuments();
+  }, [view]);
 
   // Page title/description based on view
   const pageTitle =
@@ -153,8 +173,28 @@ function DocumentsContent() {
           </Button>
         </div>
 
-        {/* Stats row */}
-        <div className="border-b border-border px-6 py-4 bg-card/30">
+        {/* {error && (
+              <Card className="p-6 mb-4 border-red-400/50 bg-red-400/5">
+                <div className="flex items-center gap-3">
+                  <AlertCircle className="h-5 w-5 text-red-400" />
+                  <div>
+                    <p className="font-semibold text-red-400">Failed to load documents</p>
+                    <p className="text-sm text-muted-foreground mt-1">{error}</p>
+                  </div>
+                </div>
+              </Card>
+            )}
+            
+            {isLoading ? (
+              <Card className="p-12">
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-sm text-muted-foreground">Loading documents...</p>
+                </div>
+              </Card>
+            ) : (
+              <Card className="overflow-hidden border-border">
+          <div className="border-b border-border px-6 py-4 bg-card/30">
           <div className="grid grid-cols-4 gap-6 max-w-3xl">
             {stats.map((s) => (
               <div key={s.label} className="flex items-center gap-3">
@@ -277,7 +317,7 @@ function DocumentsContent() {
                   })}
                 </TableBody>
               </Table>
-              {docs.length === 0 && (
+              {docs.length === 0 && !isLoading && (
                 <div className="text-center py-16 text-muted-foreground">
                   <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
                   <p className="text-sm">

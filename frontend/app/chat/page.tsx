@@ -5,75 +5,21 @@ import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
 import { Send, Bookmark, FileText, MessageSquare, RotateCcw, X, BookmarkCheck, ExternalLink } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { useRouter } from "next/navigation";
-import { getActiveConversation } from "@/lib/mock";
+import {
+  getActiveConversation,
+  createConversation,
+  createMessage,
+  getConversationMessages,
+  createBookmark,
+  deleteBookmark,
+  isMessageBookmarked,
+} from "@/lib/api";
+import { streamChatQuery } from "@/lib/api/chat";
 import type { ChatMessage, Citation, Bookmark as BookmarkType } from "@/types";
 import ReactMarkdown from "react-markdown";
-
-// ---------------------------------------------------------------------------
-// Citation pool — representative citations from approved documents
-// In production these come from the RAG retrieval layer
-// ---------------------------------------------------------------------------
-const CITATION_POOL: Citation[] = [
-  {
-    id: "cite-p1",
-    documentId: "doc-1",
-    documentTitle: "COMMON Module 3 Characteristics of LNG",
-    sectionHeading: "3. Physical Properties of LNG",
-    pageNumber: 12,
-    excerpt: "LNG density at atmospheric pressure is approximately 450 kg/m³ at -162°C. This density varies with composition and temperature.",
-    relevanceScore: 0.94,
-  },
-  {
-    id: "cite-p2",
-    documentId: "doc-2",
-    documentTitle: "Cryogenic Pump System Operating Manual",
-    sectionHeading: "3.1 Emergency Response",
-    pageNumber: 15,
-    excerpt: "In case of LNG spill: Activate emergency alarm, evacuate non-essential personnel to upwind locations, do NOT use water on LNG spills.",
-    relevanceScore: 0.91,
-  },
-  {
-    id: "cite-p3",
-    documentId: "doc-2",
-    documentTitle: "Cryogenic Pump System Operating Manual",
-    sectionHeading: "4.2 Normal Startup Sequence",
-    pageNumber: 21,
-    excerpt: "Cool-down procedure: Slowly introduce LNG to pump casing. Monitor temperature differential (<50°C/hr cooling rate). Allow 4–6 hours for complete thermal stabilization.",
-    relevanceScore: 0.96,
-  },
-  {
-    id: "cite-p4",
-    documentId: "doc-6",
-    documentTitle: "Instrumentation Calibration Standards",
-    sectionHeading: "5.2 Pressure Transmitter Calibration",
-    pageNumber: 34,
-    excerpt: "Pressure transmitters shall be calibrated at 0%, 25%, 50%, 75%, and 100% of span in both ascending and descending directions. Maximum allowable error: ±0.25% of span.",
-    relevanceScore: 0.92,
-  },
-  {
-    id: "cite-p5",
-    documentId: "doc-1",
-    documentTitle: "COMMON Module 3 Characteristics of LNG",
-    sectionHeading: "2.4 Boil-Off Gas Management",
-    pageNumber: 8,
-    excerpt: "Normal boil-off rate for insulated LNG storage is 0.05-0.1% per day. BOG must be managed through either reliquefaction or fuel gas systems.",
-    relevanceScore: 0.88,
-  },
-];
-
-/** Deterministically pick 1–2 citations from the pool based on query content */
-function pickCitations(query: string): Citation[] {
-  // Simple hash to get a consistent index per query
-  let h = 0;
-  for (let i = 0; i < query.length; i++) h = (h * 31 + query.charCodeAt(i)) & 0xffffff;
-  const primary = CITATION_POOL[h % CITATION_POOL.length];
-  const secondary = CITATION_POOL[(h + 2) % CITATION_POOL.length];
-  return primary.id === secondary.id ? [primary] : [primary, secondary];
-}
 
 // Source view drawer
 function SourceDrawer({ cite, onClose }: { cite: Citation; onClose: () => void }) {
@@ -141,20 +87,52 @@ function SourceDrawer({ cite, onClose }: { cite: Citation; onClose: () => void }
 export default function ChatPage() {
   const { user } = useAuth();
   const router = useRouter();
-  const initialConv = user ? getActiveConversation(user.id) : null;
-  const [messages, setMessages] = useState<ChatMessage[]>(initialConv?.messages ?? []);
+  
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [query, setQuery] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeCite, setActiveCite] = useState<Citation | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+  const [isLoading, setIsLoading] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Load persisted saved-answer IDs from localStorage (US-2.5)
+  // Load active conversation and saved bookmarks on mount
   useEffect(() => {
-    if (user && typeof window !== "undefined") {
-      const raw = localStorage.getItem(`plantiq-saved-${user.id}`);
-      if (raw) { try { setSavedIds(new Set(JSON.parse(raw))); } catch { /* noop */ } }
+    async function loadData() {
+      if (!user) {
+        setIsLoading(false);
+        return;
+      }
+      
+      setIsLoading(true);
+      try {
+        // Try to load active conversation
+        const result = await getActiveConversation();
+        if (result) {
+          setConversationId(result.conversation.id);
+          
+          // Use messages from result
+          const msgs = result.messages;
+          setMessages(msgs);
+          
+          // Load bookmarked message IDs
+          const bookmarked = new Set<string>();
+          for (const msg of msgs) {
+            if (msg.role === 'assistant' && await isMessageBookmarked(msg.id)) {
+              bookmarked.add(msg.id);
+            }
+          }
+          setSavedIds(bookmarked);
+        }
+      } catch (err) {
+        console.error('Failed to load conversation:', err);
+      } finally {
+        setIsLoading(false);
+      }
     }
+
+    loadData();
   }, [user]);
 
   useEffect(() => {
@@ -165,80 +143,151 @@ export default function ChatPage() {
     setMessages([]);
     setQuery("");
     setActiveCite(null);
+    setConversationId(null);
   }
 
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!query.trim() || isStreaming) return;
+    if (!query.trim() || isStreaming || !user) return;
 
+    // Create conversation if it doesn't exist
+    let currentConvId = conversationId;
+    if (!currentConvId) {
+      try {
+        const newConv = await createConversation();
+        currentConvId = newConv.id;
+        setConversationId(currentConvId);
+      } catch (err) {
+        console.error('Failed to create conversation:', err);
+        return;
+      }
+    }
+
+    // Add user message to UI
     const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
+      id: `msg-${Date.now()}-user`,
       role: "user",
       content: query.trim(),
       timestamp: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, userMsg]);
+    
+    // Save user message to database
+    try {
+      await createMessage({
+        conversationId: currentConvId,
+        role: 'user',
+        content: userMsg.content,
+      });
+    } catch (err) {
+      console.error('Failed to save user message:', err);
+    }
+
+    const queryText = query.trim();
     setQuery("");
     setIsStreaming(true);
 
-    await new Promise((r) => setTimeout(r, 1200));
-
-    const citations = pickCitations(query.trim());
+    // Create assistant message placeholder
+    const assistantMsgId = `msg-${Date.now()}-assistant`;
     const assistantMsg: ChatMessage = {
-      id: `msg-${Date.now() + 1}`,
+      id: assistantMsgId,
       role: "assistant",
-      content:
-        "This response is retrieved from your approved facility documents via the PlantIQ RAG system. In production this queries the vector database and returns information from indexed technical documents.\n\nThe system uses **Retrieval-Augmented Generation (RAG)** to:\n- Search indexed facility documents\n- Retrieve the most relevant sections\n- Generate a precise, cited answer",
+      content: "",
       timestamp: new Date().toISOString(),
-      citations,
+      citations: [],
     };
     setMessages((prev) => [...prev, assistantMsg]);
-    setIsStreaming(false);
+
+    try {
+      let fullContent = "";
+      
+      // Stream tokens from RAG endpoint
+      for await (const token of streamChatQuery({
+        query: queryText,
+        conversation_id: currentConvId,
+      })) {
+        fullContent += token;
+        
+        // Update message with accumulated content
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? { ...msg, content: fullContent }
+              : msg
+          )
+        );
+      }
+
+      // TODO: Extract citations from streaming metadata
+      // For now, the backend sends citations after completion
+      // We would need to update the message with citations once available
+      
+      // Save assistant message to database
+      try {
+        const savedMsg = await createMessage({
+          conversationId: currentConvId,
+          role: 'assistant',
+          content: fullContent,
+        });
+        
+        // Update message ID with the one from database
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? { ...msg, id: savedMsg.id }
+              : msg
+          )
+        );
+      } catch (err) {
+        console.error('Failed to save assistant message:', err);
+      }
+      
+    } catch (err) {
+      console.error('Streaming failed:', err);
+      
+      // Show error message
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? {
+                ...msg,
+                content: `Error: Failed to generate response. ${err instanceof Error ? err.message : 'Unknown error'}`,
+              }
+            : msg
+        )
+      );
+    } finally {
+      setIsStreaming(false);
+    }
   };
 
-  function toggleSave(msgId: string) {
-    setSavedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(msgId)) {
-        next.delete(msgId);
-        // Remove from localStorage bookmarks
-        if (user && typeof window !== "undefined") {
-          const stored: BookmarkType[] = JSON.parse(localStorage.getItem(`plantiq-bookmarks-${user.id}`) ?? "[]");
-          const filtered = stored.filter((b) => b.messageId !== msgId);
-          localStorage.setItem(`plantiq-bookmarks-${user.id}`, JSON.stringify(filtered));
-        }
+  async function toggleSave(msgId: string) {
+    const msg = messages.find((m) => m.id === msgId);
+    if (!msg || msg.role !== 'assistant' || !user) return;
+
+    try {
+      const isBookmarked = savedIds.has(msgId);
+      
+      if (isBookmarked) {
+        // Remove bookmark
+        await deleteBookmark(msgId);
+        setSavedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(msgId);
+          return next;
+        });
       } else {
-        next.add(msgId);
-        // Persist to localStorage as a bookmark (US-2.5)
-        if (user && typeof window !== "undefined") {
-          const msg = messages.find((m) => m.id === msgId);
-          const userMsgIdx = msg ? messages.indexOf(msg) - 1 : -1;
-          const userMsg = userMsgIdx >= 0 ? messages[userMsgIdx] : null;
-          if (msg) {
-            const bookmark: BookmarkType = {
-              id: `bm-${msgId}`,
-              userId: user.id,
-              conversationId: "current-session",
-              messageId: msgId,
-              query: userMsg?.content ?? "Question",
-              answer: msg.content,
-              citations: msg.citations,
-              createdAt: new Date().toISOString(),
-              tags: [],
-            };
-            const stored: BookmarkType[] = JSON.parse(localStorage.getItem(`plantiq-bookmarks-${user.id}`) ?? "[]");
-            if (!stored.some((b) => b.messageId === msgId)) {
-              stored.unshift(bookmark);
-              localStorage.setItem(`plantiq-bookmarks-${user.id}`, JSON.stringify(stored));
-            }
-          }
-        }
+        // Create bookmark - query/answer/citations auto-populated from message
+        await createBookmark({
+          messageId: msgId,
+          conversationId: conversationId || 'unknown',
+        });
+        
+        setSavedIds((prev) => new Set(prev).add(msgId));
       }
-      if (user && typeof window !== "undefined") {
-        localStorage.setItem(`plantiq-saved-${user.id}`, JSON.stringify([...next]));
-      }
-      return next;
-    });
+    } catch (err) {
+      console.error('Failed to toggle bookmark:', err);
+    }
   }
 
   const suggestions = [
@@ -247,6 +296,19 @@ export default function ChatPage() {
     "What actions should I take if there is an LNG spill?",
     "What are the calibration requirements for pressure transmitters?",
   ];
+
+  if (isLoading) {
+    return (
+      <AppLayout>
+        <div className="flex items-center justify-center h-full">
+          <div className="flex flex-col items-center gap-4">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+            <p className="text-sm text-muted-foreground">Loading conversation...</p>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>

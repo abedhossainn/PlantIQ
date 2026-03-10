@@ -1,46 +1,122 @@
-# Ignore Python & venv
-*.py
+# ============================================================================
+# PlantIQ Air-Gapped RAG System - Git Ignore Configuration
+# ============================================================================
+# Keep only essential source code, configuration, and documentation
+# Exclude working documents, test scripts, and temporary files
+
+# === Python Bytecode & Cache ===
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# === Virtual Environments ===
 .venv/
 venv/
-__pycache__/
+ENV/
+env/
+.Python
 
-# Ignore project configs
-instructions.md
-docker-compose.yml
-docling.env
-docling_convert_with_qwen.py
-check_stack.sh
-text.txt
+# === Environment Variables & Secrets ===
+.env
+.env.local
+.env.*.local
 *.env
-progress_tracker.py
-verify_hitl_setup.py
-test_vlm_integration.py
+backend/secrets/
+*.pem
 
-# Ignore project folders
+# === Data Directories (Runtime, Not Source-Controlled) ===
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/artifacts/*
+!data/artifacts/.gitkeep
+data/indexes/*
+!data/indexes/.gitkeep
+
+# === Legacy AnythingLLM Storage ===
 anythingllm-storage/
-hitl_workspace/
-InjestDocs/
-Documents/
-validation_evidence/
-INTEGRATED_ARCHITECTURE.md
-PROJECT_STATUS.md
-RAG_Chatbot_Architecture.md
-rag_*.py
-vlm_*.py
-vlm_config_project.yaml
 
-# Frontend dependencies & build
-frontend/node_modules/
+# === Build Artifacts & Node Modules ===
 frontend/.next/
 frontend/out/
 frontend/dist/
-frontend/.env.local
-frontend/.env.*.local
+frontend/node_modules/
+backend/dist/
+pipeline/dist/
+*.tsbuildinfo
 
-# IDE
+# === IDE & Editor ===
 .vscode/
 .idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
 
-# Copilot agent metadata
-.github/agents/
-.github/copilot-instructions.md
+# === Operating System ===
+.DS_Store
+Thumbs.db
+.directory
+
+# === Logs ===
+*.log
+logs/
+
+# === Testing & Coverage ===
+.coverage
+htmlcov/
+*.cover
+.pytest_cache/
+.nyc_output/
+coverage/
+
+# === Temporary Files ===
+*.tmp
+*.temp
+
+# === Working Documents (Internal Use Only) ===
+Documents/
+CHECKPOINT_STRATEGY.md
+RESTRUCTURE_PLAN.md
+RESTRUCTURE_COMPLETE.md
+PROJECT_STATUS.md
+How to write clean code.md
+T007_COMPLETION_SUMMARY.md
+T008_T009_COMPLETION_SUMMARY.md
+T010_COMPLETION_SUMMARY.md
+COMPLETION_SUMMARY_T004_T005.md
+COMPLETION_SUMMARY_T006.md
+SECURITY_FIXES_T012.md
+
+# === Capstone Internal Documentation ===
+docs/capstone/
+docs/operations/
+docs/security/
+
+# === Validation & Test Scripts (Non-Essential) ===
+validate_t006.sh
+validate_t004_t005.sh
+
+# === Keep Essential Files ===
+!README.md
+!.env.example
+!.gitkeep
+!Makefile
+!.dockerignore
+!Dockerfile
+!docker-compose.yml
+!pytest.ini
+!pyproject.toml
+!package.json
+!tsconfig.json
+!next.config.ts
+!postcss.config.mjs
+!vitest.config.ts
+!.github/copilot-instructions.md
