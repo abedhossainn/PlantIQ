@@ -6,8 +6,13 @@ Loads settings from environment variables with sensible defaults.
 import os
 from pathlib import Path
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_PIPELINE_PYTHON = str(REPO_ROOT / ".venv" / "bin" / "python")
+DEFAULT_PIPELINE_SCRIPT = str(REPO_ROOT / "pipeline" / "src" / "cli" / "hitl_pipeline.py")
 
 
 class Settings(BaseSettings):
@@ -53,11 +58,11 @@ class Settings(BaseSettings):
         validation_alias="PIPELINE_WORK_DIR"
     )
     PIPELINE_PYTHON_PATH: str = Field(
-        default="./pipeline/.venv/bin/python3",
+        default=DEFAULT_PIPELINE_PYTHON,
         validation_alias="PIPELINE_PYTHON_PATH"
     )
     PIPELINE_SCRIPT_PATH: str = Field(
-        default="./pipeline/src/cli/hitl_pipeline.py",
+        default=DEFAULT_PIPELINE_SCRIPT,
         validation_alias="PIPELINE_SCRIPT_PATH"
     )
     PIPELINE_TIMEOUT_SECONDS: int = Field(
@@ -108,9 +113,10 @@ class Settings(BaseSettings):
     WS_HEARTBEAT_INTERVAL: int = Field(default=30, validation_alias="WS_HEARTBEAT_INTERVAL")
     WS_MESSAGE_QUEUE_SIZE: int = Field(default=100, validation_alias="WS_MESSAGE_QUEUE_SIZE")
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+    )
 
 
 # Global settings instance

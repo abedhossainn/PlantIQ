@@ -18,7 +18,3 @@ include = []
 [tool.uv]
 # Use uv for dependency management
 managed = true
-
-[tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "tests"]
-python_files = ["test_*.py"]

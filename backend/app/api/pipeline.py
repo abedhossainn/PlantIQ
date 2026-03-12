@@ -129,7 +129,7 @@ async def upload_document(
         job_id = await PipelineService.trigger_pipeline(
             document_id=document_id,
             pdf_path=str(file_path),
-            reviewer=current_user_id,
+            reviewer=str(current_user_id),
             db=db,
         )
         

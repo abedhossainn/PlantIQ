@@ -2,7 +2,7 @@
 Authentication service - Business logic for user authentication and token management.
 """
 from typing import Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 import uuid
@@ -18,6 +18,11 @@ from sqlalchemy import UUID as SQLUUID, String, DateTime
 logger = logging.getLogger(__name__)
 
 
+def _utcnow_naive() -> datetime:
+    """Return UTC timestamp as naive datetime for legacy DB columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # Import User model (define inline for now, will be moved to models later)
 class User(Base):
     """User database model."""
@@ -31,8 +36,8 @@ class User(Base):
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
 
 
 class RefreshToken(Base):
@@ -44,7 +49,7 @@ class RefreshToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
 
 
 class AuthService:
@@ -90,7 +95,7 @@ class AuthService:
             return None
         
         # Update last login
-        user.last_login = datetime.utcnow()
+        user.last_login = _utcnow_naive()
         await db.commit()
         
         # Get user scopes based on role
@@ -125,7 +130,7 @@ class AuthService:
             user.email = ldap_user.email
             user.full_name = ldap_user.full_name
             user.department = ldap_user.department
-            user.updated_at = datetime.utcnow()
+            user.updated_at = _utcnow_naive()
             return user
         
         # Create new user
@@ -171,7 +176,7 @@ class AuthService:
         refresh_token = RefreshToken(
             user_id=user_id,
             token_hash=token_hash,
-            expires_at=datetime.utcnow() + timedelta(hours=AuthService.REFRESH_TOKEN_LIFETIME_HOURS),
+            expires_at=_utcnow_naive() + timedelta(hours=AuthService.REFRESH_TOKEN_LIFETIME_HOURS),
         )
         db.add(refresh_token)
         await db.commit()
@@ -209,14 +214,14 @@ class AuthService:
             return None
         
         # Check expiration
-        if token_record.expires_at < datetime.utcnow():
+        if token_record.expires_at < _utcnow_naive():
             logger.warning("Refresh token expired")
-            token_record.revoked_at = datetime.utcnow()
+            token_record.revoked_at = _utcnow_naive()
             await db.commit()
             return None
         
         # Revoke old token (single-use rotation)
-        token_record.revoked_at = datetime.utcnow()
+        token_record.revoked_at = _utcnow_naive()
         
         # Get user
         result = await db.execute(
@@ -267,7 +272,7 @@ class AuthService:
                 RefreshToken.token_hash == token_hash,
                 RefreshToken.revoked_at.is_(None),
             )
-            .values(revoked_at=datetime.utcnow())
+            .values(revoked_at=_utcnow_naive())
         )
         
         await db.commit()

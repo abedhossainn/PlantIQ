@@ -1,0 +1,364 @@
+{
+  "document_name": "COMMON Module 3 Characteristics of LNG",
+  "total_sections": 51,
+  "created_at": "2026-01-30T20:37:37.035438Z",
+  "sections": [
+    {
+      "section_id": "section_001",
+      "heading": "Operations Field Technician Self-Study Module / COMMON AREA",
+      "file": "section_001.md",
+      "checklist": "section_001_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_002",
+      "heading": "CONTENTS",
+      "file": "section_002.md",
+      "checklist": "section_002_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_003",
+      "heading": "Characteristics of LNG (Liquefied Natural Gas) / LIST OF FIGURES",
+      "file": "section_003.md",
+      "checklist": "section_003_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_004",
+      "heading": "MODULE 3 OVERVIEW",
+      "file": "section_004.md",
+      "checklist": "section_004_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_005",
+      "heading": "Learning Objectives for this Self-Study Module",
+      "file": "section_005.md",
+      "checklist": "section_005_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_006",
+      "heading": "Module Layout",
+      "file": "section_006.md",
+      "checklist": "section_006_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_007",
+      "heading": "LEGEND",
+      "file": "section_007.md",
+      "checklist": "section_007_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_008",
+      "heading": "NOTE",
+      "file": "section_008.md",
+      "checklist": "section_008_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_009",
+      "heading": "CAUTION!",
+      "file": "section_009.md",
+      "checklist": "section_009_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_010",
+      "heading": "WARNING!",
+      "file": "section_010.md",
+      "checklist": "section_010_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_011",
+      "heading": "Environmental Information",
+      "file": "section_011.md",
+      "checklist": "section_011_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_012",
+      "heading": "Glossary of Terms",
+      "file": "section_012.md",
+      "checklist": "section_012_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_013",
+      "heading": "INTRODUCTION",
+      "file": "section_013.md",
+      "checklist": "section_013_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_014",
+      "heading": "SAFETY NOTE",
+      "file": "section_014.md",
+      "checklist": "section_014_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_015",
+      "heading": "HYDROCARBONS",
+      "file": "section_015.md",
+      "checklist": "section_015_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_016",
+      "heading": "Physical Properties of Hydrocarbons",
+      "file": "section_016.md",
+      "checklist": "section_016_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_017",
+      "heading": "Learning Objective 1",
+      "file": "section_017.md",
+      "checklist": "section_017_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_018",
+      "heading": "Learning Objective 2",
+      "file": "section_018.md",
+      "checklist": "section_018_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_019",
+      "heading": "Vapor Pressure and Temperature / Boiling Point and Vapor Pressure / Specific Gravity",
+      "file": "section_019.md",
+      "checklist": "section_019_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_020",
+      "heading": "States of Matter",
+      "file": "section_020.md",
+      "checklist": "section_020_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_021",
+      "heading": "Learning Objective 3",
+      "file": "section_021.md",
+      "checklist": "section_021_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_022",
+      "heading": "Properties of Gases",
+      "file": "section_022.md",
+      "checklist": "section_022_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_023",
+      "heading": "Boyle's Law",
+      "file": "section_023.md",
+      "checklist": "section_023_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_024",
+      "heading": "Charles' Law",
+      "file": "section_024.md",
+      "checklist": "section_024_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_025",
+      "heading": "Combined Gas Law",
+      "file": "section_025.md",
+      "checklist": "section_025_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_026",
+      "heading": "Liquefied Natural Gas (LNG) Properties",
+      "file": "section_026.md",
+      "checklist": "section_026_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_027",
+      "heading": "LNG FIRE HAZARDS",
+      "file": "section_027.md",
+      "checklist": "section_027_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_028",
+      "heading": "Understanding LNG Fire Hazards",
+      "file": "section_028.md",
+      "checklist": "section_028_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_029",
+      "heading": "Flammability Range",
+      "file": "section_029.md",
+      "checklist": "section_029_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_030",
+      "heading": "Learning Objective 6",
+      "file": "section_030.md",
+      "checklist": "section_030_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_031",
+      "heading": "Flammability Comparison",
+      "file": "section_031.md",
+      "checklist": "section_031_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_032",
+      "heading": "Ignition and Auto Ignition",
+      "file": "section_032.md",
+      "checklist": "section_032_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_033",
+      "heading": "Potential Hazards",
+      "file": "section_033.md",
+      "checklist": "section_033_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_034",
+      "heading": "Vapor Cloud Fire",
+      "file": "section_034.md",
+      "checklist": "section_034_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_035",
+      "heading": "NOTE",
+      "file": "section_035.md",
+      "checklist": "section_035_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_036",
+      "heading": "Pool Fire",
+      "file": "section_036.md",
+      "checklist": "section_036_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_037",
+      "heading": "NOTE",
+      "file": "section_037.md",
+      "checklist": "section_037_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_038",
+      "heading": "Calculating Who is at Risk",
+      "file": "section_038.md",
+      "checklist": "section_038_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_039",
+      "heading": "Fire Hazards Summary",
+      "file": "section_039.md",
+      "checklist": "section_039_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_040",
+      "heading": "Types of LNG Hazards",
+      "file": "section_040.md",
+      "checklist": "section_040_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_041",
+      "heading": "Explosion",
+      "file": "section_041.md",
+      "checklist": "section_041_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_042",
+      "heading": "Vapor Clouds",
+      "file": "section_042.md",
+      "checklist": "section_042_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_043",
+      "heading": "Cryogenic Burns",
+      "file": "section_043.md",
+      "checklist": "section_043_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_044",
+      "heading": "PPE",
+      "file": "section_044.md",
+      "checklist": "section_044_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_045",
+      "heading": "Severity Identification",
+      "file": "section_045.md",
+      "checklist": "section_045_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_046",
+      "heading": "Emergency Action Steps",
+      "file": "section_046.md",
+      "checklist": "section_046_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_047",
+      "heading": "Handling Cryogenic Liquids",
+      "file": "section_047.md",
+      "checklist": "section_047_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_048",
+      "heading": "Rollover",
+      "file": "section_048.md",
+      "checklist": "section_048_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_049",
+      "heading": "Rapid Phase Transition",
+      "file": "section_049.md",
+      "checklist": "section_049_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_050",
+      "heading": "MODULE SUMMARY / What You Have Learned...",
+      "file": "section_050.md",
+      "checklist": "section_050_checklist.json",
+      "status": "PENDING"
+    },
+    {
+      "section_id": "section_051",
+      "heading": "Notes",
+      "file": "section_051.md",
+      "checklist": "section_051_checklist.json",
+      "status": "PENDING"
+    }
+  ]
+}

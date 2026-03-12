@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 POSTGREST_URL="${POSTGREST_URL:-http://localhost:3001}"
-FASTAPI_URL="${FASTAPI_URL:-http://localhost:8000}"
+FASTAPI_URL="${FASTAPI_URL:-http://localhost:8001}"
 JWT_TOKEN=""
 
 echo "=================================================="

@@ -72,7 +72,7 @@ CREATE TABLE documents (
     status VARCHAR(50) NOT NULL CHECK (status IN (
         'pending', 'uploading', 'extracting', 'vlm-validating',
         'validation-complete', 'in-review', 'review-complete',
-        'approved', 'rejected'
+      'approved', 'rejected', 'failed'
     )),
     total_pages INTEGER,
     total_sections INTEGER,

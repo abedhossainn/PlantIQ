@@ -53,22 +53,16 @@ def test_jwt_operations():
     print(f"✅ Token created: {token[:50]}...")
     
     # Validate token
-    try:
-        payload = jwt_mgr.verify_token(token)
-        assert str(test_user_id) == payload["sub"]
-        assert payload["role"] == "reviewer"
-        assert payload["email"] == "test@plantig.local"
-        assert payload["iss"] == "plantig-auth"
-        assert payload["aud"] == "plantig"
-        print("✅ Token validation passed")
-        print(f"   User ID: {payload['sub']}")
-        print(f"   Role: {payload['role']}")
-        print(f"   Scopes: {payload['scope']}")
-    except Exception as e:
-        print(f"❌ Token validation failed: {e}")
-        return False
-    
-    return True
+    payload = jwt_mgr.verify_token(token)
+    assert str(test_user_id) == payload["sub"]
+    assert payload["role"] == "reviewer"
+    assert payload["email"] == "test@plantig.local"
+    assert payload["iss"] == "plantig-auth"
+    assert payload["aud"] == "plantig"
+    print("✅ Token validation passed")
+    print(f"   User ID: {payload['sub']}")
+    print(f"   Role: {payload['role']}")
+    print(f"   Scopes: {payload['scope']}")
 
 
 async def test_ldap_authentication():
@@ -85,18 +79,14 @@ async def test_ldap_authentication():
         print(f"   Full name: {result.full_name}")
         print(f"   Department: {result.department}")
     else:
-        print("❌ Authentication failed")
-        return False
+        raise AssertionError("Authentication failed")
     
     # Test failed authentication
     result = await ldap.authenticate("admin", "wrong_password")
     if result is None:
         print("✅ Failed authentication correctly rejected")
     else:
-        print("❌ Failed authentication was accepted (should have been rejected)")
-        return False
-    
-    return True
+        raise AssertionError("Failed authentication was accepted (should have been rejected)")
 
 
 async def main():
@@ -106,10 +96,18 @@ async def main():
     print("=" * 60)
     
     # Test JWT operations
-    jwt_ok = test_jwt_operations()
+    try:
+        test_jwt_operations()
+        jwt_ok = True
+    except Exception:
+        jwt_ok = False
     
     # Test LDAP authentication
-    ldap_ok = await test_ldap_authentication()
+    try:
+        await test_ldap_authentication()
+        ldap_ok = True
+    except Exception:
+        ldap_ok = False
     
     # Summary
     print("\n" + "=" * 60)

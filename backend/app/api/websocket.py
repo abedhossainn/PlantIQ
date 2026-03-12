@@ -42,14 +42,6 @@ async def check_document_access(document_id: str, user_id: uuid.UUID, user_role:
             }
             db_role = role_map.get(user_role, "plantig_user")
             await session.execute(text(f"SET LOCAL ROLE {db_role}"))
-            await session.execute(
-                text("SET LOCAL request.jwt.claims.sub = :user_id"),
-                {"user_id": str(user_id)}
-            )
-            await session.execute(
-                text("SET LOCAL request.jwt.claims.role = :role"),
-                {"role": user_role}
-            )
             
             # Check if document exists and user has access (RLS will filter)
             result = await session.execute(

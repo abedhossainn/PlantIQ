@@ -1,9 +1,10 @@
 """
 Pydantic schemas for authentication requests and responses.
 """
-from pydantic import BaseModel, EmailStr, Field, UUID4
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
+from uuid import UUID
 
 
 class LoginRequest(BaseModel):
@@ -21,9 +22,9 @@ class TokenResponse(BaseModel):
 
 class UserInfo(BaseModel):
     """Current authenticated user information."""
-    id: UUID4
+    id: UUID
     username: str
-    email: EmailStr
+    email: str
     full_name: str
     role: str
     department: Optional[str]

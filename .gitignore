@@ -35,8 +35,7 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
-data/artifacts/*
-!data/artifacts/.gitkeep
+backend/data
 data/indexes/*
 !data/indexes/.gitkeep
 
@@ -94,11 +93,14 @@ T010_COMPLETION_SUMMARY.md
 COMPLETION_SUMMARY_T004_T005.md
 COMPLETION_SUMMARY_T006.md
 SECURITY_FIXES_T012.md
+REGRESSION_T-015.md
 
 # === Capstone Internal Documentation ===
 docs/capstone/
 docs/operations/
 docs/security/
+docs/api
+docs/architecture
 
 # === Validation & Test Scripts (Non-Essential) ===
 validate_t006.sh

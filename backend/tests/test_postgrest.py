@@ -29,7 +29,7 @@ class PostgRESTTester:
         print(f"\n🔐 Getting JWT token for user: {username}...")
         try:
             response = requests.post(
-                "http://localhost:8000/api/v1/auth/login",
+                "http://localhost:8001/api/v1/auth/login",
                 json={"username": username, "password": password}
             )
             response.raise_for_status()
@@ -247,7 +247,7 @@ def main():
     # If no token provided, try to get one from FastAPI
     if not token:
         print("⚠️  No JWT token provided")
-        print("   Attempting to get token from FastAPI (http://localhost:8000)...")
+        print("   Attempting to get token from FastAPI (http://localhost:8001)...")
         try:
             token = tester.get_token_from_fastapi()
             tester.token = token

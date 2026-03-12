@@ -76,15 +76,26 @@ class PipelineService:
         
         # Generate initial markdown path (pipeline will create it)
         markdown_path = work_dir / f"{Path(pdf_path).stem}.md"
+        if not markdown_path.exists():
+            markdown_path.write_text(
+                f"# {Path(pdf_path).stem}\n\n"
+                "Initial placeholder markdown created by backend upload workflow.\n"
+                "Replace with Docling-extracted markdown for full-quality pipeline results.\n",
+                encoding="utf-8",
+            )
         
+        pipeline_script = Path(settings.PIPELINE_SCRIPT_PATH).resolve()
+        repo_root = pipeline_script.parents[3]
+
         cmd = [
             settings.PIPELINE_PYTHON_PATH,
-            settings.PIPELINE_SCRIPT_PATH,
+            "-m",
+            "pipeline.src.cli.hitl_pipeline",
+            "run",
             "--pdf", pdf_path,
-            "--output", str(markdown_path),
-            "--work-dir", str(work_dir),
+            "--markdown", str(markdown_path),
+            "--workspace", str(work_dir),
             "--reviewer", reviewer,
-            "--document-id", document_id,
         ]
         
         # Start subprocess asynchronously
@@ -93,7 +104,7 @@ class PipelineService:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(Path(settings.PIPELINE_SCRIPT_PATH).parent.parent),
+                cwd=str(repo_root),
             )
             
             cls._active_processes[job_id] = process

@@ -1,7 +1,7 @@
 """
 JWT token utilities for RS256 signing and validation.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 import jwt
 from jwt.exceptions import InvalidTokenError
@@ -133,7 +133,7 @@ class JWTManager:
         Returns:
             Signed JWT token string
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expire = now + timedelta(minutes=self.access_token_expire_minutes)
         
         payload = {

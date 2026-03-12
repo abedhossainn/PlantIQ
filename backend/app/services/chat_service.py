@@ -6,7 +6,7 @@ Coordinates retrieval, prompt building, and LLM generation for chat queries.
 import logging
 import uuid
 from typing import List, Optional, AsyncIterator
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -124,7 +124,7 @@ Guidelines:
             conversation_id=UUID(conversation_id),
             content=response_text,
             citations=citations,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     @classmethod

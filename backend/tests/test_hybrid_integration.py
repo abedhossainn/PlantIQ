@@ -6,7 +6,7 @@ from __future__ import annotations
 import io
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -59,8 +59,8 @@ class FakeAsyncSession:
                 "id": str(params["id"]),
                 "user_id": str(params["user_id"]),
                 "title": params["title"],
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
             }
             return FakeResult(None)
 
@@ -77,7 +77,7 @@ class FakeAsyncSession:
             return FakeResult(None)
 
         if "insert into documents" in sql:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             self.documents[str(params["id"])] = {
                 "id": str(params["id"]),
                 "title": params["title"],
@@ -103,7 +103,7 @@ class FakeAsyncSession:
                 document["status"] = params["status"]
                 if "notes" in params:
                     document["notes"] = params["notes"]
-            document["updated_at"] = datetime.utcnow()
+            document["updated_at"] = datetime.now(timezone.utc)
             return FakeResult(None)
 
         if "select status, created_at, updated_at, notes from documents" in sql:
@@ -173,7 +173,7 @@ def test_chat_query_returns_citations_and_persists_messages(client: TestClient, 
 
     response = client.post(
         "/api/v1/chat/query",
-        json={"query": "What is LNG density?"},
+        json={"request": {"query": "What is LNG density?"}},
     )
 
     assert response.status_code == 200
@@ -209,7 +209,7 @@ def test_chat_stream_emits_sse_tokens_and_done_marker(client: TestClient, fake_d
     monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
     monkeypatch.setattr(chat_service_module.VLLMService, "generate_stream", fake_generate_stream)
 
-    with client.stream("POST", "/api/v1/chat/stream", json={"query": "Stream answer"}) as response:
+    with client.stream("POST", "/api/v1/chat/stream", json={"request": {"query": "Stream answer"}}) as response:
         body = "".join(response.iter_text())
 
     assert response.status_code == 200
@@ -267,7 +267,7 @@ def test_upload_document_rejects_non_pdf(client: TestClient):
 
 def test_get_document_status_maps_progress_and_stage(client: TestClient, fake_db: FakeAsyncSession):
     document_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     fake_db.documents[document_id] = {
         "id": document_id,
         "status": "vlm-validating",
@@ -301,9 +301,13 @@ def test_artifact_download_returns_file_response(client: TestClient, monkeypatch
 
 def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytest.MonkeyPatch):
     async def fake_verify_ws_token(token: str | None):
-        return str(TEST_USER_ID) if token == "valid-token" else None
+        return (TEST_USER_ID, "reviewer") if token == "valid-token" else None
+
+    async def fake_check_document_access(_document_id: str, _user_id, _user_role: str) -> bool:
+        return True
 
     monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_document_access", fake_check_document_access)
 
     with TestClient(app) as test_client:
         with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token") as websocket:
@@ -315,9 +319,13 @@ def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytes
 
 def test_chat_websocket_returns_not_implemented_for_query(monkeypatch: pytest.MonkeyPatch):
     async def fake_verify_ws_token(token: str | None):
-        return str(TEST_USER_ID) if token == "valid-token" else None
+        return (TEST_USER_ID, "reviewer") if token == "valid-token" else None
+
+    async def fake_check_conversation_access(_conversation_id: str, _user_id) -> bool:
+        return True
 
     monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_conversation_access", fake_check_conversation_access)
 
     with TestClient(app) as test_client:
         with test_client.websocket_connect("/ws/chat/conv-123?token=valid-token") as websocket:
