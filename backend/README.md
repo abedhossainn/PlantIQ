@@ -15,12 +15,7 @@ pip install -e .
 
 ### Configuration
 
-Copy `.env.example` to `.env` and configure:
-
-```bash
-cp .env.example .env
-# Edit .env with your settings
-```
+Copy the repo-root `.env.example` to the repo-root `.env` and configure shared runtime settings there. The backend reads text and vision model identifiers from the repo root so backend and pipeline stay aligned.
 
 ### Generate JWT Keys
 
@@ -143,11 +138,7 @@ This creates:
 
 ### 2. Configure Environment
 
-Copy `.env.example` to `.env` and update:
-
-```bash
-cp .env.example .env
-```
+Copy the repo-root `.env.example` to the repo-root `.env` and update the shared runtime settings there.
 
 Key variables:
 - `DATABASE_URL`: PostgreSQL connection string
@@ -491,7 +482,7 @@ QDRANT_COLLECTION=plantig_documents
 ```bash
 VLLM_HOST=localhost
 VLLM_PORT=8001
-VLLM_MODEL=Qwen2.5-32B-Instruct
+TEXT_MODEL_ID=Qwen/Qwen3-4B-Instruct
 VLLM_MAX_TOKENS=2048
 VLLM_TEMPERATURE=0.7
 ```
@@ -662,10 +653,11 @@ See `.env.example` for complete list. Key categories:
 - `QDRANT_PORT`: Qdrant server port
 - `QDRANT_COLLECTION`: Collection name for documents
 
-**vLLM:**
+**Shared model contract:**
 - `VLLM_HOST`: vLLM server host
 - `VLLM_PORT`: vLLM server port
-- `VLLM_MODEL`: Model name
+- `TEXT_MODEL_ID`: Active text model identifier (repo-root `.env` authority)
+- `VISION_MODEL_ID`: Active vision model identifier (repo-root `.env` authority)
 - `VLLM_MAX_TOKENS`: Maximum generation tokens
 - `VLLM_TEMPERATURE`: Sampling temperature
 

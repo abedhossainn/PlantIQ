@@ -8,10 +8,93 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, XCircle, AlertTriangle, ArrowLeft, FileText, Table as TableIcon, Image as ImageIcon, TrendingUp } from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, ArrowLeft, FileText, Table as TableIcon, Image as ImageIcon, TrendingUp, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { mockDocuments, mockQAGateReports } from "@/lib/mock";
-import type { QAMetric } from "@/types";
+import { getDocumentFromPipeline } from "@/lib/api";
+import { fetchArtifactJson, fastapiFetch, ApiError } from "@/lib/api";
+import type { Document, QAMetric } from "@/types";
+
+// ---------- Backend types --------------------------------------------------
+
+interface QAPreReviewMetrics {
+  citation_coverage_percent: number;
+  question_heading_compliance_percent: number;
+  table_to_bullets_ratio: number;
+  figure_description_coverage_percent: number;
+  overall_confidence_score: number;
+  critical_issues_count: number;
+  total_issues_count: number;
+  hallucination_risk_score: number;
+}
+
+interface QAPreReviewArtifact {
+  timestamp?: string;
+  decision: "approved" | "rejected" | "review";
+  metrics: QAPreReviewMetrics;
+  passed_criteria: string[];
+  failed_criteria: string[];
+  recommendations: string[];
+}
+
+interface QARescoreResponse {
+  document_id: string;
+  decision: string;
+  passed_criteria: string[];
+  failed_criteria: string[];
+  recommendations: string[];
+  metrics: QAPreReviewMetrics;
+  timestamp: string;
+}
+
+// Map backend metric key → display label and default threshold
+const METRIC_DISPLAY: Record<
+  keyof Omit<QAPreReviewMetrics, "critical_issues_count" | "total_issues_count" | "hallucination_risk_score">,
+  { name: string; threshold: number }
+> = {
+  citation_coverage_percent:            { name: "Citation Coverage",             threshold: 90 },
+  question_heading_compliance_percent:  { name: "Question Heading Compliance",   threshold: 85 },
+  table_to_bullets_ratio:               { name: "Table Facts Extraction",        threshold: 95 },
+  figure_description_coverage_percent:  { name: "Figure Description Coverage",   threshold: 100 },
+  overall_confidence_score:             { name: "Overall Confidence Score",      threshold: 80 },
+};
+
+// Map metric name keywords → which criteria strings to look for
+const METRIC_CRITERIA_KEYWORDS: Record<string, string[]> = {
+  citation_coverage_percent:            ["citation coverage", "citation"],
+  question_heading_compliance_percent:  ["question heading", "question headings"],
+  table_to_bullets_ratio:               ["table facts", "table"],
+  figure_description_coverage_percent:  ["figure", "figures described"],
+  overall_confidence_score:             ["confidence score", "confidence"],
+};
+
+function findCriterionDescription(key: string, passed: string[], failed: string[]): string | undefined {
+  const keywords = METRIC_CRITERIA_KEYWORDS[key] ?? [];
+  const allCriteria = [...passed, ...failed];
+  for (const criterion of allCriteria) {
+    if (keywords.some((kw) => criterion.toLowerCase().includes(kw))) {
+      return criterion;
+    }
+  }
+  return undefined;
+}
+
+function mapBackendMetrics(report: QAPreReviewArtifact): QAMetric[] {
+  return (Object.entries(METRIC_DISPLAY) as Array<[keyof typeof METRIC_DISPLAY, { name: string; threshold: number }]>).map(
+    ([key, { name, threshold }]) => {
+      const score = Math.round(report.metrics[key] ?? 0);
+      const status: QAMetric["status"] =
+        score >= threshold ? "pass" : score >= threshold * 0.85 ? "warning" : "fail";
+      const details = findCriterionDescription(key, report.passed_criteria ?? [], report.failed_criteria ?? []);
+      return { name, score, threshold, status, details };
+    }
+  );
+}
+
+function decisionToRecommendation(d: string): "accept" | "reject" | "review" {
+  if (d === "approved" || d === "conditional_approval") return "accept";
+  if (d === "rejected") return "reject";
+  return "review";
+}
 
 const STATUS_CONFIG = {
   pass:    { badgeClass: "text-green-400 bg-green-400/10 border-green-400/30", icon: <CheckCircle2 className="h-4 w-4" />, label: "PASS", barClass: "[&>div]:bg-green-400" },
@@ -22,8 +105,77 @@ const STATUS_CONFIG = {
 export default function QAGatesClient({ docId }: { docId: string }) {
   const router = useRouter();
 
-  const doc = mockDocuments.find((d) => d.id === docId);
-  const report = mockQAGateReports?.[docId];
+  const [doc, setDoc] = useState<Document | null>(null);
+  const [isDocLoading, setIsDocLoading] = useState(true);
+
+  // QA artifact state
+  const [metrics, setMetrics] = useState<QAMetric[]>([]);
+  const [recommendation, setRecommendation] = useState<"accept" | "reject" | "review">("review");
+  const [qaReport, setQaReport] = useState<QAPreReviewArtifact | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDocument() {
+      try {
+        const loaded = await getDocumentFromPipeline(docId);
+        if (!cancelled) {
+          setDoc(loaded);
+        }
+      } catch {
+        // noop
+      } finally {
+        if (!cancelled) {
+          setIsDocLoading(false);
+        }
+      }
+    }
+
+    void loadDocument();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
+  // Fetch QA artifact once document ID is set
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadQAReport() {
+      try {
+        const report = await fetchArtifactJson<QAPreReviewArtifact>(docId, "qa_report");
+        if (!cancelled) {
+          setQaReport(report);
+          setMetrics(mapBackendMetrics(report));
+          setRecommendation(decisionToRecommendation(report.decision));
+        }
+      } catch {
+        // No artifact yet — metrics stay empty, recommendation stays "review"
+      }
+    }
+
+    void loadQAReport();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
+  // --- Re-score and decision state ---
+  const [isRescoring, setIsRescoring] = useState(false);
+  const [rescoreError, setRescoreError] = useState<string | null>(null);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+
+  if (isDocLoading) {
+    return (
+      <AppLayout>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-muted-foreground">Loading document...</p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   if (!doc) {
     return (
@@ -35,46 +187,59 @@ export default function QAGatesClient({ docId }: { docId: string }) {
     );
   }
 
-  const metrics: QAMetric[] = report ? Object.values(report.metrics) : [];
-  const passCount = metrics.filter((m) => m.status === "pass").length;
-  const warnCount = metrics.filter((m) => m.status === "warning").length;
-  const failCount = metrics.filter((m) => m.status === "fail").length;
-  const hasFails = failCount > 0;
-  const hasWarnings = warnCount > 0;
-  const recommendation = report?.recommendation ?? "review";
+  const hasFails = metrics.some((m) => m.status === "fail");
 
-  // --- User decision persistence (overrides automated recommendation) ---
-  const [userDecision, setUserDecision] = useState<"accept" | "reject" | null>(null);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem(`plantiq-qa-decision-${docId}`);
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          setUserDecision(parsed.decision ?? null);
-        } catch { /* noop */ }
+  async function handleDecision(d: "accept" | "reject") {
+    setDecisionError(null);
+    try {
+      await fastapiFetch(`/api/v1/documents/${docId}/qa-decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: d }),
+      });
+      if (d === "accept") {
+        router.push(`/admin/documents/${docId}/approve`);
+      } else {
+        router.push("/admin/documents");
       }
-    }
-  }, [docId]);
-
-  function handleDecision(d: "accept" | "reject") {
-    setUserDecision(d);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(
-        `plantiq-qa-decision-${docId}`,
-        JSON.stringify({ decision: d, timestamp: new Date().toISOString() })
-      );
-    }
-    if (d === "accept") {
-      router.push(`/admin/documents/${docId}/approve`);
-    } else {
-      router.push("/admin/documents");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 422) {
+        setDecisionError("QA criteria not yet met. Re-score the document first, or go back and improve the content.");
+      } else {
+        setDecisionError("An unexpected error occurred. Please try again.");
+      }
     }
   }
 
-  // Effective recommendation: user override takes priority over automated result
-  const effectiveRecommendation = userDecision ?? recommendation;
+  async function handleRescore() {
+    setIsRescoring(true);
+    setRescoreError(null);
+    setDecisionError(null);
+    try {
+      const result = await fastapiFetch<QARescoreResponse>(`/api/v1/documents/${docId}/qa-rescore`, {
+        method: "POST",
+      });
+      const newMetrics = mapBackendMetrics({
+        timestamp: result.timestamp,
+        decision: result.decision as QAPreReviewArtifact["decision"],
+        metrics: result.metrics,
+        passed_criteria: result.passed_criteria,
+        failed_criteria: result.failed_criteria,
+        recommendations: result.recommendations,
+      });
+      setMetrics(newMetrics);
+      setRecommendation(decisionToRecommendation(result.decision));
+      setQaReport((prev) =>
+        prev
+          ? { ...prev, timestamp: result.timestamp, decision: result.decision as QAPreReviewArtifact["decision"], passed_criteria: result.passed_criteria, failed_criteria: result.failed_criteria }
+          : null
+      );
+    } catch {
+      setRescoreError("Re-score failed. Please try again or contact support.");
+    } finally {
+      setIsRescoring(false);
+    }
+  }
 
   const metricIcons: Record<string, React.ReactNode> = {
     "Text Accuracy": <FileText className="h-5 w-5" />,
@@ -98,8 +263,9 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               <p className="text-sm text-muted-foreground mt-0.5">{doc.title}</p>
             </div>
             <div className="text-sm text-muted-foreground">
-              Generated<br />
-              2/19/2026, 1:55:00 AM
+              {qaReport?.timestamp ? (
+                <>Generated {new Date(qaReport.timestamp).toLocaleString()}</>
+              ) : doc.uploadedAt ? new Date(doc.uploadedAt).toLocaleString() : "—"}
             </div>
           </div>
         </div>
@@ -109,72 +275,60 @@ export default function QAGatesClient({ docId }: { docId: string }) {
 
             {/* Recommendation banner */}
             <div className={`rounded-lg border p-5 flex items-center gap-4 ${
-              effectiveRecommendation === "accept"
+              recommendation === "accept"
                 ? "bg-green-400/5 border-green-400/30"
-                : effectiveRecommendation === "reject"
-                ? "bg-red-400/5 border-red-400/30"
-                : hasFails
+                : (recommendation === "reject" || hasFails)
                 ? "bg-red-400/5 border-red-400/30"
                 : "bg-amber-400/5 border-amber-400/30"
             }`}>
               <div className={`flex h-10 w-10 items-center justify-center rounded-full shrink-0 ${
-                effectiveRecommendation === "accept" ? "bg-green-400/15" : (effectiveRecommendation === "reject" || hasFails) ? "bg-red-400/15" : "bg-amber-400/15"
+                recommendation === "accept" ? "bg-green-400/15" : (recommendation === "reject" || hasFails) ? "bg-red-400/15" : "bg-amber-400/15"
               }`}>
-                {effectiveRecommendation === "accept" ? (
+                {recommendation === "accept" ? (
                   <CheckCircle2 className="h-5 w-5 text-green-400" />
-                ) : (effectiveRecommendation === "reject" || hasFails) ? (
+                ) : (recommendation === "reject" || hasFails) ? (
                   <XCircle className="h-5 w-5 text-red-400" />
                 ) : (
                   <AlertTriangle className="h-5 w-5 text-amber-400" />
                 )}
               </div>
               <div className="flex-1">
-                {effectiveRecommendation === "accept" ? (
+                {recommendation === "accept" ? (
                   <>
-                    <p className="font-bold text-green-400">
-                      Recommendation: ACCEPT
-                      {userDecision === "accept" && recommendation !== "accept" && (
-                        <span className="ml-2 text-xs font-normal text-muted-foreground">(Reviewer Override)</span>
-                      )}
-                    </p>
+                    <p className="font-bold text-green-400">Recommendation: ACCEPT</p>
                     <p className="text-sm text-muted-foreground">
-                      {userDecision === "accept" && recommendation !== "accept"
-                        ? "• Reviewer has manually overridden the automated recommendation and approved this document for ingestion."
-                        : "• All QA metrics meet or exceed configured thresholds. This document is ready for final approval."
-                      }
+                      • All QA metrics meet or exceed configured thresholds. This document is ready for final approval.
                     </p>
                   </>
-                ) : (effectiveRecommendation === "reject" || hasFails) ? (
+                ) : (recommendation === "reject" || hasFails) ? (
                   <>
                     <p className="font-bold text-red-400">Recommendation: REJECT</p>
                     <p className="text-sm text-muted-foreground">
-                      {userDecision === "reject"
-                        ? "• Reviewer has decided to reject this document. It will not be added to the RAG knowledge base."
-                        : "• One or more quality gates failed. Document requires additional processing or re-ingestion."
-                      }
+                      • One or more quality gates failed. Go back and edit the page content to address the issues, then use <strong className="text-foreground/70">Re-score Document</strong> to recompute metrics.
                     </p>
                   </>
                 ) : (
                   <>
                     <p className="font-bold text-amber-400">Recommendation: MANUAL REVIEW</p>
                     <p className="text-sm text-muted-foreground">
-                      • Some metrics have warnings. Manual review is recommended before approval.
+                      • Some metrics have warnings. Re-score after reviewing content to confirm status.
                     </p>
                   </>
                 )}
               </div>
-              {userDecision && (
-                <Badge variant="outline" className={`shrink-0 text-xs ${
-                  userDecision === "accept"
-                    ? "text-green-400 border-green-400/30 bg-green-400/10"
-                    : "text-red-400 border-red-400/30 bg-red-400/10"
-                }`}>
-                  Reviewer Decision Saved
-                </Badge>
-              )}
             </div>
 
             {/* Metric cards */}
+            {metrics.length === 0 ? (
+              <div className="rounded-lg border border-border bg-muted/20 p-6 text-center">
+                <AlertTriangle className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
+                <p className="font-medium text-muted-foreground">Automated QA metrics not available</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  The local ingestion pipeline does not produce QA metric data.
+                  Use the controls below to make a manual decision.
+                </p>
+              </div>
+            ) : (
             <div className="grid grid-cols-2 gap-6">
               {metrics.map((metric) => {
                 const cfg = STATUS_CONFIG[metric.status] ?? STATUS_CONFIG.pass;
@@ -218,6 +372,7 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                 );
               })}
             </div>
+            )}
 
             {/* Threshold Configuration */}
             <Card className="border-border overflow-hidden">
@@ -267,6 +422,13 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               </div>
             </Card>
 
+            {/* Error messages */}
+            {(decisionError || rescoreError) && (
+              <div className="rounded-lg border border-red-400/30 bg-red-400/5 px-4 py-3 text-sm text-red-400">
+                {decisionError ?? rescoreError}
+              </div>
+            )}
+
             {/* Action buttons */}
             <div className="flex items-center justify-between pt-2">
               <Button
@@ -280,18 +442,28 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               <div className="flex gap-3">
                 <Button
                   variant="outline"
+                  className="gap-2"
+                  disabled={isRescoring}
+                  onClick={() => void handleRescore()}
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRescoring ? "animate-spin" : ""}`} />
+                  {isRescoring ? "Re-scoring…" : "Re-score Document"}
+                </Button>
+                <Button
+                  variant="outline"
                   className="gap-2 border-red-400/30 text-red-400 hover:bg-red-400/10 hover:border-red-400/50"
-                  onClick={() => handleDecision("reject")}
+                  onClick={() => void handleDecision("reject")}
                 >
                   <XCircle className="h-4 w-4" />
-                  {userDecision === "reject" ? "Rejected (click to re-reject)" : "Reject Document"}
+                  Reject Document
                 </Button>
                 <Button
                   className="gap-2 font-semibold"
-                  onClick={() => handleDecision("accept")}
+                  disabled={recommendation !== "accept"}
+                  onClick={() => void handleDecision("accept")}
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  {userDecision === "accept" ? "Accepted — Go to Approval" : "Accept & Proceed to Approval"}
+                  Accept & Proceed to Approval
                 </Button>
               </div>
             </div>

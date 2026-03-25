@@ -1,6 +1,15 @@
 # Agent Orchestration Skill
 
-This skill provides comprehensive guidance for coordinating multiple specialized agents to execute complex development tasks autonomously and in parallel.
+This skill provides comprehensive guidance for coordinating multiple specialized agents to execute complex development tasks in a disciplined, plan-driven way.
+
+## Operating Guardrails
+
+- **Root-Cause First**: Coordinate work so agents investigate and solve the underlying problem before applying fixes.
+- **Clean Code Alignment**: Require clean code and clean design principles across all handoffs and work streams.
+- **Development-First Execution**: Keep implementation and validation in local, development, or staging environments unless the user explicitly confirms a move to production.
+- **Core Functionality First**: Sequence work around the critical path and must-have behavior before enhancements or polish.
+- **Plan Discipline**: Create a plan, keep agents aligned to it, and revise it only when evidence shows the plan is incomplete or wrong.
+- **Confirm Before Expanding Scope**: Verify with the user before assigning net-new features, dependencies, integrations, files, or workflows outside the original request.
 
 ## Overview
 
@@ -139,10 +148,11 @@ Each agent delivers:
 6. **Quality Assurance**: Apply quality gates before handoffs
 
 ## Related Skills
-- [Project Planning](#) - For decomposition and sequencing
-- [Code Review](#) - For quality gates
-- [Testing Automation](#) - For validation
-- [Backend/Frontend Development](#) - For implementation
+- [Project Planning](../project-planning/SKILL.md) - For decomposition and sequencing
+- [Code Review Agent](../../agents/review.agent.md) - For quality gates
+- [Testing Automation](../testing-automation/SKILL.md) - For validation
+- [Backend Development](../backend-development/SKILL.md) - For backend implementation
+- [Frontend Development](../frontend-development/SKILL.md) - For frontend implementation
 
 ## Orchestration Checklist
 

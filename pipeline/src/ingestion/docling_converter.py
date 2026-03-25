@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Convert PDF to Markdown using Docling with Qwen2.5-VL-32B-Instruct VLM
+Convert PDF to Markdown using Docling with the shared vision model from repo-root .env
 
 This script uses the Docling API to convert PDFs with high-accuracy VLM-powered
-image and table descriptions using Qwen2.5-VL-32B-Instruct.
+image and table descriptions using the configured vision model.
 
 Usage:
-    python3 docling_convert_with_qwen.py <input_pdf> <output_markdown> [--image-mode {placeholder|embedded|referenced}]
+    python3 docling_convert_with_qwen.py <input_pdf> <output_markdown> [--image-mode {placeholder|embedded|referenced|descriptions}]
 
 Example:
-    python3 docling_convert_with_qwen.py "InjestDocs/COMMON Module 3 Characteristics of LNG.pdf" output.md --image-mode placeholder
+    python3 docling_convert_with_qwen.py "InjestDocs/COMMON Module 3 Characteristics of LNG.pdf" output.md --image-mode descriptions
 """
 
 import sys
@@ -22,40 +22,54 @@ import base64
 import tempfile
 import torch
 import hashlib
+import logging
 from pathlib import Path
 from PIL import Image
 
+DEFAULT_IMAGE_MODE = "descriptions"
+
 # Import VLM infrastructure
 try:
-    from ..utils.vlm_options import VLMOptions
+    from ..utils.vlm_options import VLMOptions, get_vision_model_id
     from ..utils.progress_tracker import ProgressBar, log_operation
     VLM_INFRASTRUCTURE_AVAILABLE = True
 except ImportError:
     VLM_INFRASTRUCTURE_AVAILABLE = False
+    def get_vision_model_id() -> str:
+        return "Qwen/Qwen3-VL-4B-Instruct"
+
     print("⚠️  VLM infrastructure not available. Using basic configuration.")
 
-# Try to import docling locally for re-serialization
+# Try to import docling locally for optional re-serialization helpers.
+# These imports are not required for description-only mode, so failures
+# should not block conversion through the Docling service.
 try:
     from docling_core.types.doc import ImageRefMode
     from docling_core.transforms.serializer.markdown import MarkdownDocSerializer, MarkdownParams
     DOCLING_AVAILABLE_LOCALLY = True
 except ImportError:
     DOCLING_AVAILABLE_LOCALLY = False
-    print("⚠️  Warning: Docling library not available locally. Image mode settings may not work.")
+    ImageRefMode = None
+    MarkdownDocSerializer = None
+    MarkdownParams = None
 
-# Load Qwen2.5-VL model for image descriptions
+
+logger = logging.getLogger(__name__)
+
+# Load the configured vision-language model for image descriptions
 def _load_qwen_model(vlm_options: 'VLMOptions' = None):
-    """Load Qwen2.5-VL-32B-Instruct model from local cache"""
+    """Load the configured vision-language model from local cache."""
     try:
-        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+        from transformers import AutoModelForImageTextToText, AutoProcessor
         from qwen_vl_utils import process_vision_info
         
         # Use VLMOptions if available
         if vlm_options is None and VLM_INFRASTRUCTURE_AVAILABLE:
             vlm_options = VLMOptions.get_default("quality")
+            vlm_options.model_id = get_vision_model_id()
             vlm_options.max_new_tokens = 120  # Short descriptions
         
-        model_id = vlm_options.model_id if vlm_options else "Qwen/Qwen2.5-VL-32B-Instruct"
+        model_id = vlm_options.model_id if vlm_options else get_vision_model_id()
         
         print(f"🔄 Loading {model_id}...")
         
@@ -65,17 +79,17 @@ def _load_qwen_model(vlm_options: 'VLMOptions' = None):
                 model_id,
                 **vlm_options.get_processor_kwargs()
             )
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 **vlm_options.get_model_kwargs()
             )
         else:
             # Fallback to basic loading
             processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True, use_fast=False)
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 device_map="auto",
-                dtype="auto",
+                torch_dtype="auto",
                 trust_remote_code=True,
             )
         
@@ -83,7 +97,7 @@ def _load_qwen_model(vlm_options: 'VLMOptions' = None):
         return model, processor, process_vision_info
     except ImportError as e:
         print(f"❌ Error: Required libraries not found: {e}")
-        print("   Install with: pip install transformers qwen_vl_utils")
+        print("   Install with: pip install transformers qwen-vl-utils")
         return None, None, None
     except Exception as e:
         print(f"❌ Error loading Qwen model: {e}")
@@ -258,10 +272,11 @@ def _normalize_table_cells(md_content: str) -> str:
 def _generate_image_descriptions(
     md_content: str,
     docling_url: str = "http://localhost:5001",
-    vlm_options: 'VLMOptions' = None
+    vlm_options: 'VLMOptions' = None,
+    starting_figure_number: int = 1,
 ) -> str:
     """
-    Replace embedded images with AI-generated descriptions using Qwen2.5-VL.
+    Replace embedded images with AI-generated descriptions using the configured vision model.
     Keeps markdown clean and text-only with no external image files.
     Uses byte-level hashing to detect and skip duplicate images.
     
@@ -273,7 +288,12 @@ def _generate_image_descriptions(
     Returns:
         Modified markdown with descriptions instead of images
     """
-    model, processor, process_vision_info = _load_qwen_model(vlm_options)
+    global _qwen_model, _qwen_processor, _process_vision_info
+
+    if _qwen_model is None or _qwen_processor is None or _process_vision_info is None:
+        _qwen_model, _qwen_processor, _process_vision_info = _load_qwen_model(vlm_options)
+
+    model, processor, process_vision_info = _qwen_model, _qwen_processor, _process_vision_info
     if model is None or processor is None:
         print("⚠️  Qwen model not available, using placeholder descriptions")
         image_counter = [0]
@@ -286,7 +306,7 @@ def _generate_image_descriptions(
         pattern = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
         return re.sub(pattern, replace_with_placeholder, md_content)
     
-    image_counter = [0]
+    image_counter = [max(0, starting_figure_number - 1)]
     descriptions_cache = {}  # Cache by image hash (bytes)
     hash_to_description = {}  # Map image hash to description
     
@@ -413,15 +433,97 @@ def _generate_image_descriptions(
     return modified_content
 
 
+def export_page_markdown_map(
+    pdf_path: str,
+    image_mode: str = DEFAULT_IMAGE_MODE,
+    vlm_options: 'VLMOptions' = None,
+) -> dict[int, str]:
+    """Export exact page-scoped markdown directly from Docling provenance.
+
+    This is used for manual page review so each review unit contains only the
+    markdown generated from its source PDF page, rather than a heuristic slice
+    from the full-document markdown.
+    """
+    try:
+        from docling.document_converter import DocumentConverter
+        from docling.document_converter import PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+    except ImportError:
+        logger.warning("Local Docling package unavailable; cannot export page-scoped markdown")
+        return {}
+
+    if ImageRefMode is None:
+        logger.warning("Local Docling image modes unavailable; cannot export page-scoped markdown")
+        return {}
+
+    if image_mode == "placeholder":
+        docling_image_mode = ImageRefMode.PLACEHOLDER
+    else:
+        docling_image_mode = ImageRefMode.EMBEDDED
+
+    page_markdown_map: dict[int, str] = {}
+    figure_number = 1
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.generate_picture_images = True
+    pipeline_options.generate_page_images = False
+    pipeline_options.do_picture_description = False
+    pipeline_options.enable_remote_services = False
+    if hasattr(pipeline_options, "min_picture_page_surface_ratio"):
+        pipeline_options.min_picture_page_surface_ratio = 0
+
+    converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=pipeline_options,
+            )
+        }
+    )
+
+    try:
+        import pdfplumber
+    except ImportError:
+        logger.warning("pdfplumber unavailable; cannot determine page count for page-scoped markdown export")
+        return {}
+
+    with pdfplumber.open(pdf_path) as pdf:
+        total_pages = len(pdf.pages)
+
+    for page_no in range(1, total_pages + 1):
+        page_document = converter.convert(pdf_path, page_range=(page_no, page_no)).document
+        page_markdown = page_document.export_to_markdown(
+            image_mode=docling_image_mode,
+        )
+
+        if image_mode == "placeholder":
+            page_markdown = _convert_embedded_to_placeholders(page_markdown)
+        elif image_mode == "referenced":
+            page_markdown, _ = _extract_referenced_images(page_markdown, f"{pdf_path}.page_{page_no}.md")
+        elif image_mode == "descriptions":
+            embedded_images = len(re.findall(r'!\[[^\]]*\]\((data:image/[^)]+)\)', page_markdown))
+            page_markdown = _generate_image_descriptions(
+                page_markdown,
+                vlm_options=vlm_options,
+                starting_figure_number=figure_number,
+            )
+            figure_number += embedded_images
+
+        page_markdown = _normalize_table_cells(page_markdown)
+        page_markdown = _coalesce_consecutive_headings(page_markdown)
+        page_markdown_map[int(page_no)] = page_markdown.strip()
+
+    return page_markdown_map
+
+
 def convert_pdf_with_qwen(
     pdf_path: str,
     output_path: str,
-    image_mode: str = "placeholder",
+    image_mode: str = DEFAULT_IMAGE_MODE,
     docling_url: str = "http://localhost:5001",
     vlm_options: 'VLMOptions' = None
 ):
     """
-    Convert PDF to Markdown using Docling with Qwen2.5-VL-32B-Instruct VLM
+    Convert PDF to Markdown using Docling with the configured vision model
     
     Args:
         pdf_path: Path to input PDF
@@ -445,10 +547,16 @@ def convert_pdf_with_qwen(
             sys.exit(1)
         
         print(f"📄 Input PDF: {pdf_file.name}")
-        print(f"🎯 Using VLM: Qwen2.5-VL-32B-Instruct")
+        active_model_id = vlm_options.model_id if vlm_options else get_vision_model_id()
+        print(f"🎯 Using VLM: {active_model_id}")
         print(f"🖼️  Image mode: {image_mode}")
         print(f"🔗 Docling API: {docling_url}/v1/convert/file")
         print("\n⏳ Converting PDF (this may take a few minutes for first run)...")
+
+        if image_mode == "descriptions" and not DOCLING_AVAILABLE_LOCALLY:
+            logger.info(
+                "Local Docling serializer extras are unavailable, but description mode will proceed via the Docling service and Qwen image description generation."
+            )
         
         # Settings - focus on pipeline options for richer structured data
         options = {
@@ -549,12 +657,11 @@ def convert_pdf_with_qwen(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert PDF to Markdown with Qwen2.5-VL-32B-Instruct VLM",
+        description="Convert PDF to Markdown with the configured vision-language model",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python3 docling_convert_with_qwen.py input.pdf output.md
-  python3 docling_convert_with_qwen.py input.pdf output.md --image-mode placeholder
   python3 docling_convert_with_qwen.py input.pdf output.md --image-mode descriptions
   python3 docling_convert_with_qwen.py input.pdf output.md --image-mode referenced
         """
@@ -565,8 +672,8 @@ Examples:
     parser.add_argument(
         "--image-mode",
         choices=["placeholder", "embedded", "referenced", "descriptions"],
-        default="placeholder",
-        help="Image handling mode (default: placeholder)"
+        default=DEFAULT_IMAGE_MODE,
+        help=f"Image handling mode (default: {DEFAULT_IMAGE_MODE})"
     )
     parser.add_argument(
         "--docling-url",
@@ -589,6 +696,7 @@ Examples:
                 vlm_options = VLMOptions.from_json(args.config)
         else:
             vlm_options = VLMOptions.get_default(args.preset)
+            vlm_options.model_id = get_vision_model_id()
             vlm_options.max_new_tokens = 120  # Short image descriptions
     
     # If only one positional arg provided, use default output name

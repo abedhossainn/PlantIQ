@@ -3,14 +3,20 @@ Pipeline API Endpoints.
 
 Endpoints for document upload, pipeline control, and artifact retrieval.
 """
+import json
 import logging
+import re
 import shutil
+import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     HTTPException,
+    Request,
     status,
     UploadFile,
     File,
@@ -21,14 +27,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import UUID4
 from uuid import UUID
 
-from ..core.config import settings, get_upload_path
+from ..core.config import REPO_ROOT, settings, get_artifacts_path, get_upload_path
+from ..core.sse import create_sse_response, encode_sse_event
 from ..core.security import get_current_user_id
 from ..models.database import get_db
 from ..models.pipeline import (
+    DocumentPagesResponse,
     DocumentUploadResponse,
+    PageEvidenceResponse,
+    PageContentUpdate,
     PipelineStatusResponse,
+    QARescoreResponse,
     ReprocessRequest,
     ReprocessResponse,
+    ReviewChecklistResponse,
+    ReviewPageResponse,
+    ReviewProgressResponse,
+    ReviewChecklistItemResponse,
+    ValidationIssueResponse,
     ArtifactType,
     PipelineStatus,
 )
@@ -37,6 +53,502 @@ from ..services.pipeline_service import PipelineService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["Pipeline"])
+
+
+def _candidate_work_roots() -> list[Path]:
+    configured_root = Path(settings.PIPELINE_WORK_DIR).expanduser()
+    roots = [configured_root]
+
+    if not configured_root.is_absolute():
+        relative_root = Path(str(configured_root).lstrip("./"))
+        roots.extend(
+            [
+                REPO_ROOT / relative_root,
+                REPO_ROOT / "backend" / relative_root,
+            ]
+        )
+    elif (
+        configured_root.name == "hitl_workspace"
+        and configured_root.parent.name == "artifacts"
+        and configured_root.parent.parent.name == "data"
+    ):
+        absolute_base = configured_root.parent.parent.parent
+        roots.extend(
+            [
+                absolute_base / "backend" / "data" / "artifacts" / "hitl_workspace",
+                absolute_base.parent / "data" / "artifacts" / "hitl_workspace"
+                if absolute_base.name == "backend"
+                else absolute_base / "data" / "artifacts" / "hitl_workspace",
+            ]
+        )
+
+    roots.extend(
+        [
+            REPO_ROOT / "data" / "artifacts" / "hitl_workspace",
+            REPO_ROOT / "backend" / "data" / "artifacts" / "hitl_workspace",
+        ]
+    )
+
+    unique_roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        resolved = root.resolve(strict=False)
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_roots.append(resolved)
+
+    return unique_roots
+
+
+def _find_document_workspace(document_id: UUID4 | str, *, require_document_dir: bool = False) -> Path:
+    for root in _candidate_work_roots():
+        document_dir = root / str(document_id)
+        if document_dir.exists():
+            return document_dir
+
+    if require_document_dir:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Review workspace not found for this document",
+        )
+
+    for root in _candidate_work_roots():
+        if root.exists():
+            return root
+
+    return _candidate_work_roots()[0]
+
+
+def _find_review_workspace(document_id: UUID4 | str) -> Path:
+    work_dir = _find_document_workspace(document_id)
+    review_dirs = sorted(work_dir.glob("*_review"))
+    if review_dirs:
+        return review_dirs[0]
+
+    if work_dir not in _candidate_work_roots():
+        for root in _candidate_work_roots():
+            root_review_dirs = sorted(root.glob("*_review"))
+            if root_review_dirs:
+                return root_review_dirs[0]
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Review workspace not found for this document",
+    )
+
+
+def _find_validation_report(work_dir: Path) -> Path:
+    validation_files = sorted(work_dir.glob("*_validation.json"))
+    if validation_files:
+        return validation_files[0]
+
+    for root in _candidate_work_roots():
+        root_validation_files = sorted(root.glob("*_validation.json"))
+        if root_validation_files:
+            return root_validation_files[0]
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Validation report not found for this document",
+    )
+
+
+def _load_json_file(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _default_checklist_payload() -> dict:
+    return {
+        "question_headings": {"item": "Headings are questions", "checked": False, "notes": None},
+        "table_facts_extracted": {"item": "Table facts extracted to bullets", "checked": False, "notes": None},
+        "figure_descriptions": {"item": "Figures have text descriptions", "checked": False, "notes": None},
+        "citations_present": {"item": "Source citations included", "checked": False, "notes": None},
+        "no_hallucinations": {"item": "No AI-generated content", "checked": False, "notes": None},
+        "rag_optimized": {"item": "Follows RAG guidelines", "checked": False, "notes": None},
+    }
+
+
+def _load_checklist(checklist_path: Path) -> dict:
+    if checklist_path.exists() and checklist_path.is_file():
+        return _load_json_file(checklist_path)
+    return _default_checklist_payload()
+
+
+def _build_checklist_model(checklist_payload: dict) -> ReviewChecklistResponse:
+    merged_payload = _default_checklist_payload()
+    merged_payload.update(checklist_payload or {})
+    return ReviewChecklistResponse(**merged_payload)
+
+
+def _derive_review_status(checklist_payload: dict) -> str:
+    checked_values = [
+        bool(item.get("checked"))
+        for item in checklist_payload.values()
+        if isinstance(item, dict) and "checked" in item
+    ]
+    if not checked_values:
+        return "pending"
+    if all(checked_values):
+        return "reviewed"
+    if any(checked_values):
+        return "in-review"
+    return "pending"
+
+
+def _resolve_evidence_file(work_dir: Path, evidence_path: Optional[str]) -> Optional[Path]:
+    if not evidence_path:
+        return None
+
+    candidate = Path(evidence_path)
+    candidates = [
+        candidate,
+        work_dir / evidence_path,
+        Path(settings.PIPELINE_WORK_DIR) / evidence_path,
+        Path(settings.ARTIFACTS_DIR) / evidence_path,
+        REPO_ROOT / evidence_path,
+    ]
+
+    for item in candidates:
+        if item.exists():
+            return item.resolve()
+    return None
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    return {token for token in re.findall(r"[A-Za-z0-9]{3,}", text.lower())}
+
+
+def _derive_section_page_numbers(section_content: str, page_entries: list[dict]) -> list[int]:
+    section_tokens = _tokenize_for_overlap(section_content)
+    if not section_tokens:
+        return []
+
+    page_numbers: list[int] = []
+    for page in page_entries:
+        page_text = page.get("markdown_content") or page.get("text_preview") or ""
+        if not page_text:
+            continue
+        overlap = section_tokens & _tokenize_for_overlap(page_text)
+        if overlap:
+            page_numbers.append(int(page.get("page_number")))
+
+    return sorted(dict.fromkeys(page_numbers))
+
+
+def _ensure_page_review_manifest(review_dir: Path, work_dir: Path) -> dict:
+    manifest_path = review_dir / "page_review_manifest.json"
+    if manifest_path.exists():
+        return _load_json_file(manifest_path)
+
+    validation_path = _find_validation_report(work_dir)
+    validation_report = _load_json_file(validation_path)
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+
+    from pipeline.src.review.section_review import (  # noqa: WPS433
+        create_page_review_workspace,
+        extract_pages_from_validation,
+    )
+
+    pages = extract_pages_from_validation(validation_report, validation_report.get("document_name"))
+    create_page_review_workspace(pages, str(review_dir))
+    return _load_json_file(manifest_path)
+
+
+def _strip_embedded_html_comments(content: str) -> str:
+    return re.sub(r"<!--[\s\S]*?-->", "", content or "").strip()
+
+
+def _extract_page_heading(markdown_content: str, page_number: int) -> str:
+    for line in markdown_content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or f"Page {page_number}"
+    return f"Page {page_number}"
+
+
+def _load_page_markdown(review_dir: Path, page_entry: dict) -> str:
+    page_file = review_dir / str(page_entry.get("file") or "")
+    if page_file.exists() and page_file.is_file():
+        file_content = _strip_embedded_html_comments(page_file.read_text(encoding="utf-8"))
+        if file_content:
+            return file_content
+
+    manifest_markdown = _strip_embedded_html_comments(page_entry.get("markdown_content") or "")
+    if manifest_markdown:
+        return manifest_markdown
+
+    text_preview = (page_entry.get("text_preview") or "").strip()
+    page_number = int(page_entry.get("page_number") or 0)
+    if text_preview:
+        return f"# Page {page_number}\n\n{text_preview}".strip()
+
+    return f"# Page {page_number}".strip()
+
+
+def _build_qa_sections_from_pages(review_dir: Path, page_manifest: dict) -> list[dict]:
+    sections: list[dict] = []
+    for page_entry in page_manifest.get("pages", []):
+        page_number = int(page_entry.get("page_number") or 0)
+        markdown_content = _load_page_markdown(review_dir, page_entry)
+        sections.append(
+            {
+                "heading": _extract_page_heading(markdown_content, page_number),
+                "content": markdown_content,
+                "page_number": page_number,
+                "page_id": page_entry.get("page_id", f"page_{page_number:03d}"),
+            }
+        )
+    return sections
+
+
+def _resolve_qa_report_path(document_id: UUID4 | str, validation_path: Path) -> Path:
+    qa_report_path = get_artifacts_path(str(document_id), "qa_report")
+    if qa_report_path.exists():
+        return qa_report_path
+
+    validation_name = validation_path.name
+    if validation_name.endswith("_validation.json"):
+        return validation_path.with_name(validation_name.replace("_validation.json", "_qa_pre_review.json"))
+
+    return validation_path.with_name("qa_report.json")
+
+
+async def _get_document_status_value(document_id: UUID4, db: AsyncSession) -> Optional[str]:
+    from sqlalchemy import text as _text
+
+    result = await db.execute(
+        _text("SELECT status FROM documents WHERE id = :doc_id"),
+        {"doc_id": str(document_id)},
+    )
+    row = result.fetchone()
+    if not row:
+        return None
+    return row[0]
+
+
+def _build_page_response(
+    document_id: UUID4,
+    review_dir: Path,
+    work_dir: Path,
+    page_entry: dict,
+) -> ReviewPageResponse:
+    page_number = int(page_entry["page_number"])
+    checklist = _load_checklist(review_dir / page_entry.get("checklist", ""))
+    status_value = _derive_review_status(checklist)
+
+    evidence_payload = dict(page_entry.get("evidence") or {})
+    thumbnail_path = evidence_payload.get("thumbnail_path")
+    thumbnail_file = _resolve_evidence_file(work_dir, thumbnail_path)
+    thumbnail_url = (
+        f"/api/v1/documents/{document_id}/pages/{page_number}/thumbnail"
+        if thumbnail_file is not None
+        else None
+    )
+
+    evidence_images = []
+    if thumbnail_url:
+        evidence_images.append(thumbnail_url)
+    for image_path in page_entry.get("evidence_images") or []:
+        if image_path not in evidence_images:
+            evidence_images.append(image_path)
+
+    validation_issues = [
+        ValidationIssueResponse(**issue)
+        for issue in (page_entry.get("validation_issues") or [])
+    ]
+
+    evidence_model = PageEvidenceResponse(
+        page_number=page_number,
+        text_preview=evidence_payload.get("text_preview") or page_entry.get("text_preview") or "",
+        image_count=int(evidence_payload.get("image_count") or 0),
+        table_count=int(evidence_payload.get("table_count") or 0),
+        has_figures=bool(evidence_payload.get("has_figures")),
+        thumbnail_path=thumbnail_path,
+        thumbnail_url=thumbnail_url,
+    )
+
+    return ReviewPageResponse(
+        id=page_entry.get("page_id", f"page_{page_number:03d}"),
+        page_number=page_number,
+        status=status_value,
+        markdown_content=page_entry.get("markdown_content") or "",
+        text_preview=page_entry.get("text_preview") or evidence_model.text_preview,
+        validation_issues=validation_issues,
+        evidence_images=evidence_images,
+        evidence=evidence_model,
+        checklist=_build_checklist_model(checklist),
+    )
+
+
+def _build_review_progress(pages: list[ReviewPageResponse]) -> ReviewProgressResponse:
+    by_status: dict[str, int] = {}
+    for page in pages:
+        by_status[page.status] = by_status.get(page.status, 0) + 1
+
+    reviewed_pages = sum(count for state, count in by_status.items() if state == "reviewed")
+    total_pages = len(pages)
+
+    return ReviewProgressResponse(
+        total_pages=total_pages,
+        reviewed_pages=reviewed_pages,
+        pending_pages=total_pages - reviewed_pages,
+        completion_percentage=(reviewed_pages / total_pages * 100) if total_pages else 0.0,
+        by_status=by_status,
+    )
+
+
+@router.get("/documents")
+async def list_documents(
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List all documents with their current pipeline status.
+    Returns rows from the `documents` table ordered by upload date descending.
+    Lazily enriches NULL metadata from pipeline artifact files on first call.
+    """
+    from sqlalchemy import text as _text
+    try:
+        result = await db.execute(
+            _text("""
+                SELECT
+                    id, title, version, system, document_type,
+                    status, file_path, uploaded_by, notes,
+                    uploaded_at, updated_at,
+                    total_pages, total_sections, review_progress, qa_score,
+                    approved_by, approved_at
+                FROM documents
+                ORDER BY uploaded_at DESC
+            """)
+        )
+        rows = result.mappings().all()
+        docs = [
+            {
+                "id": str(row["id"]),
+                "title": row["title"] or f"Document {str(row['id'])[:8]}…",
+                "version": row["version"] or "1.0",
+                "system": row["system"] or "—",
+                "documentType": row["document_type"] or "PDF",
+                "status": row["status"],
+                "uploadedBy": row["uploaded_by"] or "—",
+                "uploadedAt": row["uploaded_at"].isoformat() if row["uploaded_at"] else None,
+                "notes": row["notes"],
+                "totalPages": row["total_pages"],
+                "totalSections": row["total_sections"],
+                "reviewProgress": row["review_progress"],
+                "qaScore": float(row["qa_score"]) if row["qa_score"] is not None else None,
+                "approvedBy": str(row["approved_by"]) if row["approved_by"] else None,
+                "approvedAt": row["approved_at"].isoformat() if row["approved_at"] else None,
+            }
+            for row in rows
+        ]
+        # Lazily populate NULL metadata from pipeline artifact files
+        if any(d["totalPages"] is None or d["totalSections"] is None or d["qaScore"] is None for d in docs):
+            docs = await _enrich_metadata_from_artifacts(docs, db)
+        return docs
+    except Exception as e:
+        logger.error(f"Error listing documents: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to list documents",
+        )
+
+
+async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
+    """Read pipeline artifact files to populate totalPages/totalSections/qaScore for docs with NULL metadata."""
+    import glob as _glob
+    import json as _json
+    from sqlalchemy import text as _text
+
+    root = Path(settings.PIPELINE_WORK_DIR)
+    index: dict[str, dict] = {}  # doc_name → {total_pages, total_sections, qa_score}
+
+    # Collect from manifest files (pdf_page_count)
+    for m_path in _glob.glob(str(root / "*_manifest.json")):
+        try:
+            data = _json.loads(Path(m_path).read_text())
+            name = data.get("document_name") or data.get("document", "")
+            if name:
+                index.setdefault(name, {})["total_pages"] = data.get("pdf_page_count")
+        except Exception:
+            pass
+
+    # Collect from pipeline_results files (total_sections)
+    for pr_path in _glob.glob(str(root / "*_pipeline_results.json")):
+        try:
+            data = _json.loads(Path(pr_path).read_text())
+            name = data.get("document", "")
+            if name:
+                total_sections = (data.get("stages", {}).get("review_workspace") or {}).get("total_sections")
+                if total_sections is not None:
+                    index.setdefault(name, {})["total_sections"] = total_sections
+        except Exception:
+            pass
+
+    # Collect from qa_pre_review files (overall_confidence_score)
+    for qa_path in _glob.glob(str(root / "*_qa_pre_review.json")):
+        try:
+            data = _json.loads(Path(qa_path).read_text())
+            name = data.get("document_name") or data.get("document", "")
+            if name:
+                score = (data.get("metrics") or {}).get("overall_confidence_score")
+                if score is not None:
+                    index.setdefault(name, {})["qa_score"] = score
+        except Exception:
+            pass
+
+    if not index:
+        return docs
+
+    enriched = []
+    updates: list[dict] = []
+    for doc in docs:
+        title = doc["title"]
+        meta = index.get(title, {})
+        new_doc = dict(doc)
+        changed = False
+        if doc["totalPages"] is None and "total_pages" in meta:
+            new_doc["totalPages"] = meta["total_pages"]
+            changed = True
+        if doc["totalSections"] is None and "total_sections" in meta:
+            new_doc["totalSections"] = meta["total_sections"]
+            changed = True
+        if doc["qaScore"] is None and "qa_score" in meta:
+            new_doc["qaScore"] = float(meta["qa_score"])
+            changed = True
+        if changed:
+            updates.append({
+                "doc_id": doc["id"],
+                "tp": new_doc["totalPages"],
+                "ts": new_doc["totalSections"],
+                "qs": new_doc["qaScore"],
+            })
+        enriched.append(new_doc)
+
+    # Persist to DB so future reads don't need filesystem enrichment
+    for u in updates:
+        try:
+            await db.execute(
+                _text("""
+                    UPDATE documents
+                    SET total_pages    = COALESCE(total_pages,    :tp),
+                        total_sections = COALESCE(total_sections, :ts),
+                        qa_score       = COALESCE(qa_score,       :qs),
+                        updated_at     = NOW()
+                    WHERE id = :doc_id
+                """),
+                u,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to persist metadata for {u['doc_id']}: {exc}")
+    try:
+        await db.commit()
+    except Exception as exc:
+        logger.warning(f"Failed to commit metadata updates: {exc}")
+
+    return enriched
 
 
 @router.post("/documents/upload", response_model=DocumentUploadResponse)
@@ -184,6 +696,426 @@ async def get_document_status(
         )
 
 
+@router.get("/documents/{document_id}/events")
+async def stream_document_events(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream normalized ingestion progress events as SSE."""
+    try:
+        status_info = await PipelineService.get_pipeline_status(
+            document_id=str(document_id),
+            db=db,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error streaming document events: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to stream document events",
+        )
+
+    async def event_generator():
+        async for event in PipelineService.stream_events(
+            document_id=str(document_id),
+            initial_status=status_info,
+        ):
+            yield encode_sse_event(event)
+
+    return create_sse_response(event_generator())
+
+
+@router.get("/documents/{document_id}/sections")
+async def get_document_sections(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return sections from the pipeline review workspace for a document."""
+    work_dir = _find_document_workspace(document_id, require_document_dir=True)
+    review_dir = _find_review_workspace(document_id)
+    manifest_path = review_dir / "review_manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="review_manifest.json not found",
+        )
+    try:
+        manifest = _load_json_file(manifest_path)
+        page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
+        page_entries = page_manifest.get("pages", [])
+        sections_out = []
+        for sec in manifest.get("sections", []):
+            sec_id = sec.get("section_id", "")
+            content = ""
+            content_path = review_dir / sec.get("file", "")
+            if content_path.exists():
+                content = content_path.read_text(encoding="utf-8")
+
+            checklist: dict = {}
+            checklist_path = review_dir / sec.get("checklist", "")
+            if checklist_path.exists():
+                checklist = _load_json_file(checklist_path)
+
+            page_numbers = [int(page) for page in sec.get("page_numbers", [])]
+            if not page_numbers:
+                pages_match = re.search(r"<!-- Pages: ([0-9, ]+) -->", content)
+                if pages_match:
+                    page_numbers = [
+                        int(page.strip())
+                        for page in pages_match.group(1).split(",")
+                        if page.strip().isdigit()
+                    ]
+            if not page_numbers:
+                page_numbers = _derive_section_page_numbers(content, page_entries)
+
+            page_start = page_numbers[0] if page_numbers else None
+            page_end = page_numbers[-1] if page_numbers else None
+
+            sections_out.append({
+                "id": sec_id,
+                "heading": sec.get("heading", sec_id),
+                "status": sec.get("status", "PENDING").lower(),
+                "content": content,
+                "checklist": checklist,
+                "pageRange": {"start": page_start, "end": page_end},
+                "pageNumbers": page_numbers,
+            })
+        return {"documentName": manifest.get("document_name", ""), "sections": sections_out}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error loading sections for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load document sections",
+        )
+
+
+@router.get("/documents/{document_id}/pages", response_model=DocumentPagesResponse)
+async def get_document_pages(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return page-based review units sourced from validation artifacts."""
+    del current_user_id, db
+
+    try:
+        work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        review_dir = _find_review_workspace(document_id)
+        page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
+        pages = [
+            _build_page_response(document_id, review_dir, work_dir, page_entry)
+            for page_entry in page_manifest.get("pages", [])
+        ]
+        return DocumentPagesResponse(
+            document_name=page_manifest.get("document_name", ""),
+            pages=pages,
+            progress=_build_review_progress(pages),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error loading page review units for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load document pages",
+        )
+
+
+@router.get("/documents/{document_id}/pages/{page_number}/thumbnail")
+async def get_document_page_thumbnail(
+    document_id: UUID4,
+    page_number: int,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the thumbnail image for a single review page when available."""
+    del current_user_id, db
+
+    review_dir = _find_review_workspace(document_id)
+    work_dir = _find_document_workspace(document_id, require_document_dir=True)
+    page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
+
+    page_entry = next(
+        (entry for entry in page_manifest.get("pages", []) if int(entry.get("page_number", -1)) == page_number),
+        None,
+    )
+    if page_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page review unit not found",
+        )
+
+    evidence_payload = dict(page_entry.get("evidence") or {})
+    thumbnail_file = _resolve_evidence_file(work_dir, evidence_payload.get("thumbnail_path"))
+    if thumbnail_file is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Thumbnail not found for this page",
+        )
+
+    return FileResponse(path=str(thumbnail_file), media_type="image/png", filename=thumbnail_file.name)
+
+
+@router.patch("/documents/{document_id}/pages/{page_id}/content")
+async def update_document_page_content(
+    document_id: UUID4,
+    page_id: str,
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist updated markdown content for a page review unit."""
+    del current_user_id, db
+
+    try:
+        payload = PageContentUpdate.model_validate(await request.json())
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="markdown_content is required",
+        )
+
+    review_dir = _find_review_workspace(document_id)
+    page_manifest = _ensure_page_review_manifest(review_dir, review_dir.parent)
+    page_entry = next((page for page in page_manifest.get("pages", []) if page.get("page_id") == page_id), None)
+
+    if page_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page review unit not found",
+        )
+
+    file_path = review_dir / str(page_entry.get("file") or "")
+    manifest_path = review_dir / "page_review_manifest.json"
+
+    try:
+        file_path.write_text(payload.markdown_content, encoding="utf-8")
+        page_entry["markdown_content"] = payload.markdown_content
+        manifest_path.write_text(json.dumps(page_manifest, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.error(f"Error saving page content for {document_id}/{page_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save page content",
+        )
+
+    return {"page_id": page_id, "status": "saved"}
+
+
+@router.post("/documents/{document_id}/review-complete")
+async def mark_review_complete(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark document review as complete, advancing status to review-complete."""
+    from sqlalchemy import text as _text
+    try:
+        await db.execute(
+            _text("""
+                UPDATE documents
+                SET status = 'review-complete', review_progress = 100, updated_at = NOW()
+                WHERE id = :doc_id
+            """),
+            {"doc_id": str(document_id)},
+        )
+        await db.commit()
+        return {"status": "review-complete"}
+    except Exception as exc:
+        logger.error(f"Error marking review complete for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update document status",
+        )
+
+
+@router.post("/documents/{document_id}/qa-rescore", response_model=QARescoreResponse)
+async def rescore_document_qa(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recompute QA gate results from persisted page-review artifacts."""
+    del current_user_id
+
+    try:
+        document_status = await _get_document_status_value(document_id, db)
+        if document_status is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        if document_status in {PipelineStatus.APPROVED.value, PipelineStatus.REJECTED.value}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot rescore document in {document_status} status",
+            )
+
+        if document_status not in {PipelineStatus.IN_REVIEW.value, PipelineStatus.REVIEW_COMPLETE.value}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "QA rescore is only available for documents in in-review or "
+                    "review-complete status"
+                ),
+            )
+
+        work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        review_dir = _find_review_workspace(document_id)
+        page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
+
+        validation_path = get_artifacts_path(str(document_id), "validation")
+        if not validation_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Validation artifact not found for this document",
+            )
+
+        validation_report = _load_json_file(validation_path)
+
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+
+        from pipeline.src.qa.qa_gates import (  # noqa: WPS433
+            AcceptanceCriteria,
+            compute_qa_metrics,
+            evaluate_qa_gate,
+            save_qa_report,
+        )
+
+        sections = _build_qa_sections_from_pages(review_dir, page_manifest)
+        metrics = compute_qa_metrics(sections, validation_report)
+        result = evaluate_qa_gate(metrics, AcceptanceCriteria())
+        result.document_name = page_manifest.get("document_name") or validation_report.get("document_name") or str(document_id)
+
+        qa_report_path = _resolve_qa_report_path(document_id, validation_path)
+        qa_report_path.parent.mkdir(parents=True, exist_ok=True)
+        save_qa_report(result, str(qa_report_path))
+
+        return QARescoreResponse(
+            document_id=document_id,
+            decision=result.decision,
+            passed_criteria=result.passed_criteria,
+            failed_criteria=result.failed_criteria,
+            recommendations=result.recommendations,
+            metrics=asdict(result.metrics),
+            timestamp=result.timestamp,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error rescoring QA for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to rescore QA report",
+        )
+
+
+@router.post("/documents/{document_id}/qa-decision")
+async def record_qa_decision(
+    document_id: UUID4,
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record QA gate decision (accept → in-review status; reject → rejected)."""
+    from sqlalchemy import text as _text
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    decision = payload.get("decision")
+    if decision not in ("accept", "reject"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="decision must be 'accept' or 'reject'",
+        )
+
+    if decision == "accept":
+        qa_report_path = get_artifacts_path(str(document_id), "qa_report")
+        if qa_report_path.exists() and qa_report_path.is_file():
+            qa_report = _load_json_file(qa_report_path)
+            if qa_report.get("decision") == "rejected":
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="QA criteria currently fail; rescore and resolve issues before accepting",
+                )
+
+    new_status = "in-review" if decision == "accept" else "rejected"
+    try:
+        await db.execute(
+            _text("""
+                UPDATE documents
+                SET status = :new_status, updated_at = NOW()
+                WHERE id = :doc_id
+            """),
+            {"new_status": new_status, "doc_id": str(document_id)},
+        )
+        await db.commit()
+        return {"status": new_status}
+    except Exception as exc:
+        logger.error(f"Error recording QA decision for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record QA decision",
+        )
+
+
+@router.post("/documents/{document_id}/final-approve")
+async def final_approve_document(
+    document_id: UUID4,
+    payload: dict,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record final approval or rejection decision."""
+    from sqlalchemy import text as _text
+    decision = payload.get("decision")
+    if decision not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="decision must be 'approve' or 'reject'",
+        )
+    new_status = "approved" if decision == "approve" else "rejected"
+    notes = payload.get("notes") or None
+    try:
+        await db.execute(
+            _text("""
+                UPDATE documents
+                SET status = :new_status,
+                    approved_by = :approved_by,
+                    approved_at = NOW(),
+                    notes = COALESCE(:notes, notes),
+                    updated_at = NOW()
+                WHERE id = :doc_id
+            """),
+            {
+                "new_status": new_status,
+                "approved_by": current_user_id,
+                "notes": notes,
+                "doc_id": str(document_id),
+            },
+        )
+        await db.commit()
+        return {"status": new_status}
+    except Exception as exc:
+        logger.error(f"Error recording final approval for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record approval decision",
+        )
+
+
 @router.post("/documents/{document_id}/reprocess", response_model=ReprocessResponse)
 async def reprocess_document(
     document_id: UUID4,
@@ -193,17 +1125,59 @@ async def reprocess_document(
 ):
     """
     Trigger reprocessing of a document.
-    
-    - Can reprocess entire pipeline or specific stages
-    - Requires document to be in validation-complete or failed state
-    - force=True allows reprocessing approved documents
+    Looks up the original file_path from the database row and re-runs the pipeline.
+    force=True allows reprocessing approved/rejected documents.
     """
-    # TODO: Implement reprocessing logic
-    # For now, return not implemented
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Reprocessing not yet implemented"
-    )
+    from sqlalchemy import text as _text
+    try:
+        result = await db.execute(
+            _text("SELECT status, file_path FROM documents WHERE id = :doc_id"),
+            {"doc_id": str(document_id)},
+        )
+        row = result.mappings().first()
+    except Exception as exc:
+        logger.error(f"DB lookup failed for reprocess {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to look up document",
+        )
+
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    locked_statuses = {"approved", "rejected"}
+    if row["status"] in locked_statuses and not getattr(request, "force", False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document is {row['status']}. Pass force=true to reprocess.",
+        )
+
+    pdf_path = row["file_path"]
+    if not Path(pdf_path).exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Original PDF file not found on disk",
+        )
+
+    try:
+        job_id = await PipelineService.trigger_pipeline(
+            document_id=str(document_id),
+            pdf_path=pdf_path,
+            reviewer=current_user_id,
+            db=db,
+        )
+        return ReprocessResponse(
+            document_id=document_id,
+            job_id=job_id,
+            status=PipelineStatus.EXTRACTING,
+            message=f"Reprocessing started. Job {job_id}.",
+        )
+    except Exception as exc:
+        logger.error(f"Reprocess failed for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Reprocess failed: {exc}",
+        )
 
 
 @router.get("/documents/{document_id}/artifacts/{artifact_type}")
@@ -215,7 +1189,7 @@ async def get_document_artifact(
 ):
     """
     Download document processing artifacts.
-    
+
     Available artifact types:
     - validation: Validation report (JSON)
     - manifest: Document manifest (JSON)
@@ -228,28 +1202,30 @@ async def get_document_artifact(
             document_id=str(document_id),
             artifact_type=artifact_type.value,
         )
-        
+
         if not artifact_path.exists():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Artifact {artifact_type} not found"
+                detail=f"Artifact {artifact_type} not found",
             )
-        
-        # Return file for download
+
         return FileResponse(
             path=str(artifact_path),
             filename=artifact_path.name,
-            media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream"
+            media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream",
         )
-        
+
     except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            detail=str(e),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting artifact: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve artifact"
+            detail="Failed to retrieve artifact",
         )
+

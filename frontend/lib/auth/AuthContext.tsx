@@ -2,7 +2,51 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { User } from "@/types";
-import { getUserByUsername } from "@/lib/mock";
+
+const AUTH_DISABLED = process.env.NEXT_PUBLIC_AUTH_DISABLED !== "false";
+const FASTAPI_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || "http://localhost:8000";
+const AUTH_STORAGE_KEY = "authUser";
+const TOKEN_STORAGE_KEY = "auth_token";
+
+const AUTH_DISABLED_USER: User = {
+  id: "00000000-0000-0000-0000-000000000001",
+  username: "admin",
+  email: "auth-disabled@plantiq.local",
+  fullName: "Pipeline Test User",
+  role: "admin",
+  lastLogin: null,
+  status: "active",
+  department: "Development",
+};
+
+interface LoginResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+interface BackendUserInfo {
+  id: string;
+  username: string;
+  email: string;
+  full_name: string;
+  role: "admin" | "reviewer" | "user";
+  department?: string | null;
+  scope: string[];
+}
+
+function toFrontendUser(user: BackendUserInfo): User {
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    fullName: user.full_name,
+    role: user.role,
+    lastLogin: new Date().toISOString(),
+    status: "active",
+    department: user.department ?? "Unknown",
+  };
+}
 
 interface AuthContextType {
   user: User | null;
@@ -22,47 +66,121 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Load user from localStorage on mount
   useEffect(() => {
-    const storedUser = localStorage.getItem("mockUser");
-    if (storedUser) {
+    if (AUTH_DISABLED) {
+      const authenticatedUser = {
+        ...AUTH_DISABLED_USER,
+        lastLogin: new Date().toISOString(),
+      };
+      setUser(authenticatedUser);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
+      localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      setIsLoading(false);
+      return;
+    }
+
+    const storedUser = localStorage.getItem(AUTH_STORAGE_KEY) ?? localStorage.getItem("mockUser");
+    const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+
+    if (storedUser && storedToken) {
       try {
         setUser(JSON.parse(storedUser));
       } catch (e) {
         console.error("Failed to parse stored user", e);
+        localStorage.removeItem(AUTH_STORAGE_KEY);
         localStorage.removeItem("mockUser");
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
       }
+    } else {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      localStorage.removeItem("mockUser");
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
     }
+
     setIsLoading(false);
   }, []);
 
-  const login = useCallback(async (username: string, _password: string) => {
-    // Mock authentication - in real system this would call backend API
-    // For prototype, we just check if user exists and status is active
-    const foundUser = getUserByUsername(username);
-
-    if (!foundUser) {
-      throw new Error("User not found");
+  const login = useCallback(async (username: string, password: string) => {
+    if (AUTH_DISABLED) {
+      const authenticatedUser = {
+        ...AUTH_DISABLED_USER,
+        username: username || AUTH_DISABLED_USER.username,
+        lastLogin: new Date().toISOString(),
+      };
+      setUser(authenticatedUser);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
+      localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      return;
     }
 
-    if (foundUser.status === "disabled") {
-      throw new Error("User account is disabled");
+    const loginResponse = await fetch(`${FASTAPI_URL}/api/v1/auth/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({
+        request: {
+          username,
+          password,
+        },
+      }),
+    });
+
+    if (!loginResponse.ok) {
+      let message = "Authentication failed";
+
+      try {
+        const errorData = await loginResponse.json();
+        message = errorData?.detail ?? message;
+      } catch {
+        // Ignore JSON parse errors and keep fallback message.
+      }
+
+      throw new Error(message);
     }
 
-    // Update last login timestamp
-    const authenticatedUser = {
-      ...foundUser,
-      lastLogin: new Date().toISOString(),
-    };
+    const tokenData = (await loginResponse.json()) as LoginResponse;
+    localStorage.setItem(TOKEN_STORAGE_KEY, tokenData.access_token);
+
+    const meResponse = await fetch(`${FASTAPI_URL}/api/v1/auth/me`, {
+      headers: {
+        Authorization: `Bearer ${tokenData.access_token}`,
+      },
+      credentials: "include",
+    });
+
+    if (!meResponse.ok) {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      throw new Error("Authenticated, but failed to load user profile");
+    }
+
+    const meData = (await meResponse.json()) as BackendUserInfo;
+    const authenticatedUser = toFrontendUser(meData);
 
     setUser(authenticatedUser);
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
     localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
-
-    // Simulate network delay
-    await new Promise((resolve) => setTimeout(resolve, 500));
   }, []);
 
   const logout = useCallback(() => {
+    if (AUTH_DISABLED) {
+      const authenticatedUser = {
+        ...AUTH_DISABLED_USER,
+        lastLogin: new Date().toISOString(),
+      };
+      setUser(authenticatedUser);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
+      localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      return;
+    }
+
     setUser(null);
+    localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem("mockUser");
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
   }, []);
 
   const value: AuthContextType = {

@@ -1,5 +1,5 @@
 /**
- * Central export for all mock data
+ * Central export for local fixture data.
  */
 
 export * from "./users";

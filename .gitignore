@@ -58,6 +58,7 @@ pipeline/dist/
 *.swo
 *.sublime-project
 *.sublime-workspace
+.github/
 
 # === Operating System ===
 .DS_Store
@@ -75,6 +76,12 @@ htmlcov/
 .pytest_cache/
 .nyc_output/
 coverage/
+pipeline/tests/
+validation_evidence/
+data/*
+backend/tests/
+backend/test_keys/
+backend/scripts/
 
 # === Temporary Files ===
 *.tmp
@@ -121,4 +128,3 @@ validate_t004_t005.sh
 !next.config.ts
 !postcss.config.mjs
 !vitest.config.ts
-!.github/copilot-instructions.md

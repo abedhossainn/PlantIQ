@@ -8,14 +8,14 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Users, UserPlus, Mail, Building2, Clock, ShieldCheck, User2, Eye } from "lucide-react";
-import { mockUsers } from "@/lib/mock";
+import { mockUsers as fixtureUsers } from "@/lib/fixtures";
 import { RoleBadge } from "@/components/shared/RoleBadge";
 import type { User } from "@/types";
 
 type Role = "admin" | "reviewer" | "user";
 
 export default function UsersPage() {
-  const [userList, setUserList] = useState<User[]>(mockUsers);
+  const [userList, setUserList] = useState<User[]>(fixtureUsers);
   const [changedRoles, setChangedRoles] = useState<Record<string, Role>>({});
   const [toggledStatuses, setToggledStatuses] = useState<Record<string, "active" | "disabled">>({});
 

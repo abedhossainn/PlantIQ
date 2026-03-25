@@ -2,6 +2,15 @@
 
 This skill provides comprehensive guidance for containerization, deployment automation, CI/CD pipelines, and infrastructure management for the RAG chatbot.
 
+## Operating Guardrails
+
+- **Root-Cause First**: Investigate the true cause of environment, build, or deployment failures before changing infrastructure.
+- **Clean Infrastructure Focus**: Favor simple, readable, modular infrastructure code and automation.
+- **Development-First Execution**: Default to local, development, and staging workflows. Treat production rollout as a separate step that requires explicit user confirmation.
+- **Core Functionality First**: Stabilize the core development and delivery path before adding operational extras or advanced optimization.
+- **Plan Discipline**: Define the deployment or remediation plan and stick to it unless evidence justifies a change.
+- **Confirm Before Expanding Scope**: Verify with the user before introducing new infrastructure, services, dependencies, or operational workflows.
+
 ## Overview
 
 The DevOps & Infrastructure skill encompasses:
@@ -17,10 +26,10 @@ The DevOps & Infrastructure skill encompasses:
 
 ### Multi-Stage Dockerfile
 ```dockerfile
-# Build stage - minimize production image size
+# Build stage - minimize final image size
 FROM python:3.11 as builder
 
-# Runtime stage - small, secure production image
+# Runtime stage - small, secure runtime image
 FROM python:3.11-slim
 ```
 
@@ -56,12 +65,12 @@ FROM python:3.11-slim
 
 ### Environment Variables
 - `.env.example`: Template with safe defaults
-- GitHub Secrets: Production credentials
+- GitHub Secrets: protected environment credentials
 - `.env.local`: Development overrides (gitignored)
 - Never commit `.env` files
 
 ### Secrets Management
-- GitHub Secrets for production
+- GitHub Secrets for protected environments
 - .env for local development
 - Encrypted vaults for enterprise
 
@@ -105,10 +114,10 @@ FROM python:3.11-slim
 6. **Scaling**: Consult for Kubernetes resource planning
 
 ## Related Skills
-- [Backend Development](#) - For API health endpoints
-- [Frontend Development](#) - For frontend build optimization
-- [Testing Automation](#) - For CI test execution
-- [Security & Quality](#) - For security best practices
+- [Backend Development](../backend-development/SKILL.md) - For API health endpoints
+- [Frontend Development](../frontend-development/SKILL.md) - For frontend build optimization
+- [Testing Automation](../testing-automation/SKILL.md) - For CI test execution
+- [Security & Quality](../security-quality/SKILL.md) - For security best practices
 
 ## Best Practices
 

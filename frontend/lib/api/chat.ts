@@ -1,6 +1,12 @@
 /**
  * Chat API Client
- * Handles RAG chat queries with streaming and citation support
+ * Handles RAG chat queries with streaming and citation support.
+ *
+ * SSE contract (matches backend/app/models/sse.py):
+ *   event: token   → ChatTokenSSEEvent
+ *   event: citation → ChatCitationSSEEvent
+ *   event: complete → ChatCompleteSSEEvent  (terminal)
+ *   event: error    → ChatErrorSSEEvent     (terminal)
  */
 
 import { fastapiFetch, getAuthToken } from './client';
@@ -9,6 +15,7 @@ import { fastapiFetch, getAuthToken } from './client';
 // Type Definitions
 // ============================================================================
 
+/** Citation as returned by the backend (snake_case). */
 export interface Citation {
   id: string;
   document_id: string;
@@ -16,14 +23,14 @@ export interface Citation {
   section_heading?: string;
   page_number?: number;
   excerpt: string;
-  relevance_score: number; // 0.0-1.0
+  relevance_score: number;
 }
 
 export interface ChatQueryRequest {
   query: string;
   conversation_id?: string;
-  document_filters?: string[]; // Filter by document UUIDs
-  system_filters?: string[]; // Filter by system type
+  document_filters?: string[];
+  system_filters?: string[];
   stream?: boolean;
 }
 
@@ -36,22 +43,49 @@ export interface ChatQueryResponse {
 }
 
 // ============================================================================
+// SSE Event Types  (match backend/app/models/sse.py)
+// ============================================================================
+
+export interface ChatTokenSSEEvent {
+  type: 'token';
+  token: string;
+  content: string;
+  message_id: string;
+  conversation_id: string;
+}
+
+export interface ChatCitationSSEEvent {
+  type: 'citation';
+  citation: Citation;
+  message_id: string;
+  conversation_id: string;
+}
+
+export interface ChatCompleteSSEEvent {
+  type: 'complete';
+  message_id: string;
+  conversation_id: string;
+}
+
+export interface ChatErrorSSEEvent {
+  type: 'error';
+  error: string;
+  message_id?: string;
+  conversation_id?: string;
+}
+
+export type ChatStreamEvent =
+  | ChatTokenSSEEvent
+  | ChatCitationSSEEvent
+  | ChatCompleteSSEEvent
+  | ChatErrorSSEEvent;
+
+// ============================================================================
 // API Functions
 // ============================================================================
 
 /**
- * Submit a RAG chat query (non-streaming)
- * 
- * Process flow:
- * 1. Generate query embedding
- * 2. Search Qdrant for relevant chunks
- * 3. Build RAG prompt with context
- * 4. Generate LLM response
- * 5. Save to database
- * 6. Return complete response with citations
- * 
- * @param request Chat query request
- * @returns Complete response with citations
+ * Submit a RAG chat query (non-streaming).
  */
 export async function submitChatQuery(
   request: ChatQueryRequest
@@ -66,16 +100,87 @@ export async function submitChatQuery(
 }
 
 /**
- * Submit a RAG chat query with streaming response (SSE)
- * 
- * Returns an async generator that yields tokens as they're generated
- * 
- * @param request Chat query request
- * @returns Async generator yielding response tokens
+ * Parse a raw SSE block (text between two \n\n delimiters) into a typed
+ * ChatStreamEvent.
+ *
+ * Backend format per block:
+ *   event: <name>\ndata: <json>\n
+ *
+ * The JSON payload also contains an "event" field that mirrors the SSE event
+ * name — we prefer the SSE event: line but fall back to the payload field.
+ */
+function parseSSEBlock(block: string): ChatStreamEvent | null {
+  let eventName = 'message';
+  let dataLine = '';
+
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event: ')) {
+      eventName = line.slice(7).trim();
+    } else if (line.startsWith('data: ')) {
+      dataLine = line.slice(6).trim();
+    }
+  }
+
+  if (!dataLine || dataLine === '[DONE]') return null;
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(dataLine);
+  } catch {
+    return null;
+  }
+
+  // Resolve event name: SSE event: line takes priority over payload field.
+  const resolved = eventName !== 'message' ? eventName : String(parsed.event ?? 'message');
+
+  switch (resolved) {
+    case 'token':
+      return {
+        type: 'token',
+        token: String(parsed.token ?? parsed.content ?? ''),
+        content: String(parsed.content ?? parsed.token ?? ''),
+        message_id: String(parsed.message_id ?? ''),
+        conversation_id: String(parsed.conversation_id ?? ''),
+      };
+    case 'citation':
+      return {
+        type: 'citation',
+        citation: parsed.citation as Citation,
+        message_id: String(parsed.message_id ?? ''),
+        conversation_id: String(parsed.conversation_id ?? ''),
+      };
+    case 'complete':
+      return {
+        type: 'complete',
+        message_id: String(parsed.message_id ?? ''),
+        conversation_id: String(parsed.conversation_id ?? ''),
+      };
+    case 'error':
+      return {
+        type: 'error',
+        error: String(parsed.error ?? 'Unknown streaming error'),
+        message_id: parsed.message_id != null ? String(parsed.message_id) : undefined,
+        conversation_id: parsed.conversation_id != null ? String(parsed.conversation_id) : undefined,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Submit a RAG chat query with streaming response (SSE).
+ *
+ * Yields typed ChatStreamEvent objects:
+ *   - token:    incremental text chunk
+ *   - citation: source reference (emitted after tokens, before complete)
+ *   - complete: terminal — stream finished successfully
+ *   - error:    terminal — stream failed
+ *
+ * Callers should stop iterating after receiving complete or error.
  */
 export async function* streamChatQuery(
   request: ChatQueryRequest
-): AsyncGenerator<string, void, unknown> {
+): AsyncGenerator<ChatStreamEvent, void, unknown> {
   const token = getAuthToken();
 
   const headers: Record<string, string> = {
@@ -91,86 +196,54 @@ export async function* streamChatQuery(
     {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        ...request,
-        stream: true,
-      }),
+      body: JSON.stringify({ ...request, stream: true }),
     }
   );
 
   if (!response.ok) {
-    throw new Error(`Chat streaming failed: ${response.statusText}`);
+    yield { type: 'error', error: `Chat streaming failed: ${response.statusText}` };
+    return;
   }
 
   if (!response.body) {
-    throw new Error('Response body is null');
+    yield { type: 'error', error: 'Response body is null' };
+    return;
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
-  const processEvent = async function* (event: string): AsyncGenerator<string, void, unknown> {
-    const lines = event.split('\n');
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) {
-        continue;
-      }
-
-      const data = line.slice(6);
-
-      if (data === '[DONE]') {
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(data);
-
-        if (parsed.error) {
-          throw new Error(parsed.error);
-        }
-
-        if (parsed.content || typeof parsed === 'string') {
-          yield typeof parsed === 'string' ? parsed : parsed.content;
-        }
-      } catch (error) {
-        if (data && data !== '[DONE]') {
-          yield data;
-        }
-      }
-    }
-  };
-
   try {
     while (true) {
       const { done, value } = await reader.read();
-      
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
 
       let separatorIndex = buffer.indexOf('\n\n');
       while (separatorIndex !== -1) {
-        const event = buffer.slice(0, separatorIndex);
+        const block = buffer.slice(0, separatorIndex);
         buffer = buffer.slice(separatorIndex + 2);
 
-        for await (const token of processEvent(event)) {
-          yield token;
-        }
-
-        if (event.includes('data: [DONE]')) {
-          return;
+        if (block.trim()) {
+          const event = parseSSEBlock(block);
+          if (event) {
+            yield event;
+            if (event.type === 'complete' || event.type === 'error') {
+              return;
+            }
+          }
         }
 
         separatorIndex = buffer.indexOf('\n\n');
       }
     }
 
+    // Drain any remaining data in the buffer.
     if (buffer.trim()) {
-      for await (const token of processEvent(buffer.trim())) {
-        yield token;
-      }
+      const event = parseSSEBlock(buffer.trim());
+      if (event) yield event;
     }
   } finally {
     reader.releaseLock();
@@ -178,23 +251,30 @@ export async function* streamChatQuery(
 }
 
 /**
- * Helper to consume streaming response and build complete message
- * 
- * @param request Chat query request
- * @param onToken Callback for each token received
- * @returns Complete message content
+ * Helper to consume a streaming chat response into a complete string.
+ *
+ * @param request    Chat query request
+ * @param onToken    Called with each streamed token string
+ * @param onCitation Called with each citation received from the stream
+ * @returns Complete accumulated text content
  */
 export async function consumeStreamingResponse(
   request: ChatQueryRequest,
-  onToken?: (token: string) => void
+  onToken?: (token: string) => void,
+  onCitation?: (citation: Citation) => void
 ): Promise<string> {
   let fullContent = '';
 
-  for await (const token of streamChatQuery(request)) {
-    fullContent += token;
-    if (onToken) {
-      onToken(token);
+  for await (const event of streamChatQuery(request)) {
+    if (event.type === 'token') {
+      fullContent += event.content;
+      onToken?.(event.content);
+    } else if (event.type === 'citation') {
+      onCitation?.(event.citation);
+    } else if (event.type === 'error') {
+      throw new Error(event.error);
     }
+    // 'complete' — stream ended cleanly; nothing to do.
   }
 
   return fullContent;

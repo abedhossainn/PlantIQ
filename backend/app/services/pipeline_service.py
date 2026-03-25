@@ -1,28 +1,23 @@
-"""
-Pipeline Service - Manages HITL pipeline subprocess execution.
-
-This service orchestrates the document processing pipeline as a subprocess
-and tracks its status through file system monitoring and database updates.
-"""
+"""Pipeline Service - Manages HITL pipeline subprocess execution."""
 import asyncio
 import logging
 import uuid
 from uuid import UUID
-import json
 from pathlib import Path
-from typing import Optional, Dict, Any
-from datetime import datetime
+from typing import Optional, Dict, Any, AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
 
 from ..core.config import settings, get_artifacts_path
 from ..models.pipeline import (
     PipelineStatus,
     PipelineStatusResponse,
-    PipelineProgressUpdate,
-    PipelineStageComplete,
-    PipelineError,
-    PipelineComplete,
+)
+from ..models.sse import (
+    IngestionCompleteEvent,
+    IngestionErrorEvent,
+    IngestionJobAcceptedEvent,
+    IngestionProgressEvent,
+    IngestionStageCompleteEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +29,34 @@ class PipelineService:
     # Track active pipeline processes
     _active_processes: Dict[str, asyncio.subprocess.Process] = {}
     _status_cache: Dict[str, PipelineStatusResponse] = {}
+    _job_ids_by_document: Dict[str, str] = {}
+    _event_history: Dict[str, list[dict[str, Any]]] = {}
+    _event_subscribers: Dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+
+    _status_progress_map = {
+        PipelineStatus.PENDING.value: 0,
+        PipelineStatus.UPLOADING.value: 10,
+        PipelineStatus.EXTRACTING.value: 30,
+        PipelineStatus.VLM_VALIDATING.value: 60,
+        PipelineStatus.VALIDATION_COMPLETE.value: 100,
+        PipelineStatus.IN_REVIEW.value: 100,
+        PipelineStatus.REVIEW_COMPLETE.value: 100,
+        PipelineStatus.APPROVED.value: 100,
+        PipelineStatus.REJECTED.value: 100,
+        PipelineStatus.FAILED.value: 0,
+    }
+
+    _status_stage_map = {
+        PipelineStatus.UPLOADING.value: "upload",
+        PipelineStatus.EXTRACTING.value: "extraction",
+        PipelineStatus.VLM_VALIDATING.value: "validation",
+        PipelineStatus.VALIDATION_COMPLETE.value: "validation",
+        PipelineStatus.IN_REVIEW.value: "review",
+        PipelineStatus.REVIEW_COMPLETE.value: "review",
+        PipelineStatus.APPROVED.value: "approved",
+        PipelineStatus.REJECTED.value: "rejected",
+        PipelineStatus.FAILED.value: "failed",
+    }
     
     @classmethod
     async def trigger_pipeline(
@@ -57,6 +80,7 @@ class PipelineService:
         """
         job_id = str(uuid.uuid4())
         logger.info(f"Starting pipeline for document {document_id}, job {job_id}")
+        cls._job_ids_by_document[document_id] = job_id
         
         # Update document status to extracting
         from sqlalchemy import text
@@ -69,20 +93,23 @@ class PipelineService:
             {"doc_id": document_id}
         )
         await db.commit()
+
+        cls._publish_event(
+            document_id,
+            IngestionJobAcceptedEvent(
+                document_id=document_id,
+                job_id=job_id,
+                message="Document upload accepted. Pipeline job queued.",
+            ),
+        )
         
         # Prepare pipeline command
-        work_dir = Path(settings.PIPELINE_WORK_DIR) / document_id
+        pdf_path = str(Path(pdf_path).expanduser().resolve())
+        work_dir = Path(settings.PIPELINE_WORK_DIR).expanduser().resolve() / document_id
         work_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate initial markdown path (pipeline will create it)
+        # Generate markdown path (pipeline will create the real Docling output)
         markdown_path = work_dir / f"{Path(pdf_path).stem}.md"
-        if not markdown_path.exists():
-            markdown_path.write_text(
-                f"# {Path(pdf_path).stem}\n\n"
-                "Initial placeholder markdown created by backend upload workflow.\n"
-                "Replace with Docling-extracted markdown for full-quality pipeline results.\n",
-                encoding="utf-8",
-            )
         
         pipeline_script = Path(settings.PIPELINE_SCRIPT_PATH).resolve()
         repo_root = pipeline_script.parents[3]
@@ -108,6 +135,17 @@ class PipelineService:
             )
             
             cls._active_processes[job_id] = process
+
+            cls._publish_event(
+                document_id,
+                IngestionProgressEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage="extraction",
+                    progress=30,
+                    message="Pipeline started and extraction is in progress.",
+                ),
+            )
             
             # Monitor process in background
             asyncio.create_task(cls._monitor_pipeline(job_id, document_id, process, work_dir))
@@ -117,6 +155,17 @@ class PipelineService:
             
         except Exception as e:
             logger.error(f"Failed to start pipeline: {e}")
+            cls._publish_event(
+                document_id,
+                IngestionErrorEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage="startup",
+                    progress=0,
+                    message="Failed to start ingestion pipeline.",
+                    error=str(e),
+                ),
+            )
             # Update document status to failed
             from sqlalchemy import text
             await db.execute(
@@ -151,12 +200,49 @@ class PipelineService:
                     PipelineStatus.VALIDATION_COMPLETE,
                     progress=100
                 )
+                artifact_path = str(work_dir)
+                cls._publish_event(
+                    document_id,
+                    IngestionStageCompleteEvent(
+                        document_id=document_id,
+                        job_id=job_id,
+                        stage="validation",
+                        progress=100,
+                        message="Pipeline validation stage completed.",
+                        artifact_type="workspace",
+                        artifact_path=artifact_path,
+                    ),
+                )
+                cls._publish_event(
+                    document_id,
+                    IngestionCompleteEvent(
+                        document_id=document_id,
+                        job_id=job_id,
+                        stage="completed",
+                        progress=100,
+                        message="Document ingestion completed successfully.",
+                        artifact_type="workspace",
+                        artifact_path=artifact_path,
+                    ),
+                )
             else:
+                error_message = stderr.decode()[:500]
                 logger.error(f"Pipeline failed for document {document_id}: {stderr.decode()}")
                 await cls._update_document_status(
                     document_id,
                     PipelineStatus.FAILED,
-                    error=stderr.decode()[:500]
+                    error=error_message
+                )
+                cls._publish_event(
+                    document_id,
+                    IngestionErrorEvent(
+                        document_id=document_id,
+                        job_id=job_id,
+                        stage="validation",
+                        progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                        message="Document ingestion failed.",
+                        error=error_message,
+                    ),
                 )
                 
         except asyncio.TimeoutError:
@@ -167,12 +253,34 @@ class PipelineService:
                 PipelineStatus.FAILED,
                 error="Pipeline execution timed out"
             )
+            cls._publish_event(
+                document_id,
+                IngestionErrorEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage="validation",
+                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                    message="Document ingestion timed out.",
+                    error="Pipeline execution timed out",
+                ),
+            )
         except Exception as e:
             logger.error(f"Pipeline monitoring error for document {document_id}: {e}")
             await cls._update_document_status(
                 document_id,
                 PipelineStatus.FAILED,
                 error=str(e)
+            )
+            cls._publish_event(
+                document_id,
+                IngestionErrorEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage="monitoring",
+                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                    message="Document ingestion monitoring failed.",
+                    error=str(e),
+                ),
             )
         finally:
             # Cleanup
@@ -243,28 +351,8 @@ class PipelineService:
             PipelineStatus.VLM_VALIDATING.value,
         ]
         
-        # Calculate progress based on status
-        progress_map = {
-            PipelineStatus.PENDING.value: 0,
-            PipelineStatus.UPLOADING.value: 10,
-            PipelineStatus.EXTRACTING.value: 30,
-            PipelineStatus.VLM_VALIDATING.value: 60,
-            PipelineStatus.VALIDATION_COMPLETE.value: 100,
-            PipelineStatus.IN_REVIEW.value: 100,
-            PipelineStatus.REVIEW_COMPLETE.value: 100,
-            PipelineStatus.APPROVED.value: 100,
-            PipelineStatus.REJECTED.value: 100,
-            PipelineStatus.FAILED.value: 0,
-        }
-        
-        progress = progress_map.get(status, 0)
-        
-        # Determine current stage
-        stage = None
-        if status == PipelineStatus.EXTRACTING.value:
-            stage = "extraction"
-        elif status == PipelineStatus.VLM_VALIDATING.value:
-            stage = "vlm-validation"
+        progress = cls._status_progress_map.get(status, 0)
+        stage = cls._status_stage_map.get(status)
         
         return PipelineStatusResponse(
             document_id=UUID(document_id),
@@ -276,6 +364,117 @@ class PipelineService:
             completed_at=updated_at if progress == 100 else None,
             error=notes if status == PipelineStatus.FAILED.value else None,
         )
+
+    @classmethod
+    async def stream_events(
+        cls,
+        document_id: str,
+        initial_status: PipelineStatusResponse,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream normalized ingestion SSE events with history replay."""
+        history = list(cls._event_history.get(document_id, []))
+        if history:
+            for event in history:
+                yield event
+            if history[-1].get("event") in {"complete", "error"}:
+                return
+        else:
+            for event in cls._build_initial_events(document_id, initial_status):
+                yield event
+            if initial_status.status in {PipelineStatus.VALIDATION_COMPLETE, PipelineStatus.FAILED}:
+                return
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        subscribers = cls._event_subscribers.setdefault(document_id, set())
+        subscribers.add(queue)
+
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+                if event.get("event") in {"complete", "error"}:
+                    return
+        finally:
+            subscribers.discard(queue)
+            if not subscribers:
+                cls._event_subscribers.pop(document_id, None)
+
+    @classmethod
+    def _build_initial_events(
+        cls,
+        document_id: str,
+        initial_status: PipelineStatusResponse,
+    ) -> list[dict[str, Any]]:
+        """Build SSE events from the current persisted pipeline status."""
+        job_id = cls._job_ids_by_document.get(document_id)
+        stage = initial_status.current_stage or cls._status_stage_map.get(initial_status.status.value, "pending")
+
+        if initial_status.status == PipelineStatus.FAILED:
+            return [
+                IngestionErrorEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage=stage,
+                    progress=initial_status.progress,
+                    message=initial_status.message or "Document ingestion failed.",
+                    error=initial_status.error or "Unknown pipeline error",
+                ).model_dump(mode="json", exclude_none=True)
+            ]
+
+        if initial_status.status == PipelineStatus.VALIDATION_COMPLETE:
+            return [
+                IngestionStageCompleteEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage=stage,
+                    progress=100,
+                    message="Pipeline validation stage completed.",
+                    artifact_type="workspace",
+                    artifact_path=str(Path(settings.PIPELINE_WORK_DIR) / document_id),
+                ).model_dump(mode="json", exclude_none=True),
+                IngestionCompleteEvent(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stage="completed",
+                    progress=100,
+                    message="Document ingestion completed successfully.",
+                    artifact_type="workspace",
+                    artifact_path=str(Path(settings.PIPELINE_WORK_DIR) / document_id),
+                ).model_dump(mode="json", exclude_none=True),
+            ]
+
+        return [
+            IngestionProgressEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage=stage,
+                progress=initial_status.progress,
+                message=initial_status.message or f"Document is currently in {stage}.",
+            ).model_dump(mode="json", exclude_none=True)
+        ]
+
+    @classmethod
+    def _publish_event(
+        cls,
+        document_id: str,
+        event_model: IngestionJobAcceptedEvent
+        | IngestionProgressEvent
+        | IngestionStageCompleteEvent
+        | IngestionCompleteEvent
+        | IngestionErrorEvent,
+    ) -> None:
+        """Publish an ingestion event to history and active subscribers."""
+        event_payload = event_model.model_dump(mode="json", exclude_none=True)
+        history = cls._event_history.setdefault(document_id, [])
+        history.append(event_payload)
+        if len(history) > 20:
+            del history[:-20]
+
+        for queue in list(cls._event_subscribers.get(document_id, set())):
+            try:
+                queue.put_nowait(event_payload)
+            except asyncio.QueueFull:
+                logger.warning("Dropping pipeline event for %s due to full subscriber queue", document_id)
     
     @classmethod
     async def get_artifact(

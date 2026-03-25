@@ -1,8 +1,4 @@
-"""
-Chat Service - RAG query orchestration.
-
-Coordinates retrieval, prompt building, and LLM generation for chat queries.
-"""
+"""Chat Service - RAG query orchestration."""
 import logging
 import uuid
 from typing import List, Optional, AsyncIterator
@@ -17,6 +13,12 @@ from ..models.chat import (
     ChatQueryRequest,
     ChatQueryResponse,
     RAGContext,
+)
+from ..models.sse import (
+    ChatCitationEvent,
+    ChatCompleteEvent,
+    ChatErrorEvent,
+    ChatTokenEvent,
 )
 from .embedding_service import EmbeddingService
 from .qdrant_service import QdrantService
@@ -133,7 +135,7 @@ Guidelines:
         request: ChatQueryRequest,
         user_id: str,
         db: AsyncSession,
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[ChatTokenEvent | ChatCitationEvent | ChatCompleteEvent | ChatErrorEvent]:
         """
         Process RAG query with streaming.
         
@@ -143,64 +145,115 @@ Guidelines:
             db: Database session
             
         Yields:
-            Token chunks and control messages
+            Structured chat SSE payloads.
         """
         logger.info(f"Processing streaming query from user {user_id}")
-        
-        # Step 1: Create or get conversation
-        conversation_id = await cls._get_or_create_conversation(
-            str(request.conversation_id) if request.conversation_id else None,
-            user_id,
-            db
-        )
-        
-        # Step 2: Save user message
-        user_message_id = await cls._save_message(
-            conversation_id,
-            "user",
-            request.query,
-            None,
-            db
-        )
-        
-        # Step 3: Generate query embedding
-        query_vector = await EmbeddingService.embed_query(request.query)
-        
-        # Step 4: Retrieve relevant context
-        contexts = await QdrantService.search_similar(
-            query_vector=query_vector,
-            top_k=settings.RAG_TOP_K,
-            score_threshold=settings.RAG_SCORE_THRESHOLD,
-            document_filter=[str(doc_id) for doc_id in request.document_filters] if request.document_filters else None,
-            system_filter=request.system_filters,
-        )
-        
-        if not contexts:
-            yield "I couldn't find relevant information in the documentation to answer your question."
-            return
-        
-        # Step 5: Build RAG prompt
-        prompt = cls._build_rag_prompt(request.query, contexts)
-        
-        # Step 6: Stream LLM response
-        full_response = ""
-        async for token in VLLMService.generate_stream(
-            prompt=prompt,
-            max_tokens=settings.VLLM_MAX_TOKENS,
-            temperature=settings.VLLM_TEMPERATURE,
-        ):
-            full_response += token
-            yield token
-        
-        # Step 7: Save complete assistant message
-        citations = cls._create_citations(contexts)
-        await cls._save_message(
-            conversation_id,
-            "assistant",
-            full_response,
-            citations,
-            db
-        )
+
+        conversation_id: Optional[str] = None
+        assistant_message_id: Optional[str] = None
+
+        try:
+            # Step 1: Create or get conversation
+            conversation_id = await cls._get_or_create_conversation(
+                str(request.conversation_id) if request.conversation_id else None,
+                user_id,
+                db,
+            )
+
+            # Step 2: Save user message
+            await cls._save_message(
+                conversation_id,
+                "user",
+                request.query,
+                None,
+                db,
+            )
+
+            # Step 3: Generate query embedding
+            query_vector = await EmbeddingService.embed_query(request.query)
+
+            # Step 4: Retrieve relevant context
+            contexts = await QdrantService.search_similar(
+                query_vector=query_vector,
+                top_k=settings.RAG_TOP_K,
+                score_threshold=settings.RAG_SCORE_THRESHOLD,
+                document_filter=[str(doc_id) for doc_id in request.document_filters] if request.document_filters else None,
+                system_filter=request.system_filters,
+            )
+
+            assistant_message_id = str(uuid.uuid4())
+
+            if not contexts:
+                fallback_message = (
+                    "I couldn't find relevant information in the documentation to answer your question."
+                )
+                yield ChatTokenEvent(
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                    token=fallback_message,
+                    content=fallback_message,
+                )
+                await cls._save_message(
+                    conversation_id,
+                    "assistant",
+                    fallback_message,
+                    [],
+                    db,
+                    message_id=assistant_message_id,
+                )
+                yield ChatCompleteEvent(
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                )
+                return
+
+            # Step 5: Build RAG prompt
+            prompt = cls._build_rag_prompt(request.query, contexts)
+
+            # Step 6: Stream LLM response
+            full_response = ""
+            async for token in VLLMService.generate_stream(
+                prompt=prompt,
+                max_tokens=settings.VLLM_MAX_TOKENS,
+                temperature=settings.VLLM_TEMPERATURE,
+            ):
+                full_response += token
+                yield ChatTokenEvent(
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                    token=token,
+                    content=token,
+                )
+
+            citations = cls._create_citations(contexts)
+            await cls._save_message(
+                conversation_id,
+                "assistant",
+                full_response,
+                citations,
+                db,
+                message_id=assistant_message_id,
+            )
+
+            for citation in citations:
+                yield ChatCitationEvent(
+                    conversation_id=conversation_id,
+                    message_id=assistant_message_id,
+                    citation=citation,
+                )
+
+            yield ChatCompleteEvent(
+                conversation_id=conversation_id,
+                message_id=assistant_message_id,
+            )
+
+        except Exception as exc:
+            logger.error(f"Streaming query failed: {exc}")
+            yield ChatErrorEvent(
+                conversation_id=conversation_id,
+                message_id=assistant_message_id,
+                error=str(exc),
+            )
     
     @classmethod
     def _build_rag_prompt(cls, query: str, contexts: List[RAGContext]) -> str:
@@ -296,9 +349,10 @@ Answer:"""
         content: str,
         citations: Optional[List[Citation]],
         db: AsyncSession,
+        message_id: Optional[str] = None,
     ) -> str:
         """Save message to database."""
-        message_id = str(uuid.uuid4())
+        message_id = message_id or str(uuid.uuid4())
         
         # Serialize citations to JSON
         citations_json = None

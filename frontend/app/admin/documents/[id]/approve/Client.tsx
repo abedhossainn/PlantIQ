@@ -10,17 +10,25 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { CheckCircle2, XCircle, ArrowLeft, FileText, User, Calendar, ThumbsUp, ThumbsDown, Lock } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { mockDocuments, mockQAGateReports } from "@/lib/mock";
+import { getDocumentFromPipeline, fetchArtifactJson } from "@/lib/api";
+import { fastapiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import type { Document } from "@/types";
 
 type Decision = "approve" | "reject" | null;
+
+interface QAPreReviewArtifact {
+  decision: "approved" | "rejected" | "review";
+  metrics: { overall_confidence_score: number };
+}
 
 export default function ApproveClient({ docId }: { docId: string }) {
   const router = useRouter();
   const { user } = useAuth();
 
-  const doc = mockDocuments.find((d) => d.id === docId);
-  const report = mockQAGateReports?.[docId];
+  const [doc, setDoc] = useState<Document | null>(null);
+  const [isDocLoading, setIsDocLoading] = useState(true);
+  const [qaRecommendation, setQaRecommendation] = useState<"accept" | "reject" | "review" | null>(null);
 
   const [decision, setDecision] = useState<Decision>(null);
   const [notes, setNotes] = useState("");
@@ -44,6 +52,58 @@ export default function ApproveClient({ docId }: { docId: string }) {
       }
     }
   }, [docId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDocument() {
+      try {
+        const loaded = await getDocumentFromPipeline(docId);
+        if (!cancelled) {
+          setDoc(loaded);
+        }
+      } catch {
+        // noop
+      } finally {
+        if (!cancelled) {
+          setIsDocLoading(false);
+        }
+      }
+    }
+
+    void loadDocument();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [docId]);
+
+  // Load QA recommendation from artifact
+  useEffect(() => {
+    let cancelled = false;
+    async function loadQA() {
+      try {
+        const report = await fetchArtifactJson<QAPreReviewArtifact>(docId, "qa_report");
+        if (!cancelled) {
+          if (report.decision === "approved") setQaRecommendation("accept");
+          else if (report.decision === "rejected") setQaRecommendation("reject");
+          else setQaRecommendation("review");
+        }
+      } catch { /* noop */ }
+    }
+    void loadQA();
+    return () => { cancelled = true; };
+  }, [docId]);
+
+  if (isDocLoading) {
+    return (
+      <AppLayout>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-muted-foreground">Loading document...</p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   if (!doc) {
     return (
@@ -73,6 +133,12 @@ export default function ApproveClient({ docId }: { docId: string }) {
         submittedBy: reviewer,
       }));
     }
+    // Persist to backend (fire-and-forget)
+    void fastapiFetch(`/api/v1/documents/${docId}/final-approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, notes: notes || null }),
+    }).catch(() => { /* noop — localStorage already saved */ });
     setSubmitted(true);
   }
 
@@ -118,36 +184,37 @@ export default function ApproveClient({ docId }: { docId: string }) {
                 </div>
               </div>
 
-              {doc.qaScore !== undefined && (
-                <div className="mt-4 pt-4 border-t border-border">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">QA Score</span>
-                    <span
-                      className={`font-bold ${
-                        doc.qaScore >= 90 ? "text-green-400" : doc.qaScore >= 75 ? "text-amber-400" : "text-red-400"
-                      }`}
-                    >
-                      {doc.qaScore}%
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {report && (
-                <div className="mt-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">QA Recommendation</span>
-                    <Badge
-                      variant="outline"
-                      className={
-                        report.recommendation === "accept"
-                          ? "text-green-400 bg-green-400/10 border-green-400/20"
-                          : "text-red-400 bg-red-400/10 border-red-400/20"
-                      }
-                    >
-                      {report.recommendation === "accept" ? "Accept" : "Reject"}
-                    </Badge>
-                  </div>
+              {(doc.qaScore !== undefined || qaRecommendation) && (
+                <div className="mt-4 pt-4 border-t border-border space-y-2">
+                  {doc.qaScore !== undefined && (
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">QA Score</span>
+                      <span
+                        className={`font-bold ${
+                          doc.qaScore >= 90 ? "text-green-400" : doc.qaScore >= 75 ? "text-amber-400" : "text-red-400"
+                        }`}
+                      >
+                        {doc.qaScore}%
+                      </span>
+                    </div>
+                  )}
+                  {qaRecommendation && (
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">QA Recommendation</span>
+                      <Badge
+                        variant="outline"
+                        className={`text-xs font-semibold ${
+                          qaRecommendation === "accept"
+                            ? "text-green-400 border-green-400/30 bg-green-400/10"
+                            : qaRecommendation === "reject"
+                            ? "text-red-400 border-red-400/30 bg-red-400/10"
+                            : "text-amber-400 border-amber-400/30 bg-amber-400/10"
+                        }`}
+                      >
+                        {qaRecommendation === "accept" ? "Accept" : qaRecommendation === "reject" ? "Reject" : "Review"}
+                      </Badge>
+                    </div>
+                  )}
                 </div>
               )}
             </Card>

@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { consumeStreamingResponse, submitChatQuery } from '../lib/api/chat';
+import { consumeStreamingResponse, streamChatQuery, submitChatQuery } from '../lib/api/chat';
+import type { Citation as ApiCitation } from '../lib/api/chat';
 import { from, postgrestFetch } from '../lib/api/client';
-import { downloadArtifact, getPipelineStatus, uploadDocument } from '../lib/api/pipeline';
+import { downloadArtifact, getPipelineStatus, streamIngestionEvents, uploadDocument } from '../lib/api/pipeline';
 import { ChatWebSocketClient, PipelineWebSocketClient } from '../lib/api/websocket';
 
 class LocalStorageMock {
@@ -131,13 +132,13 @@ describe('frontend hybrid API integration contracts', () => {
     });
   });
 
-  it('consumes SSE streaming responses across chunk boundaries', async () => {
+  it('consumes chat SSE token events and accumulates content', async () => {
     fetchMock.mockResolvedValueOnce(
       sseResponse([
-        'data: {"content":"Hel',
-        'lo"}\n\n',
-        'data: {"content":" world"}\n\n',
-        'data: [DONE]\n\n',
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"Hel","content":"Hel","done":false}\n\n',
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"lo","content":"lo","done":false}\n\n',
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":" world","content":" world","done":false}\n\n',
+        'event: complete\ndata: {"event":"complete","conversation_id":"conv-1","message_id":"msg-1","done":true}\n\n',
       ])
     );
 
@@ -148,7 +149,105 @@ describe('frontend hybrid API integration contracts', () => {
     );
 
     expect(fullResponse).toBe('Hello world');
-    expect(tokens).toEqual(['Hello', ' world']);
+    expect(tokens).toEqual(['Hel', 'lo', ' world']);
+  });
+
+  it('collects citations from chat SSE citation events', async () => {
+    const citationPayload: ApiCitation = {
+      id: 'cite-1',
+      document_id: 'doc-abc',
+      document_title: 'LNG Manual',
+      section_heading: 'Safety',
+      page_number: 42,
+      excerpt: 'Keep away from open flames.',
+      relevance_score: 0.95,
+    };
+
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"Answer","content":"Answer","done":false}\n\n',
+        `event: citation\ndata: ${JSON.stringify({ event: 'citation', conversation_id: 'conv-1', message_id: 'msg-1', citation: citationPayload, done: false })}\n\n`,
+        'event: complete\ndata: {"event":"complete","conversation_id":"conv-1","message_id":"msg-1","done":true}\n\n',
+      ])
+    );
+
+    const receivedCitations: ApiCitation[] = [];
+    const content = await consumeStreamingResponse(
+      { query: 'cite me' },
+      undefined,
+      (c) => receivedCitations.push(c)
+    );
+
+    expect(content).toBe('Answer');
+    expect(receivedCitations).toHaveLength(1);
+    expect(receivedCitations[0].document_title).toBe('LNG Manual');
+    expect(receivedCitations[0].page_number).toBe(42);
+  });
+
+  it('terminates stream cleanly on complete event', async () => {
+    // complete arrives before the stream body closes — generator should return
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"Hi","content":"Hi","done":false}\n\n',
+        'event: complete\ndata: {"event":"complete","conversation_id":"conv-1","message_id":"msg-1","done":true}\n\n',
+        // This token should NOT be yielded — stream already terminated on complete.
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"extra","content":"extra","done":false}\n\n',
+      ])
+    );
+
+    const events = [];
+    for await (const evt of streamChatQuery({ query: 'stop test' })) {
+      events.push(evt);
+    }
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain('token');
+    expect(types).toContain('complete');
+    // 'extra' token after complete must not appear
+    const tokenContents = events
+      .filter((e) => e.type === 'token')
+      .map((e) => (e as { type: 'token'; content: string }).content);
+    expect(tokenContents).not.toContain('extra');
+  });
+
+  it('surfaces error events from chat SSE stream', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: error\ndata: {"event":"error","error":"LLM inference failed","done":true}\n\n',
+      ])
+    );
+
+    await expect(
+      consumeStreamingResponse({ query: 'error test' })
+    ).rejects.toThrow('LLM inference failed');
+  });
+
+  it('parses chat SSE blocks split across chunk boundaries', async () => {
+    // The SSE block is split across two decoded chunks.
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"Hel',
+        'lo","content":"Hello","done":false}\n\nevent: complete\ndata: {"event":"complete","conversation_id":"conv-1","message_id":"msg-1","done":true}\n\n',
+      ])
+    );
+
+    const tokens: string[] = [];
+    await consumeStreamingResponse({ query: 'chunk test' }, (t) => tokens.push(t));
+    expect(tokens).toContain('Hello');
+  });
+
+  it('returns cleanly when chat SSE closes without a complete event', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: token\ndata: {"event":"token","conversation_id":"conv-1","message_id":"msg-1","token":"partial","content":"partial","done":false}\n\n',
+      ])
+    );
+
+    const tokens: string[] = [];
+    const content = await consumeStreamingResponse({ query: 'implicit eof' }, (t) => tokens.push(t));
+
+    expect(tokens).toEqual(['partial']);
+    expect(content).toBe('partial');
   });
 
   it('uploads documents as multipart form data without forcing JSON content type', async () => {
@@ -296,5 +395,107 @@ describe('frontend hybrid API integration contracts', () => {
 
     const [, options] = fetchMock.mock.calls[0];
     expect((options.headers as Record<string, string>).Prefer).toBe('return=representation');
+  });
+
+  // ============================================================================
+  // Ingestion SSE contract tests
+  // ============================================================================
+
+  it('collects ingestion progress events from SSE stream', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: job.accepted\ndata: {"event":"job.accepted","document_id":"doc-xyz","job_id":"job-1","stage":"queued","progress":0,"message":"Job accepted"}\n\n',
+        'event: progress\ndata: {"event":"progress","document_id":"doc-xyz","job_id":"job-1","stage":"extraction","progress":30,"message":"Extracting"}\n\n',
+        'event: stage.complete\ndata: {"event":"stage.complete","document_id":"doc-xyz","job_id":"job-1","stage":"extraction","progress":30,"message":"Extraction done"}\n\n',
+        'event: complete\ndata: {"event":"complete","document_id":"doc-xyz","job_id":"job-1","stage":"completed","progress":100,"message":"Done"}\n\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-xyz')) {
+      events.push(event);
+    }
+
+    const types = events.map((e) => e.type);
+    expect(types).toEqual(['job.accepted', 'progress', 'stage.complete', 'complete']);
+
+    // Verify stream terminated after complete.
+    expect(events[events.length - 1].type).toBe('complete');
+    expect(events[3].progress).toBe(100);
+  });
+
+  it('terminates ingestion stream on error event', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: progress\ndata: {"event":"progress","document_id":"doc-xyz","job_id":"job-1","stage":"extraction","progress":20,"message":"Extracting"}\n\n',
+        'event: error\ndata: {"event":"error","document_id":"doc-xyz","job_id":"job-1","stage":"extraction","progress":20,"message":"Failed","error":"Subprocess exited with code 1"}\n\n',
+        // Should NOT be yielded after error.
+        'event: progress\ndata: {"event":"progress","document_id":"doc-xyz","job_id":"job-1","stage":"validation","progress":50,"message":"Validating"}\n\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-xyz')) {
+      events.push(event);
+    }
+
+    const types = events.map((e) => e.type);
+    expect(types).toContain('progress');
+    expect(types).toContain('error');
+    // No event after the error.
+    expect(types[types.length - 1]).toBe('error');
+    expect(types).not.toContain('validation');
+  });
+
+  it('yields a connection error event when ingestion SSE request fails', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 503, statusText: 'Service Unavailable' })
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-fail')) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('error');
+    if (events[0].type === 'error') {
+      expect(events[0].error).toContain('Service Unavailable');
+    }
+  });
+
+  it('passes auth token in ingestion SSE request header', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: complete\ndata: {"event":"complete","document_id":"doc-auth","job_id":"job-1","stage":"completed","progress":100,"message":"Done"}\n\n',
+      ])
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _ of streamIngestionEvents('doc-auth')) {
+      break;
+    }
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-auth/events');
+    expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+  });
+
+  it('parses ingestion SSE blocks split across chunk boundaries', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: progress\ndata: {"event":"progress","document_id":"doc-split","job_id":"job-1","stage":"extraction","progress":4',
+        '0,"message":"Extracting"}\n\nevent: complete\ndata: {"event":"complete","document_id":"doc-split","job_id":"job-1","stage":"completed","progress":100,"message":"Done"}\n\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-split')) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'progress', progress: 40, stage: 'extraction' });
+    expect(events[1]).toMatchObject({ type: 'complete', progress: 100, stage: 'completed' });
   });
 });

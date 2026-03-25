@@ -1,6 +1,15 @@
 # Backend Development Skill
 
-This skill provides comprehensive guidance for building production-ready backend systems with FastAPI, LangChain, vLLM, and Vector Databases for the RAG chatbot project.
+This skill provides comprehensive guidance for building maintainable backend systems with FastAPI, LangChain, vLLM, and vector databases for the RAG chatbot project.
+
+## Operating Guardrails
+
+- **Root-Cause First**: Diagnose the real cause of backend bugs or design problems before changing code.
+- **Clean Code Focus**: Apply clear naming, small focused units, low duplication, and separation of concerns.
+- **Development-First Execution**: Build and validate in local, development, or staging environments first; do not move changes into production without explicit user confirmation.
+- **Core Functionality First**: Prioritize required API behavior, data flow, and critical paths before optimizations or optional enhancements.
+- **Plan Discipline**: Create and follow a backend plan, and revise it only when evidence shows it is incomplete or wrong.
+- **Confirm Before Expanding Scope**: Verify with the user before adding new features, dependencies, services, files, or behaviors that were not requested.
 
 ## Overview
 
@@ -46,9 +55,9 @@ The Backend Development skill encompasses:
 4. **For Performance Tuning**: Consult for vLLM optimization and batch processing
 
 ## Related Skills
-- [Testing Automation](#) - For comprehensive test coverage
-- [Context Engineering](#) - For managing complex codebases
-- [DevOps Infrastructure](#) - For deployment and scaling
+- [Testing Automation](../testing-automation/SKILL.md) - For comprehensive test coverage
+- [Context Engineering](../context-engineering/SKILL.md) - For managing complex codebases
+- [DevOps Infrastructure](../devops-infrastructure/SKILL.md) - For deployment and scaling
 
 ## References
 - FastAPI: https://fastapi.tiangolo.com

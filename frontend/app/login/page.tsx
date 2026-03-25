@@ -32,10 +32,10 @@ export default function LoginPage() {
     }
   };
 
-  const demoUsers = [
-    { username: "jdoe", password: "demo", role: "user" as const, label: "Field User", color: "bg-zinc-500/10 hover:bg-zinc-500/20 border-zinc-500/40 hover:border-zinc-500/60 text-zinc-300" },
-    { username: "mchen", password: "demo", role: "reviewer" as const, label: "Reviewer", color: "bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/40 hover:border-blue-500/60 text-blue-300" },
-    { username: "rholt", password: "demo", role: "admin" as const, label: "Admin", color: "bg-primary/10 hover:bg-primary/20 border-primary/40 hover:border-primary/60 text-primary" },
+  const quickAccessAccounts = [
+    { username: "user", password: "user123", role: "user" as const, label: "Field User", color: "bg-zinc-500/10 hover:bg-zinc-500/20 border-zinc-500/40 hover:border-zinc-500/60 text-zinc-300" },
+    { username: "reviewer", password: "review123", role: "reviewer" as const, label: "Reviewer", color: "bg-blue-500/10 hover:bg-blue-500/20 border-blue-500/40 hover:border-blue-500/60 text-blue-300" },
+    { username: "admin", password: "admin123", role: "admin" as const, label: "Admin", color: "bg-primary/10 hover:bg-primary/20 border-primary/40 hover:border-primary/60 text-primary" },
   ];
 
   const roleDot: Record<string, string> = {
@@ -117,15 +117,15 @@ export default function LoginPage() {
             </p>
           </div>
 
-          {/* Demo Users */}
+          {/* Quick access accounts */}
           <div className="mt-6 rounded-lg border border-border bg-muted/20 overflow-hidden">
             <div className="px-4 py-2.5 border-b border-border bg-muted/40">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Demo Accounts (prototype)
+                Quick Access Accounts
               </p>
             </div>
             <div className="p-3 grid grid-cols-3 gap-2">
-              {demoUsers.map((u) => (
+              {quickAccessAccounts.map((u) => (
                 <button
                   key={u.username}
                   className={`rounded-lg border px-3 py-3 text-left transition-all active:scale-95 ${u.color}`}
@@ -141,6 +141,11 @@ export default function LoginPage() {
                   <span className="text-xs opacity-75">{u.label}</span>
                 </button>
               ))}
+            </div>
+            <div className="px-4 py-3 border-t border-border bg-muted/30 text-xs text-muted-foreground space-y-1">
+              <p><span className="font-semibold text-foreground/80">Admin:</span> admin / admin123</p>
+              <p><span className="font-semibold text-foreground/80">Reviewer:</span> reviewer / review123</p>
+              <p><span className="font-semibold text-foreground/80">User:</span> user / user123</p>
             </div>
           </div>
         </CardContent>

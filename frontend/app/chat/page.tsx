@@ -18,6 +18,7 @@ import {
   isMessageBookmarked,
 } from "@/lib/api";
 import { streamChatQuery } from "@/lib/api/chat";
+import type { Citation as ApiCitation } from "@/lib/api/chat";
 import type { ChatMessage, Citation, Bookmark as BookmarkType } from "@/types";
 import ReactMarkdown from "react-markdown";
 
@@ -200,27 +201,63 @@ export default function ChatPage() {
 
     try {
       let fullContent = "";
+      const pendingCitations: Citation[] = [];
       
-      // Stream tokens from RAG endpoint
-      for await (const token of streamChatQuery({
+      // Stream typed events from RAG endpoint.
+      for await (const event of streamChatQuery({
         query: queryText,
         conversation_id: currentConvId,
       })) {
-        fullContent += token;
-        
-        // Update message with accumulated content
+        if (event.type === 'token') {
+          fullContent += event.content;
+          // Update message with accumulated content incrementally.
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId
+                ? { ...msg, content: fullContent }
+                : msg
+            )
+          );
+        } else if (event.type === 'citation') {
+          // Transform snake_case API citation to camelCase UI Citation.
+          const raw: ApiCitation = event.citation;
+          pendingCitations.push({
+            id: raw.id,
+            documentId: raw.document_id,
+            documentTitle: raw.document_title,
+            sectionHeading: raw.section_heading ?? '',
+            pageNumber: raw.page_number ?? 0,
+            excerpt: raw.excerpt,
+            relevanceScore: raw.relevance_score,
+          });
+        } else if (event.type === 'complete') {
+          // Stream finished — apply collected citations to the message.
+          if (pendingCitations.length > 0) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  ? { ...msg, citations: pendingCitations }
+                  : msg
+              )
+            );
+          }
+          break;
+        } else if (event.type === 'error') {
+          throw new Error(event.error);
+        }
+      }
+
+      // Apply any citations that arrived before an implicit stream end
+      // (no explicit complete event, e.g. connection closed).
+      if (pendingCitations.length > 0) {
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === assistantMsgId
-              ? { ...msg, content: fullContent }
+            msg.id === assistantMsgId && (!msg.citations || msg.citations.length === 0)
+              ? { ...msg, citations: pendingCitations }
               : msg
           )
         );
       }
-
-      // TODO: Extract citations from streaming metadata
-      // For now, the backend sends citations after completion
-      // We would need to update the message with citations once available
       
       // Save assistant message to database
       try {

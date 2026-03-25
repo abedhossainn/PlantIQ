@@ -2,6 +2,15 @@
 
 This skill provides comprehensive guidance for test automation, TDD workflows, and quality assurance for the RAG chatbot project.
 
+## Operating Guardrails
+
+- **Root-Cause First**: Diagnose why behavior fails before changing code or tests; avoid brittle tests that only hide the issue.
+- **Clean Test Code Focus**: Keep tests readable, focused, modular, and maintainable.
+- **Development-First Execution**: Run and validate tests in local, development, or staging environments first; do not move testing or rollout changes into production without explicit user confirmation.
+- **Core Functionality First**: Prioritize tests for required behavior, critical user journeys, and regressions before secondary coverage expansion.
+- **Plan Discipline**: Follow the testing plan and revise it only when evidence shows it is incomplete or wrong.
+- **Confirm Before Expanding Scope**: Verify with the user before adding new tools, dependencies, workflows, or expectations beyond the requested scope.
+
 ## Overview
 
 The Testing Automation skill encompasses:
@@ -83,9 +92,9 @@ tests/
 5. **For Coverage**: Identify gaps and add tests for untested paths
 
 ## Related Skills
-- [Backend Development](#) - For API testing
-- [Frontend Development](#) - For component testing
-- [DevOps Infrastructure](#) - For CI/CD test automation
+- [Backend Development](../backend-development/SKILL.md) - For API testing
+- [Frontend Development](../frontend-development/SKILL.md) - For component testing
+- [DevOps Infrastructure](../devops-infrastructure/SKILL.md) - For CI/CD test automation
 
 ## References
 - pytest: https://pytest.org

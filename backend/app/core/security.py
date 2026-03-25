@@ -1,6 +1,7 @@
 """
 Security dependencies for JWT authentication and authorization.
 """
+import os
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional
@@ -9,7 +10,22 @@ import uuid
 from ..core.jwt import jwt_manager
 from jwt.exceptions import InvalidTokenError
 
-security = HTTPBearer()
+AUTH_DISABLED = os.getenv("AUTH_DISABLED", "true").lower() == "true"
+AUTH_DISABLED_USER_ID = uuid.UUID(
+    os.getenv("AUTH_DISABLED_USER_ID", "00000000-0000-0000-0000-000000000001")
+)
+AUTH_DISABLED_USER_ROLE = os.getenv("AUTH_DISABLED_USER_ROLE", "admin")
+
+security = HTTPBearer(auto_error=False)
+
+
+def _get_auth_disabled_payload() -> dict:
+    return {
+        "sub": str(AUTH_DISABLED_USER_ID),
+        "role": AUTH_DISABLED_USER_ROLE,
+        "email": "auth-disabled@plantiq.local",
+        "scope": ["chat.read", "docs.review", "docs.upload", "admin.manage"],
+    }
 
 
 async def get_jwt_payload(
@@ -27,6 +43,16 @@ async def get_jwt_payload(
     Raises:
         HTTPException: If token is invalid or missing
     """
+    if AUTH_DISABLED:
+        return _get_auth_disabled_payload()
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
         token = credentials.credentials
         payload = jwt_manager.verify_token(token)
@@ -137,6 +163,9 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         async def admin_endpoint(role: str = Depends(require_admin)):
             ...
     """
+    if AUTH_DISABLED:
+        return AUTH_DISABLED_USER_ROLE
+
     try:
         token = credentials.credentials
         payload = jwt_manager.verify_token(token)
@@ -166,6 +195,9 @@ def require_reviewer_or_admin(credentials: HTTPAuthorizationCredentials = Depend
         async def review_endpoint(role: str = Depends(require_reviewer_or_admin)):
             ...
     """
+    if AUTH_DISABLED:
+        return AUTH_DISABLED_USER_ROLE
+
     try:
         token = credentials.credentials
         payload = jwt_manager.verify_token(token)
@@ -201,6 +233,16 @@ async def get_token_payload(
     Raises:
         HTTPException: If token is invalid
     """
+    if AUTH_DISABLED:
+        return _get_auth_disabled_payload()
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     try:
         token = credentials.credentials
         payload = jwt_manager.verify_token(token)
@@ -225,6 +267,9 @@ async def verify_ws_token(token: Optional[str]) -> Optional[tuple[uuid.UUID, str
     Returns:
         Tuple of (user_id, role) if valid, None if invalid
     """
+    if AUTH_DISABLED:
+        return (AUTH_DISABLED_USER_ID, AUTH_DISABLED_USER_ROLE)
+
     if not token:
         return None
     

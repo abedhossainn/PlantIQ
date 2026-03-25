@@ -11,8 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Upload, FileText, CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { uploadDocument, type PipelineStatus } from "@/lib/api";
-import { PipelineWebSocketClient, type PipelineMessage } from "@/lib/api/websocket";
+import { uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
 
 // Backend pipeline stages mapped to UI display
 type Stage = {
@@ -27,6 +26,24 @@ const PIPELINE_STAGES: Stage[] = [
   { id: "vlm-validating", label: "VLM Validation", description: "AI validation of content fidelity" },
   { id: "validation-complete", label: "Validation Complete", description: "Ready for engineering review" },
 ];
+
+// Map backend SSE stage strings → UI PIPELINE_STAGES id.
+// Backend emits: queued, upload, extraction, validation, completed, startup, monitoring.
+const BACKEND_TO_UI_STAGE: Record<string, string> = {
+  queued: "uploading",
+  upload: "uploading",
+  extraction: "extracting",
+  validation: "vlm-validating",
+  completed: "validation-complete",
+  // Fallback: startup / monitoring errors map to the first stage.
+  startup: "uploading",
+  monitoring: "vlm-validating",
+};
+
+/** Resolve a backend stage string to a UI PIPELINE_STAGES id, falling back to the raw value. */
+function toUIStage(backendStage: string): string {
+  return BACKEND_TO_UI_STAGE[backendStage] ?? backendStage;
+}
 
 type StageStatus = "pending" | "active" | "complete" | "error";
 
@@ -50,14 +67,12 @@ export default function UploadPage() {
   const [stageStatuses, setStageStatuses] = useState<Record<string, StageStatus>>({});
   const [done, setDone] = useState(false);
   
-  const wsClientRef = useRef<PipelineWebSocketClient | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Cleanup WebSocket on unmount
+  // Abort any in-flight SSE stream on unmount.
   useEffect(() => {
     return () => {
-      if (wsClientRef.current) {
-        wsClientRef.current.disconnect();
-      }
+      abortControllerRef.current?.abort();
     };
   }, []);
 
@@ -86,72 +101,69 @@ export default function UploadPage() {
     }
   }
 
-  function handlePipelineMessage(message: PipelineMessage) {
-    console.log('Pipeline WebSocket message:', message);
+  function handleIngestionSSEEvent(event: IngestionSSEEvent) {
+    const uiStage = toUIStage(event.stage);
 
-    switch (message.type) {
+    switch (event.type) {
+      case 'job.accepted':
+        setStatusMessage(event.message);
+        setProgress(event.progress);
+        setCurrentStage(uiStage);
+        setStageStatuses((prev) => ({ ...prev, [uiStage]: 'active' }));
+        break;
+
       case 'progress':
-        if ('stage' in message && 'progress' in message) {
-          setCurrentStage(message.stage);
-          setProgress(message.progress);
-          setStatusMessage(message.message);
-          
-          // Update stage statuses
-          setStageStatuses((prev) => {
-            const updated = { ...prev };
-            // Mark current stage as active
-            updated[message.stage] = 'active';
-            // Mark previous stages as complete
-            PIPELINE_STAGES.forEach((stage) => {
-              if (stage.id !== message.stage && !updated[stage.id]) {
-                updated[stage.id] = 'pending';
-              }
-            });
-            return updated;
+        setCurrentStage(uiStage);
+        setProgress(event.progress);
+        setStatusMessage(event.message);
+        setStageStatuses((prev) => {
+          const updated = { ...prev };
+          updated[uiStage] = 'active';
+          // Mark all UI stages that appear before the current one as complete.
+          const activeIdx = PIPELINE_STAGES.findIndex((s) => s.id === uiStage);
+          PIPELINE_STAGES.forEach((stage, idx) => {
+            if (idx < activeIdx && updated[stage.id] !== 'complete') {
+              updated[stage.id] = 'complete';
+            }
           });
-        }
+          return updated;
+        });
         break;
 
-      case 'stage-complete':
-        if ('stage' in message) {
-          setStageStatuses((prev) => ({
-            ...prev,
-            [message.stage]: 'complete',
-          }));
-          setStatusMessage(`Stage ${message.stage} completed`);
-        }
-        break;
-
-      case 'error':
-        if ('error' in message) {
-          setUploadError(`Pipeline error: ${message.error}`);
-          setPipelineStatus('failed');
-          setUploading(false);
-          setDone(false);
-          if (wsClientRef.current) {
-            wsClientRef.current.disconnect();
-          }
-        }
+      case 'stage.complete':
+        setStageStatuses((prev) => ({
+          ...prev,
+          [uiStage]: 'complete',
+        }));
+        setProgress(event.progress);
+        setStatusMessage(event.message);
         break;
 
       case 'complete':
-        if ('status' in message) {
-          setPipelineStatus(message.status as PipelineStatus);
-          setProgress(100);
-          setStatusMessage('Pipeline processing complete!');
-          setDone(true);
-          setUploading(false);
-          
-          // Mark all stages as complete
+        setProgress(100);
+        setStatusMessage(event.message);
+        setDone(true);
+        setUploading(false);
+        // Mark all stages complete.
+        setStageStatuses(() => {
           const allComplete: Record<string, StageStatus> = {};
           PIPELINE_STAGES.forEach((stage) => {
             allComplete[stage.id] = 'complete';
           });
-          setStageStatuses(allComplete);
-          
-          if (wsClientRef.current) {
-            wsClientRef.current.disconnect();
-          }
+          return allComplete;
+        });
+        break;
+
+      case 'error':
+        setUploadError(`Pipeline error: ${event.error}`);
+        setPipelineStatus('failed');
+        setUploading(false);
+        setDone(false);
+        if (uiStage) {
+          setStageStatuses((prev) => ({
+            ...prev,
+            [uiStage]: 'error',
+          }));
         }
         break;
     }
@@ -188,13 +200,60 @@ export default function UploadPage() {
       setPipelineStatus(response.status);
       setStatusMessage(response.message);
 
-      // Connect to WebSocket for real-time status updates
-      const wsClient = new PipelineWebSocketClient(
-        response.document_id,
-        handlePipelineMessage
-      );
-      wsClient.connect();
-      wsClientRef.current = wsClient;
+      // Persist form metadata so document detail pages can show human-readable
+      // info without PostgREST (core stack has FastAPI only).
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(
+          `plantiq-upload-preview-${response.document_id}`,
+          JSON.stringify({
+            title: title.trim(),
+            version: version.trim() || '1.0',
+            system: system || '—',
+            docType: docType || 'PDF',
+          })
+        );
+      }
+
+      // Stream ingestion progress via SSE.
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+
+      try {
+        for await (const event of streamIngestionEvents(
+          response.document_id,
+          abortController.signal
+        )) {
+          if (abortController.signal.aborted) break;
+          handleIngestionSSEEvent(event);
+        }
+      } catch (streamErr) {
+        if (!abortController.signal.aborted) {
+          console.error('Ingestion SSE stream error:', streamErr);
+          setUploadError(streamErr instanceof Error ? streamErr.message : 'SSE stream error');
+          setUploading(false);
+        }
+      } finally {
+        abortControllerRef.current = null;
+        // Guard: if the stream closed without emitting a terminal event and the
+        // UI is still in the loading state, resolve it gracefully so the page
+        // does not hang forever.
+        setUploading((prev) => {
+          if (prev && !abortController.signal.aborted) {
+            // Stream ended with no explicit complete/error — treat as complete
+            // because the backend closes the SSE connection after the last event.
+            setDone(true);
+            setStageStatuses(() => {
+              const allComplete: Record<string, StageStatus> = {};
+              PIPELINE_STAGES.forEach((s) => { allComplete[s.id] = 'complete'; });
+              return allComplete;
+            });
+            setProgress(100);
+            setStatusMessage('Processing complete.');
+            return false; // clear uploading
+          }
+          return prev;
+        });
+      }
 
     } catch (err) {
       console.error('Upload failed:', err);
@@ -219,9 +278,9 @@ export default function UploadPage() {
     setStageStatuses({});
     setDone(false);
 
-    if (wsClientRef.current) {
-      wsClientRef.current.disconnect();
-      wsClientRef.current = null;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
   }
 

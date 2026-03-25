@@ -90,6 +90,14 @@ make install-backend    # FastAPI backend
 make install-frontend   # Next.js frontend
 ```
 
+### Container Stack
+
+The repository now uses a **single** root `docker-compose.yml` as the authoritative local stack definition.
+
+- Run all required services from the repo root
+- Keep the local stack focused on core services only
+- Core supporting services such as `docling-serve`, `vector-db`, `postgres`, `backend`, and `frontend` are defined in the root compose file
+
 ### Environment Configuration
 
 ```bash
@@ -127,7 +135,7 @@ make validate           # Lint + test combined
 
 ### Document Ingestion Pipeline
 - Docling PDF to Markdown conversion with automatic table/figure handling
-- VLM-powered page-by-page validation using Qwen2.5-VL-32B
+- VLM-powered page-by-page validation using the env-configured local vision model
 - Evidence generation for validation artifacts
 - Section-based review workspace for manual QA
 - QA gates with quantitative metrics
@@ -138,7 +146,6 @@ make validate           # Lint + test combined
 - FastAPI application structure with modular architecture
 - RESTful API endpoints for document management
 - PostgreSQL integration with SQLAlchemy ORM
-- PostgREST API layer for direct database queries
 - Authentication and authorization middleware
 - Observability and logging infrastructure
 - Comprehensive test coverage for API endpoints
@@ -241,6 +248,6 @@ flowchart TB
 |-------|-------------|
 | **Frontend** | React 18, Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
 | **Backend** | Python 3.10+, FastAPI, LangChain, Pydantic, SQLAlchemy |
-| **AI/ML** | vLLM, Qwen2.5-VL-32B, Qwen2.5-32B, Sentence Transformers |
+| **AI/ML** | vLLM, env-configured Qwen3 text + vision models, Sentence Transformers |
 | **Data** | PostgreSQL, Qdrant, Docling, pdfplumber |Pipeline installed')"
 ```

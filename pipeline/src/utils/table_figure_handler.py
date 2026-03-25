@@ -18,6 +18,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+FIGURE_DESCRIPTION_PATTERN = re.compile(r'\*\*\[Figure\s+(\d+):(.*?)\]\*\*', re.IGNORECASE | re.DOTALL)
+
+
 @dataclass
 class TableData:
     """Structured table representation"""
@@ -202,9 +205,9 @@ def extract_figures_from_markdown(markdown_content: str) -> List[FigureData]:
     
     figures = []
     
-    # Pattern: ![alt text](path)
+    # Pattern 1: classic markdown image refs ![alt text](path)
     pattern = r'!\[(.*?)\]\((.*?)\)'
-    matches = re.finditer(pattern, markdown_content)
+    matches = list(re.finditer(pattern, markdown_content))
     
     for idx, match in enumerate(matches, 1):
         alt_text = match.group(1)
@@ -234,6 +237,31 @@ def extract_figures_from_markdown(markdown_content: str) -> List[FigureData]:
         
         figures.append(figure)
         logger.info(f"✅ Found {figure.figure_id}: {alt_text[:50]}...")
+
+    # Pattern 2: description-mode figures **[Figure N: description]**
+    offset = len(figures)
+    for relative_idx, match in enumerate(FIGURE_DESCRIPTION_PATTERN.finditer(markdown_content), 1):
+        description = re.sub(r'\s+', ' ', match.group(2)).strip()
+        context_start = max(0, match.start() - 200)
+        context = markdown_content[context_start:match.start()]
+
+        page_match = re.search(r'[Pp]age\s+(\d+)', context)
+        page_number = int(page_match.group(1)) if page_match else 0
+        caption = f"Figure {match.group(1)}"
+
+        figure = FigureData(
+            figure_id=f"figure_{offset + relative_idx:03d}",
+            page_number=page_number,
+            caption=caption,
+            description=description,
+            key_facts=[],
+            file_path=None,
+            alt_text=description,
+            source_location=f"Page {page_number}" if page_number else "Unknown"
+        )
+
+        figures.append(figure)
+        logger.info(f"✅ Found {figure.figure_id}: {description[:50]}...")
     
     logger.info(f"✅ Total figures found: {len(figures)}")
     return figures

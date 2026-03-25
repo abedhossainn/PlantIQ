@@ -9,14 +9,20 @@ Implements improvement #2: Split long docs into reviewable units
 
 import json
 import logging
+import re
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _section_has_images(content: str) -> bool:
+    """Recognize both classic markdown images and description-mode figures."""
+    return ('![' in content) or bool(re.search(r'\*\*\[Figure\s+\d+:', content, flags=re.IGNORECASE))
 
 
 class ReviewStatus(Enum):
@@ -126,6 +132,152 @@ class DocumentSections:
     metadata: Dict
 
 
+@dataclass
+class ReviewPage:
+    """Individual PDF page prepared for manual review."""
+    page_id: str
+    page_number: int
+    markdown_content: str
+    text_preview: str
+    validation_issues: List[Dict[str, Any]]
+    evidence_images: List[str]
+    evidence: Dict[str, Any]
+
+
+@dataclass
+class DocumentPages:
+    """Document broken into page-based review units."""
+    document_name: str
+    total_pages: int
+    pages: List[ReviewPage]
+    metadata: Dict[str, Any]
+
+
+def extract_pages_from_validation(validation_report: Any, document_name: Optional[str] = None) -> DocumentPages:
+    """Build page review units directly from the validation artifact."""
+    if hasattr(validation_report, "page_validations"):
+        report_document_name = getattr(validation_report, "document_name", None)
+        page_validations = validation_report.page_validations
+        report_metadata = getattr(validation_report, "metadata", {}) or {}
+    else:
+        report_document_name = validation_report.get("document_name")
+        page_validations = validation_report.get("page_validations", [])
+        report_metadata = validation_report.get("metadata", {}) or {}
+
+    resolved_document_name = document_name or report_document_name or "document"
+    pages: List[ReviewPage] = []
+
+    for page_validation in page_validations:
+        page_number = getattr(page_validation, "page_number", None)
+        markdown_content = getattr(page_validation, "markdown_section", None)
+        evidence = getattr(page_validation, "evidence", None)
+        issues = getattr(page_validation, "issues", None)
+
+        if isinstance(page_validation, dict):
+            page_number = page_validation.get("page_number")
+            markdown_content = page_validation.get("markdown_section")
+            evidence = page_validation.get("evidence", {})
+            issues = page_validation.get("issues", [])
+
+        if hasattr(evidence, "__dict__"):
+            evidence_dict = asdict(evidence)
+        else:
+            evidence_dict = dict(evidence or {})
+
+        issue_dicts: List[Dict[str, Any]] = []
+        for issue in issues or []:
+            if hasattr(issue, "__dict__"):
+                issue_dicts.append(asdict(issue))
+            else:
+                issue_dicts.append(dict(issue))
+
+        thumbnail_path = evidence_dict.get("thumbnail_path")
+        evidence_images = [thumbnail_path] if thumbnail_path else []
+        text_preview = evidence_dict.get("text_preview") or ""
+        page_markdown = markdown_content or ""
+
+        pages.append(
+            ReviewPage(
+                page_id=f"page_{int(page_number):03d}",
+                page_number=int(page_number),
+                markdown_content=page_markdown,
+                text_preview=text_preview,
+                validation_issues=issue_dicts,
+                evidence_images=evidence_images,
+                evidence=evidence_dict,
+            )
+        )
+
+    return DocumentPages(
+        document_name=resolved_document_name,
+        total_pages=len(pages),
+        pages=pages,
+        metadata={
+            "total_issues": sum(len(page.validation_issues) for page in pages),
+            "pages_with_issues": sum(1 for page in pages if page.validation_issues),
+            "validation_metadata": report_metadata,
+        },
+    )
+
+
+def create_page_review_workspace(pages: DocumentPages, output_dir: str) -> Path:
+    """Create a page-based review workspace alongside the legacy section workspace."""
+    workspace = Path(output_dir)
+    workspace.mkdir(exist_ok=True, parents=True)
+
+    logger.info(f"📄 Creating page review workspace: {workspace}")
+
+    manifest = {
+        "document_name": pages.document_name,
+        "review_unit": "page",
+        "total_pages": pages.total_pages,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": pages.metadata,
+        "pages": [],
+    }
+
+    for page in pages.pages:
+        page_file = workspace / f"{page.page_id}.md"
+        checklist_file = workspace / f"{page.page_id}_checklist.json"
+        checklist = SectionChecklist.create_empty()
+
+        page_body = page.markdown_content.strip() or f"# Page {page.page_number}\n\n{page.text_preview}".strip()
+
+        with open(page_file, 'w', encoding='utf-8') as f:
+            f.write(f"<!-- Page ID: {page.page_id} -->\n")
+            f.write(f"<!-- Page Number: {page.page_number} -->\n")
+            f.write(f"<!-- Status: pending -->\n")
+            if page.evidence_images:
+                f.write(f"<!-- Evidence Images: {', '.join(page.evidence_images)} -->\n")
+            f.write(f"<!-- Validation Issues: {len(page.validation_issues)} -->\n\n")
+            f.write(page_body)
+
+        with open(checklist_file, 'w', encoding='utf-8') as f:
+            json.dump(asdict(checklist), f, indent=2)
+
+        manifest["pages"].append(
+            {
+                "page_id": page.page_id,
+                "page_number": page.page_number,
+                "file": page_file.name,
+                "checklist": checklist_file.name,
+                "status": "pending",
+                "text_preview": page.text_preview,
+                "markdown_content": page.markdown_content,
+                "validation_issues": page.validation_issues,
+                "evidence": page.evidence,
+                "evidence_images": page.evidence_images,
+            }
+        )
+
+    manifest_file = workspace / "page_review_manifest.json"
+    with open(manifest_file, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=2)
+
+    logger.info(f"✅ Page review workspace ready: {pages.total_pages} pages")
+    return workspace
+
+
 def extract_sections_from_markdown(markdown_content: str, document_name: str) -> DocumentSections:
     """
     Split markdown into section-based review units
@@ -154,7 +306,7 @@ def extract_sections_from_markdown(markdown_content: str, document_name: str) ->
                     page_numbers=[],  # Will be populated from validation evidence
                     word_count=len(content.split()),
                     has_tables='|' in content,
-                    has_images='![' in content
+                    has_images=_section_has_images(content)
                 )
                 sections.append(section)
             
@@ -178,7 +330,7 @@ def extract_sections_from_markdown(markdown_content: str, document_name: str) ->
             page_numbers=[],
             word_count=len(content.split()),
             has_tables='|' in content,
-            has_images='![' in content
+            has_images=_section_has_images(content)
         )
         sections.append(section)
     
@@ -210,7 +362,7 @@ def create_review_workspace(sections: DocumentSections, output_dir: str) -> Path
     manifest = {
         "document_name": sections.document_name,
         "total_sections": sections.total_sections,
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "sections": []
     }
     
@@ -223,6 +375,8 @@ def create_review_workspace(sections: DocumentSections, output_dir: str) -> Path
             f.write(f"<!-- Section ID: {section.section_id} -->\n")
             f.write(f"<!-- Heading: {section.heading} -->\n")
             f.write(f"<!-- Lines: {section.start_line}-{section.end_line} -->\n")
+            if section.page_numbers:
+                f.write(f"<!-- Pages: {', '.join(str(page) for page in section.page_numbers)} -->\n")
             f.write(f"<!-- Word Count: {section.word_count} -->\n")
             f.write(f"<!-- Has Tables: {section.has_tables} -->\n")
             f.write(f"<!-- Has Images: {section.has_images} -->\n")
@@ -241,7 +395,8 @@ def create_review_workspace(sections: DocumentSections, output_dir: str) -> Path
             "heading": section.heading,
             "file": str(section_file.name),
             "checklist": str(checklist_file.name),
-            "status": "PENDING"
+            "status": "PENDING",
+            "page_numbers": section.page_numbers,
         })
         
         logger.info(f"✅ Created: {section.section_id} - {section.heading}")
@@ -280,7 +435,7 @@ def submit_section_review(
     review = SectionReview(
         section_id=section_id,
         reviewer=reviewer,
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         status=status.value,
         checklist=checklist,
         issues=checklist.get_failed_items(),
@@ -351,22 +506,26 @@ def reprocess_section(
 def get_review_progress(workspace_path: str) -> Dict:
     """Get review progress summary"""
     workspace = Path(workspace_path)
-    manifest_file = workspace / "review_manifest.json"
+    page_manifest_file = workspace / "page_review_manifest.json"
+    manifest_file = page_manifest_file if page_manifest_file.exists() else workspace / "review_manifest.json"
     
     with open(manifest_file, 'r') as f:
         manifest = json.load(f)
     
-    total = len(manifest["sections"])
+    review_items = manifest.get("pages") or manifest.get("sections") or []
+    total = len(review_items)
     by_status = {}
     
-    for section in manifest["sections"]:
-        status = section.get("status", "PENDING")
+    for item in review_items:
+        status = item.get("status", "PENDING")
         by_status[status] = by_status.get(status, 0) + 1
     
     progress = {
         "total_sections": total,
         "by_status": by_status,
-        "completion_percentage": (by_status.get("APPROVED", 0) / total * 100) if total > 0 else 0
+        "completion_percentage": (
+            (by_status.get("APPROVED", 0) + by_status.get("reviewed", 0)) / total * 100
+        ) if total > 0 else 0
     }
     
     return progress

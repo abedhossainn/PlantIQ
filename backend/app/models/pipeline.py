@@ -63,6 +63,113 @@ class PipelineStatusResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ReviewChecklistItemResponse(BaseModel):
+    """Single checklist item state for review."""
+    item: str
+    checked: bool
+    notes: Optional[str] = None
+
+
+class ReviewChecklistResponse(BaseModel):
+    """Checklist state for a review unit."""
+    question_headings: ReviewChecklistItemResponse
+    table_facts_extracted: ReviewChecklistItemResponse
+    figure_descriptions: ReviewChecklistItemResponse
+    citations_present: ReviewChecklistItemResponse
+    no_hallucinations: ReviewChecklistItemResponse
+    rag_optimized: ReviewChecklistItemResponse
+
+
+class ValidationIssueResponse(BaseModel):
+    """Validation issue attached to a page review unit."""
+    issue_type: str
+    severity: str
+    page_number: int
+    description: str
+    evidence: str
+    suggested_fix: str
+
+
+class PageEvidenceResponse(BaseModel):
+    """Evidence metadata for a page review unit."""
+    page_number: int
+    text_preview: str
+    image_count: int
+    table_count: int
+    has_figures: bool
+    thumbnail_path: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+
+class ReviewPageResponse(BaseModel):
+    """Single page review unit returned by the backend."""
+    id: str
+    page_number: int
+    status: str
+    markdown_content: str
+    text_preview: str
+    validation_issues: List[ValidationIssueResponse]
+    evidence_images: List[str]
+    evidence: PageEvidenceResponse
+    checklist: ReviewChecklistResponse
+
+
+class PageContentUpdate(BaseModel):
+    """Request payload for persisting updated page markdown content."""
+    markdown_content: str
+
+
+class ReviewProgressResponse(BaseModel):
+    """Progress summary for page review."""
+    total_pages: int
+    reviewed_pages: int
+    pending_pages: int
+    completion_percentage: float
+    by_status: Dict[str, int]
+
+
+class DocumentPagesResponse(BaseModel):
+    """Document-level page review payload."""
+    document_name: str
+    review_unit: Literal["page"] = "page"
+    pages: List[ReviewPageResponse]
+    progress: ReviewProgressResponse
+
+
+class QARescoreResponse(BaseModel):
+    """Response payload for QA rescoring using persisted review artifacts."""
+    document_id: UUID4
+    decision: str
+    passed_criteria: List[str]
+    failed_criteria: List[str]
+    recommendations: List[str]
+    metrics: Dict[str, Any]
+    timestamp: str
+
+
+class SectionPageRangeResponse(BaseModel):
+    """Derived page range for a legacy section payload."""
+    start: Optional[int] = None
+    end: Optional[int] = None
+
+
+class SectionResponse(BaseModel):
+    """Legacy section response retained for compatibility."""
+    id: str
+    heading: str
+    status: str
+    content: str
+    checklist: Dict[str, Any]
+    page_range: SectionPageRangeResponse
+    page_numbers: List[int] = Field(default_factory=list)
+
+
+class DocumentSectionsResponse(BaseModel):
+    """Legacy section response payload retained for compatibility."""
+    document_name: str
+    sections: List[SectionResponse]
+
+
 class PipelineProgressUpdate(BaseModel):
     """Progress update message for WebSocket."""
     type: Literal["progress"] = "progress"

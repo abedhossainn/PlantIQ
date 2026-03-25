@@ -147,3 +147,66 @@ export interface QAGateReport {
   failingCriteria: string[];
   generatedAt: string;
 }
+
+// --------------- Page-based review types (canonical review unit) -----------------
+
+export interface PageChecklistItem {
+  item: string;
+  checked: boolean;
+  notes?: string | null;
+}
+
+export interface PageChecklist {
+  question_headings: PageChecklistItem;
+  table_facts_extracted: PageChecklistItem;
+  figure_descriptions: PageChecklistItem;
+  citations_present: PageChecklistItem;
+  no_hallucinations: PageChecklistItem;
+  rag_optimized: PageChecklistItem;
+}
+
+export interface PageValidationIssue {
+  issue_type: string;
+  severity: string;
+  page_number: number;
+  description: string;
+  evidence: string;
+  suggested_fix: string;
+}
+
+export interface PageEvidence {
+  page_number: number;
+  text_preview: string;
+  image_count: number;
+  table_count: number;
+  has_figures: boolean;
+  thumbnail_url?: string | null;
+  thumbnail_path?: string | null;
+}
+
+export interface ReviewPage {
+  id: string;
+  page_number: number;
+  status: string;
+  markdown_content: string;
+  text_preview: string;
+  validation_issues: PageValidationIssue[];
+  evidence_images: string[];
+  evidence: PageEvidence;
+  checklist: PageChecklist;
+}
+
+export interface ReviewProgress {
+  total_pages: number;
+  reviewed_pages: number;
+  pending_pages: number;
+  completion_percentage: number;
+  by_status: Record<string, number>;
+}
+
+export interface DocumentPagesResponse {
+  document_name: string;
+  review_unit: "page";
+  pages: ReviewPage[];
+  progress: ReviewProgress;
+}

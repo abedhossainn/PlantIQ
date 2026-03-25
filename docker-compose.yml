@@ -74,6 +74,29 @@ services:
     restart: unless-stopped
 
   # ============================================================================
+  # Docling Conversion Service (PDF -> Markdown for ingestion)
+  # ============================================================================
+  docling-serve:
+    image: quay.io/docling-project/docling-serve
+    container_name: docling-serve
+    ports:
+      - "5001:5001"
+    environment:
+      - HF_HOME=/opt/app-root/src/.cache/huggingface
+    volumes:
+      - docling_models:/opt/app-root/src/.cache/docling/models
+      - ${HOME:-/home/cpdcs}/.cache/huggingface:/opt/app-root/src/.cache/huggingface
+    networks:
+      - plantiq-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
   # PostgreSQL Database (User management, review metadata, audit logs)
   # ============================================================================
   postgres:
@@ -94,40 +117,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
-    networks:
-      - plantiq-network
-    restart: unless-stopped
-
-  # ============================================================================
-  # PostgREST Data API (PostgreSQL CRUD API with RLS)
-  # ============================================================================
-  postgrest:
-    image: postgrest/postgrest:v14.0
-    container_name: plantiq-postgrest
-    ports:
-      - "${POSTGREST_HOST_PORT:-3000}:3000"
-    environment:
-      - PGRST_DB_URI=postgres://plantig_authenticator:${POSTGRES_AUTHENTICATOR_PASSWORD:-change_me_in_production}@postgres:5433/${POSTGRES_DB:-plantiq}
-      - PGRST_DB_SCHEMA=${PGRST_DB_SCHEMA:-public}
-      - PGRST_DB_ANON_ROLE=${PGRST_DB_ANON_ROLE:-plantig_anon}
-      - PGRST_JWT_SECRET=@/run/secrets/postgrest_jwt_public_key
-      - PGRST_JWT_AUD=${JWT_AUDIENCE:-plantig}
-      - PGRST_ROLE_CLAIM_KEY=.role
-      - PGRST_SERVER_PROXY_URI=${PGRST_SERVER_PROXY_URI:-http://localhost:3000}
-      - PGRST_ADMIN_SERVER_PORT=3001
-      - PGRST_LOG_LEVEL=${PGRST_LOG_LEVEL:-info}
-      - PGRST_LOG_QUERY=${PGRST_LOG_QUERY:-main-query}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "/bin/postgrest", "--help"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    secrets:
-      - postgrest_jwt_public_key
     networks:
       - plantiq-network
     restart: unless-stopped
@@ -186,7 +175,5 @@ networks:
 volumes:
   postgres_data:
     driver: local
-
-secrets:
-  postgrest_jwt_public_key:
-    file: ${JWT_PUBLIC_KEY_FILE:-./backend/secrets/jwt-public.pem}
+  docling_models:
+    driver: local

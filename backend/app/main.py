@@ -22,6 +22,10 @@ def _csv_to_set(value: str) -> set[str]:
     return {item.strip() for item in value.split(",") if item.strip()}
 
 
+def _csv_to_list(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 QUIET_LOG_PATHS = _csv_to_set(os.getenv("QUIET_LOG_PATHS", "/health,/"))
 DETAILED_LOG_PATH_PREFIXES = _csv_to_set(
     os.getenv("DETAILED_LOG_PATH_PREFIXES", "/api/v1/chat,/api/v1/pipeline,/api/v1/auth,/api/docs")
@@ -140,11 +144,10 @@ async def observability_middleware(request: Request, call_next):
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js dev server
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_csv_to_list(os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://10.1.10.181:3000",
+    )),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

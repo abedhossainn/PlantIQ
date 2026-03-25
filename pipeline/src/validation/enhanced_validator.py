@@ -9,14 +9,97 @@ Implements improvements from HITL analysis:
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from enum import Enum
 
+from ..utils.vlm_options import get_vision_model_id
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+def _normalize_text_for_match(text: str) -> str:
+    """Normalize text for fuzzy matching between PDF previews and markdown."""
+    cleaned = text.replace("&amp;", "&")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(r"[^\w\s|%-]", "", cleaned)
+    return cleaned.lower().strip()
+
+
+def _preview_anchor_candidates(text_preview: str) -> List[str]:
+    """Build candidate anchor phrases from extracted PDF preview text."""
+    candidates: List[str] = []
+    for raw_line in text_preview.splitlines():
+        normalized = _normalize_text_for_match(raw_line)
+        if not normalized:
+            continue
+        if len(normalized) >= 18 or len(normalized.split()) >= 3:
+            candidates.append(normalized)
+    return candidates
+
+
+def _fallback_markdown_section(markdown_content: str, page_number: int, total_pages: int) -> str:
+    """Fallback heuristic when preview anchoring cannot locate a section."""
+    lines = markdown_content.splitlines()
+    if not lines:
+        return ""
+
+    total_pages = max(1, total_pages)
+    section_size = max(40, len(lines) // total_pages)
+    start_line = max(0, min((page_number - 1) * section_size, max(0, len(lines) - section_size)))
+    end_line = min(len(lines), start_line + section_size)
+    return "\n".join(lines[start_line:end_line])
+
+
+def _extract_relevant_markdown_section(
+    markdown_content: str,
+    text_preview: str,
+    page_number: int,
+    total_pages: int,
+) -> str:
+    """Locate the most relevant markdown slice for a page using its extracted text preview."""
+    lines = markdown_content.splitlines()
+    if not lines:
+        return ""
+
+    anchor_candidates = _preview_anchor_candidates(text_preview)
+    if not anchor_candidates:
+        return _fallback_markdown_section(markdown_content, page_number, total_pages)
+
+    normalized_lines = [_normalize_text_for_match(line) for line in lines]
+    best_index: Optional[int] = None
+    best_score = -1
+
+    for idx, normalized_line in enumerate(normalized_lines):
+        if not normalized_line:
+            continue
+        score = sum(1 for candidate in anchor_candidates if candidate and (candidate in normalized_line or normalized_line in candidate))
+        if score > best_score:
+            best_score = score
+            best_index = idx
+
+    if best_index is None or best_score <= 0:
+        return _fallback_markdown_section(markdown_content, page_number, total_pages)
+
+    start_line = max(0, best_index - 40)
+    end_line = min(len(lines), best_index + 120)
+    return "\n".join(lines[start_line:end_line])
+
+
+def _count_table_markers(markdown_section: str) -> int:
+    """Estimate whether markdown section contains serialized tables."""
+    return sum(1 for line in markdown_section.splitlines() if line.count("|") >= 2)
+
+
+def _count_figure_markers(markdown_section: str) -> int:
+    """Count both classic markdown image refs and description-mode figure markers."""
+    markdown_images = markdown_section.count("![")
+    described_figures = len(re.findall(r"\*\*\[Figure\s+\d+:", markdown_section, flags=re.IGNORECASE))
+    return markdown_images + described_figures
 
 
 class IssueType(Enum):
@@ -137,7 +220,9 @@ def extract_page_evidence(pdf_path: str) -> List[PageEvidence]:
 def validate_page_against_markdown(
     page_evidence: PageEvidence,
     markdown_content: str,
-    vlm_model
+    vlm_model,
+    total_pages: int,
+    page_markdown_map: Optional[Dict[int, str]] = None,
 ) -> PageValidationReport:
     """
     Validate a single page against its corresponding markdown section
@@ -145,18 +230,22 @@ def validate_page_against_markdown(
     """
     issues = []
     
-    # Identify markdown section for this page
-    # This is a simplified heuristic - should be improved based on actual page boundaries
-    lines = markdown_content.split('\n')
-    section_size = len(lines) // max(1, page_evidence.page_number)
-    start_line = (page_evidence.page_number - 1) * section_size
-    end_line = min(start_line + section_size, len(lines))
-    markdown_section = '\n'.join(lines[start_line:end_line])
+    markdown_section = ""
+    if page_markdown_map:
+        markdown_section = (page_markdown_map.get(page_evidence.page_number) or "").strip()
+
+    if not markdown_section:
+        markdown_section = _extract_relevant_markdown_section(
+            markdown_content,
+            page_evidence.text_preview,
+            page_evidence.page_number,
+            total_pages,
+        )
     
     # Check for missing tables
     if page_evidence.table_count > 0:
-        table_count_in_md = markdown_section.count('|')  # Simple heuristic
-        if table_count_in_md < page_evidence.table_count * 3:  # Expect at least 3 pipes per table
+        table_rows_in_md = _count_table_markers(markdown_section)
+        if table_rows_in_md < page_evidence.table_count * 2:
             issues.append(ValidationIssue(
                 issue_type=IssueType.TABLE_FIDELITY.value,
                 severity="major",
@@ -168,7 +257,7 @@ def validate_page_against_markdown(
     
     # Check for missing images
     if page_evidence.has_figures:
-        image_refs = markdown_section.count('![')
+        image_refs = _count_figure_markers(markdown_section)
         if image_refs < page_evidence.image_count:
             issues.append(ValidationIssue(
                 issue_type=IssueType.IMAGE_LOSS.value,
@@ -176,7 +265,7 @@ def validate_page_against_markdown(
                 page_number=page_evidence.page_number,
                 description=f"Page has {page_evidence.image_count} images, found {image_refs} in markdown",
                 evidence=f"Images detected in PDF page {page_evidence.page_number}",
-                suggested_fix="Add text descriptions for all figures with ![Figure: description](path)"
+                suggested_fix="Add text descriptions for all figures in markdown using the standard Figure description format"
             ))
     
     # Calculate confidence score (simple heuristic - can be enhanced with VLM)
@@ -186,7 +275,7 @@ def validate_page_against_markdown(
     
     return PageValidationReport(
         page_number=page_evidence.page_number,
-        markdown_section=markdown_section[:200],  # Store preview only
+        markdown_section=markdown_section,
         evidence=page_evidence,
         issues=issues,
         confidence_score=confidence_score,
@@ -206,7 +295,8 @@ def create_validation_report(
     pdf_path: str,
     markdown_path: str,
     vlm_model_name: str,
-    docling_version: str = "1.0.0"
+    docling_version: str = "1.0.0",
+    page_markdown_map: Optional[Dict[int, str]] = None,
 ) -> DocumentValidation:
     """
     Create comprehensive validation report with lineage tracking
@@ -226,11 +316,14 @@ def create_validation_report(
     
     # Validate each page
     page_validations = []
+    total_pages = len(page_evidences)
     for evidence in page_evidences:
         validation = validate_page_against_markdown(
             evidence,
             markdown_content,
-            vlm_model=None  # Will integrate VLM in next iteration
+            vlm_model=None,  # Will integrate VLM in next iteration
+            total_pages=total_pages,
+            page_markdown_map=page_markdown_map,
         )
         page_validations.append(validation)
         logger.info(f"✅ Validated page {evidence.page_number}: {len(validation.issues)} issues found")
@@ -294,7 +387,11 @@ def main():
     parser.add_argument("pdf", help="Path to PDF file")
     parser.add_argument("--markdown", required=True, help="Path to markdown file")
     parser.add_argument("--output", default="validation_enhanced.json", help="Output JSON path")
-    parser.add_argument("--vlm-model", default="Qwen2.5-VL-32B-Instruct", help="VLM model name")
+    parser.add_argument(
+        "--vlm-model",
+        default=None,
+        help="Vision model name (defaults to VISION_MODEL_ID from repo-root .env)",
+    )
     parser.add_argument("--docling-version", default="1.0.0", help="Docling version")
     
     args = parser.parse_args()
@@ -306,7 +403,7 @@ def main():
     report = create_validation_report(
         args.pdf,
         args.markdown,
-        args.vlm_model,
+        args.vlm_model or get_vision_model_id(),
         args.docling_version
     )
     

@@ -10,6 +10,67 @@ from typing import Optional, Dict, Any
 import json
 import yaml
 from pathlib import Path
+import os
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ROOT_ENV_PATH = REPO_ROOT / ".env"
+DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B-Instruct"
+DEFAULT_VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+
+
+def _read_root_env() -> Dict[str, str]:
+    """Read repo-root environment values without requiring external dotenv helpers."""
+    if not ROOT_ENV_PATH.exists():
+        return {}
+
+    values: Dict[str, str] = {}
+    with open(ROOT_ENV_PATH, "r", encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip().strip('"').strip("'")
+
+    return values
+
+
+def _get_model_id_from_sources(*env_names: str, default: str) -> str:
+    """Resolve model identifiers from process env first, then repo-root .env."""
+    for env_name in env_names:
+        value = os.getenv(env_name)
+        if value:
+            return value
+
+    env_values = _read_root_env()
+    for env_name in env_names:
+        value = env_values.get(env_name)
+        if value:
+            return value
+
+    return default
+
+
+def get_text_model_id() -> str:
+    """Return the active text model identifier from the shared repo-root env contract."""
+    return _get_model_id_from_sources(
+        "TEXT_MODEL_ID",
+        "VLLM_MODEL",
+        "VLLM_MODEL_NAME",
+        default=DEFAULT_TEXT_MODEL_ID,
+    )
+
+
+def get_vision_model_id() -> str:
+    """Return the active vision model identifier from the shared repo-root env contract."""
+    return _get_model_id_from_sources(
+        "VISION_MODEL_ID",
+        "VLM_MODEL",
+        "VLM_MODEL_NAME",
+        default=DEFAULT_VISION_MODEL_ID,
+    )
 
 
 class ResponseFormat(Enum):
@@ -39,7 +100,7 @@ class VLMOptions:
     Usage:
         # From code
         options = VLMOptions(
-            model_id="Qwen/Qwen2.5-VL-32B-Instruct",
+            model_id=get_vision_model_id(),
             timeout=300,
             temperature=0.7
         )
@@ -53,7 +114,7 @@ class VLMOptions:
     
     # ===== Model Selection =====
     backend_type: VLMBackendType = VLMBackendType.TRANSFORMERS
-    model_id: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    model_id: str = field(default_factory=get_vision_model_id)
     
     # ===== Generation Parameters =====
     max_new_tokens: int = 1024
@@ -177,6 +238,7 @@ class VLMOptions:
         """
         with open(path, 'r') as f:
             data = json.load(f)
+        data.pop("model_id", None)
         return cls.from_dict(data)
     
     @classmethod
@@ -192,6 +254,7 @@ class VLMOptions:
         """
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
+        data.pop("model_id", None)
         return cls.from_dict(data)
     
     @classmethod
@@ -262,9 +325,23 @@ class VLMOptions:
         Returns:
             Dictionary of model loading parameters
         """
+        resolved_device_map: Any = self.device_map
+
+        if self.device_map == "auto":
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    # Core active models fit on a single accelerator in the current
+                    # architecture. Prefer the primary visible CUDA device to avoid
+                    # partial CPU offload and mixed-GPU allocation failures.
+                    resolved_device_map = {"": 0}
+            except Exception:
+                resolved_device_map = self.device_map
+
         return {
-            'device_map': self.device_map,
-            'dtype': self.dtype,
+            'device_map': resolved_device_map,
+            'torch_dtype': self.dtype,
             'trust_remote_code': self.trust_remote_code,
         }
     
@@ -306,7 +383,6 @@ def create_example_configs(output_dir: str = "."):
     
     # Example 2: Production config
     production = VLMOptions(
-        model_id="Qwen/Qwen2.5-VL-32B-Instruct",
         timeout=600,
         temperature=0.3,
         max_new_tokens=2048,

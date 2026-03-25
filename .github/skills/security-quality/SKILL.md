@@ -2,6 +2,15 @@
 
 This skill provides comprehensive guidance on security best practices, OWASP compliance, accessibility standards, and code quality optimization for the RAG chatbot.
 
+## Operating Guardrails
+
+- **Root-Cause First**: Focus on underlying security, reliability, accessibility, and maintainability issues rather than cosmetic fixes.
+- **Clean Code Focus**: Enforce clear naming, focused units, low duplication, separation of concerns, and maintainable design.
+- **Development-First Execution**: Validate changes in local, development, or staging environments by default; do not move work into production without explicit user confirmation.
+- **Core Functionality First**: Address issues that affect required behavior and critical paths before optional improvements.
+- **Plan Discipline**: Follow a deliberate remediation plan and revise it only when evidence shows it is incomplete or wrong.
+- **Confirm Before Expanding Scope**: Verify with the user before adding new tools, dependencies, policies, or remediation work outside the request.
+
 ## Overview
 
 The Security & Code Quality skill encompasses:
@@ -35,7 +44,7 @@ The Security & Code Quality skill encompasses:
 - Regular security updates
 - Vulnerability scanning (npm audit, pip check)
 - License compliance (OWASP Dependency-Check)
-- Pinned versions for production
+- Pinned versions for controlled environments
 
 ## Accessibility (WCAG 2.1)
 
@@ -105,10 +114,10 @@ The Security & Code Quality skill encompasses:
 6. **Incident Response**: Reference for security incident handling
 
 ## Related Skills
-- [Backend Development](#) - For secure API design
-- [Frontend Development](#) - For secure client-side handling
-- [DevOps Infrastructure](#) - For infrastructure security
-- [Testing Automation](#) - For security testing
+- [Backend Development](../backend-development/SKILL.md) - For secure API design
+- [Frontend Development](../frontend-development/SKILL.md) - For secure client-side handling
+- [DevOps Infrastructure](../devops-infrastructure/SKILL.md) - For infrastructure security
+- [Testing Automation](../testing-automation/SKILL.md) - For security testing
 
 ## Best Practices
 

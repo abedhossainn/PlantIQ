@@ -15,6 +15,7 @@ import json
 import logging
 import sys
 import subprocess
+import os
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime
@@ -22,7 +23,9 @@ from datetime import datetime
 # Import our enhanced modules
 from ..validation.enhanced_validator import create_validation_report, save_validation_report
 from ..review.section_review import (
+    extract_pages_from_validation,
     extract_sections_from_markdown,
+    create_page_review_workspace,
     create_review_workspace,
     get_review_progress
 )
@@ -45,9 +48,30 @@ from ..utils.table_figure_handler import (
     extract_figures_from_markdown,
     generate_table_figure_report
 )
+from ..utils.vlm_options import get_text_model_id, get_vision_model_id
+from ..ingestion.docling_converter import export_page_markdown_map
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+PLACEHOLDER_MARKDOWN_SENTINELS = (
+    "Initial placeholder markdown created by backend upload workflow.",
+    "Replace with Docling-extracted markdown for full-quality pipeline results.",
+)
+
+DOCLING_IMAGE_MODE = "descriptions"
+
+
+def _convert_pdf_to_markdown(*, pdf_path: str, output_path: str, image_mode: str, docling_url: str) -> None:
+    from ..ingestion.docling_converter import convert_pdf_with_qwen
+
+    convert_pdf_with_qwen(
+        pdf_path=pdf_path,
+        output_path=output_path,
+        image_mode=image_mode,
+        docling_url=docling_url,
+    )
 
 
 class HITLPipeline:
@@ -60,6 +84,85 @@ class HITLPipeline:
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(exist_ok=True, parents=True)
         logger.info(f"📁 HITL workspace: {self.work_dir}")
+
+    @staticmethod
+    def _is_placeholder_markdown(markdown_path: Path) -> bool:
+        if not markdown_path.exists() or not markdown_path.is_file():
+            return True
+
+        try:
+            content = markdown_path.read_text(encoding="utf-8")
+        except OSError:
+            return True
+
+        stripped_content = content.strip()
+        if not stripped_content:
+            return True
+
+        return any(sentinel in stripped_content for sentinel in PLACEHOLDER_MARKDOWN_SENTINELS)
+
+    def _ensure_docling_markdown(self, pdf_path: str, markdown_path: str) -> str:
+        markdown_file = Path(markdown_path)
+        markdown_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if not self._is_placeholder_markdown(markdown_file):
+            logger.info(f"✅ Using existing markdown: {markdown_file}")
+            return str(markdown_file)
+
+        logger.info("\n" + "=" * 80)
+        logger.info("📄 STAGE 0: Docling PDF → Markdown Extraction")
+        logger.info("=" * 80)
+        logger.info(f"🔄 Generating markdown from PDF: {Path(pdf_path).name}")
+
+        docling_url = os.getenv("DOCLING_URL", "http://localhost:5001")
+        temp_output = markdown_file.with_suffix(".docling.tmp.md")
+
+        try:
+            _convert_pdf_to_markdown(
+                pdf_path=pdf_path,
+                output_path=str(temp_output),
+                image_mode=DOCLING_IMAGE_MODE,
+                docling_url=docling_url,
+            )
+
+            generated_content = temp_output.read_text(encoding="utf-8")
+            if not generated_content.strip():
+                raise ValueError("Docling generated empty markdown output")
+            if any(sentinel in generated_content for sentinel in PLACEHOLDER_MARKDOWN_SENTINELS):
+                raise ValueError("Docling output still contains placeholder markdown sentinel text")
+
+            markdown_file.write_text(generated_content, encoding="utf-8")
+            logger.info(f"✅ Docling markdown saved: {markdown_file}")
+            return str(markdown_file)
+        finally:
+            temp_output.unlink(missing_ok=True)
+
+    def _run_validation_stage(
+        self,
+        *,
+        pdf_path: str,
+        markdown_path: str,
+        vlm_model: str,
+        docling_version: str,
+        validation_path: Path,
+        manifest,
+        manifest_path: Path,
+        reviewer: str,
+        page_markdown_map: Optional[Dict[int, str]] = None,
+    ):
+        """Generate and persist the validation artifact for the current canonical markdown."""
+        validation_report = create_validation_report(
+            pdf_path,
+            markdown_path,
+            vlm_model,
+            docling_version,
+            page_markdown_map=page_markdown_map,
+        )
+        save_validation_report(validation_report, str(validation_path))
+
+        manifest = update_manifest_timestamp(manifest, "validation", reviewer)
+        save_manifest(manifest, str(manifest_path))
+        return validation_report, manifest
     
     def run_full_pipeline(
         self,
@@ -67,8 +170,8 @@ class HITLPipeline:
         markdown_path: str,
         reviewer: str,
         docling_version: str = "1.0.0",
-        vlm_model: str = "Qwen2.5-VL-32B-Instruct",
-        reformatter_model: str = "Qwen2.5-32B-Instruct"
+        vlm_model: Optional[str] = None,
+        reformatter_model: Optional[str] = None
     ) -> Dict:
         """
         Run complete HITL pipeline with all improvements
@@ -78,9 +181,22 @@ class HITLPipeline:
         logger.info("=" * 80)
         logger.info("🚀 ENHANCED HITL PIPELINE - START")
         logger.info("=" * 80)
+
+        vlm_model = vlm_model or get_vision_model_id()
+        reformatter_model = reformatter_model or get_text_model_id()
+        markdown_path = self._ensure_docling_markdown(pdf_path, markdown_path)
+        page_markdown_map = export_page_markdown_map(
+            pdf_path,
+            image_mode=DOCLING_IMAGE_MODE,
+        )
         
         doc_name = Path(pdf_path).stem
         results = {"document": doc_name, "stages": {}}
+        results["stages"]["docling_extraction"] = {
+            "status": "complete",
+            "output": str(markdown_path),
+            "image_mode": DOCLING_IMAGE_MODE,
+        }
         
         # Stage 1: Create lineage manifest
         logger.info("\n" + "=" * 80)
@@ -102,18 +218,24 @@ class HITLPipeline:
             "output": str(manifest_path)
         }
         
-        # Stage 2: Enhanced validation with VLM (Qwen2.5-VL-32B)
+        # Stage 2: Enhanced validation with the configured vision model
         logger.info("\n" + "=" * 80)
-        logger.info("🔍 STAGE 2: VLM-Powered Validation (Qwen2.5-VL-32B)")
+        logger.info(f"🔍 STAGE 2: VLM-Powered Validation ({vlm_model})")
         logger.info("=" * 80)
         
         # First: Basic per-page evidence extraction
         logger.info("📊 Step 2a: Extracting per-page evidence...")
-        validation_report = create_validation_report(
-            pdf_path,
-            markdown_path,
-            vlm_model,
-            docling_version
+        validation_path = self.work_dir / f"{doc_name}_validation.json"
+        validation_report, manifest = self._run_validation_stage(
+            pdf_path=pdf_path,
+            markdown_path=markdown_path,
+            vlm_model=vlm_model,
+            docling_version=docling_version,
+            validation_path=validation_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            reviewer=reviewer,
+            page_markdown_map=page_markdown_map,
         )
         
         # Second: Deep VLM comparison (optional - can be skipped for speed)
@@ -141,13 +263,6 @@ class HITLPipeline:
             logger.warning("⚠️  VLM comparison skipped by user")
         except Exception as e:
             logger.warning(f"⚠️  VLM comparison failed (continuing with basic validation): {e}")
-        
-        validation_path = self.work_dir / f"{doc_name}_validation.json"
-        save_validation_report(validation_report, str(validation_path))
-        
-        # Update manifest
-        manifest = update_manifest_timestamp(manifest, "validation", reviewer)
-        save_manifest(manifest, str(manifest_path))
         
         results["stages"]["validation"] = {
             "status": "complete",
@@ -178,15 +293,24 @@ class HITLPipeline:
             markdown_enhanced_path = self.work_dir / f"{doc_name}_with_images.md"
             
             try:
-                result = subprocess.run([
-                    "python3",
-                    "rag_vlm_image_describer.py",
+                image_description_cmd = [
+                    sys.executable,
+                    "-m",
+                    "pipeline.src.validation.vlm_image_describer",
                     "--pdf", pdf_path,
                     "--markdown", markdown_path,
                     "--validation", str(validation_path),
                     "--output", str(markdown_enhanced_path),
-                    "--model", vlm_model
-                ], capture_output=True, text=True, timeout=2400)
+                    "--preset", "quality",
+                ]
+                result = subprocess.run(
+                    image_description_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=2400,
+                    cwd=str(Path(__file__).resolve().parents[3]),
+                    env=os.environ.copy(),
+                )
                 
                 if result.returncode == 0:
                     logger.info("✅ Image descriptions generated")
@@ -194,6 +318,27 @@ class HITLPipeline:
                     markdown_path = str(markdown_enhanced_path)
                     with open(markdown_path) as f:
                         markdown_content = f.read()
+
+                    logger.info("📊 Re-running validation against final markdown with image descriptions...")
+                    validation_report, manifest = self._run_validation_stage(
+                        pdf_path=pdf_path,
+                        markdown_path=markdown_path,
+                        vlm_model=vlm_model,
+                        docling_version=docling_version,
+                        validation_path=validation_path,
+                        manifest=manifest,
+                        manifest_path=manifest_path,
+                        reviewer=reviewer,
+                        page_markdown_map=page_markdown_map,
+                    )
+                    results["stages"]["validation"] = {
+                        "status": "complete",
+                        "output": str(validation_path),
+                        "confidence": validation_report.overall_confidence,
+                        "total_issues": validation_report.metadata["total_issues"],
+                        "critical_issues": validation_report.metadata["critical_issues"],
+                        "validated_markdown": str(markdown_enhanced_path),
+                    }
                     
                     results["stages"]["image_descriptions"] = {
                         "status": "complete",
@@ -201,13 +346,14 @@ class HITLPipeline:
                         "pages_processed": image_loss_count
                     }
                 else:
-                    logger.warning(f"⚠️  Image description failed: {result.stderr[:200]}")
+                    failure_output = (result.stderr or result.stdout or "")[:500]
+                    logger.warning(f"⚠️  Image description failed: {failure_output}")
                     logger.info("   Continuing with original markdown...")
                     with open(markdown_path, 'r', encoding='utf-8') as f:
                         markdown_content = f.read()
                     results["stages"]["image_descriptions"] = {
                         "status": "failed",
-                        "error": result.stderr[:200]
+                        "error": failure_output
                     }
                     
             except subprocess.TimeoutExpired:
@@ -253,19 +399,23 @@ class HITLPipeline:
             "figures": len(figures)
         }
         
-        # Stage 4: Section-based review workspace
+        # Stage 4: Page-based review workspace (primary) + section metadata (compatibility)
         logger.info("\n" + "=" * 80)
-        logger.info("📋 STAGE 4: Create Section-Based Review Workspace")
+        logger.info("📋 STAGE 4: Create Page-Based Review Workspace")
         logger.info("=" * 80)
-        
+
+        pages = extract_pages_from_validation(validation_report, doc_name)
         sections = extract_sections_from_markdown(markdown_content, doc_name)
-        
+
         review_workspace = self.work_dir / f"{doc_name}_review"
+        create_page_review_workspace(pages, str(review_workspace))
         create_review_workspace(sections, str(review_workspace))
         
         results["stages"]["review_workspace"] = {
             "status": "complete",
             "output": str(review_workspace),
+            "review_unit": "page",
+            "total_pages": pages.total_pages,
             "total_sections": sections.total_sections,
             "sections_with_tables": sections.metadata["sections_with_tables"],
             "sections_with_images": sections.metadata["sections_with_images"]
@@ -370,6 +520,7 @@ class HITLPipeline:
         logger.info(f"   Validation Confidence: {validation_report.overall_confidence:.2%}")
         logger.info(f"   Total Issues: {validation_report.metadata['total_issues']}")
         logger.info(f"   Critical Issues: {validation_report.metadata['critical_issues']}")
+        logger.info(f"   Review Pages: {pages.total_pages}")
         logger.info(f"   Sections: {sections.total_sections}")
         logger.info(f"   Tables: {len(tables)}")
         logger.info(f"   Figures: {len(figures)}")
@@ -382,8 +533,8 @@ class HITLPipeline:
         
         # Next steps
         logger.info(f"\n📋 NEXT STEPS FOR REVIEWER:")
-        logger.info(f"   1. Review sections in: {review_workspace}")
-        logger.info(f"   2. Fill out checklists for each section")
+        logger.info(f"   1. Review pages in: {review_workspace}")
+        logger.info(f"   2. Fill out checklists for each page")
         logger.info(f"   3. Address {len(qa_result.failed_criteria)} failed QA criteria")
         logger.info(f"   4. Focus on {validation_report.metadata['critical_issues']} critical issues")
         
@@ -417,11 +568,11 @@ class HITLPipeline:
         validation_report_path: str
     ) -> Dict:
         """
-        Run Qwen2.5-32B reformatting AFTER manual review approval
+        Run shared text-model reformatting AFTER manual review approval
         This is Stage 10 - final AI-powered optimization
         """
         logger.info("\n" + "=" * 80)
-        logger.info("🤖 STAGE 10: Post-Approval Reformatting (Qwen2.5-32B)")
+        logger.info(f"🤖 STAGE 10: Post-Approval Reformatting ({get_text_model_id()})")
         logger.info("=" * 80)
         logger.info("⏱️  This will take ~40-60 minutes")
         
@@ -439,7 +590,7 @@ class HITLPipeline:
                 validation_data = json.load(f)
             
             # Run reformatting
-            logger.info("📨 Sending to Qwen2.5-32B for RAG optimization...")
+            logger.info(f"📨 Sending to {get_text_model_id()} for RAG optimization...")
             result = reformat_with_qwen(
                 markdown_content,
                 validation_data,
@@ -510,8 +661,16 @@ def main():
     parser.add_argument("--doc-name", help="Document name (for status/reformat)")
     parser.add_argument("--workspace", default="hitl_workspace", help="Workspace directory")
     parser.add_argument("--docling-version", default="1.0.0", help="Docling version")
-    parser.add_argument("--vlm-model", default="Qwen2.5-VL-32B-Instruct", help="VLM model")
-    parser.add_argument("--reformatter-model", default="Qwen2.5-32B-Instruct", help="Reformatter model")
+    parser.add_argument(
+        "--vlm-model",
+        default=None,
+        help="Vision model override (defaults to VISION_MODEL_ID from repo-root .env)",
+    )
+    parser.add_argument(
+        "--reformatter-model",
+        default=None,
+        help="Text model override (defaults to TEXT_MODEL_ID from repo-root .env)",
+    )
     parser.add_argument("--skip-vlm", action="store_true", help="Skip VLM deep comparison (faster)")
     
     args = parser.parse_args()

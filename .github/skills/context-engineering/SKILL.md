@@ -2,6 +2,15 @@
 
 This skill provides guidance for maximizing GitHub Copilot effectiveness through better context management, code organization, and refactoring strategies.
 
+## Operating Guardrails
+
+- **Root-Cause First**: Use refactoring and context analysis to address the underlying cause of complexity, duplication, or fragility.
+- **Clean Code Focus**: Favor simple, modular, readable structures with explicit boundaries and minimal coupling.
+- **Development-First Execution**: Apply structural changes in local, development, or staging workflows before any production rollout.
+- **Core Functionality First**: Refactor around the critical path first; avoid broad cleanup that distracts from required behavior.
+- **Plan Discipline**: Map dependencies, define the plan, and change it only when evidence requires it.
+- **Confirm Before Expanding Scope**: Verify with the user before turning a focused refactor into a broader redesign, file split, or architectural expansion.
+
 ## Overview
 
 Context Engineering encompasses:
@@ -70,10 +79,10 @@ Context Engineering encompasses:
 5. **For Maintenance**: Break down complex modules into simpler parts
 
 ## Related Skills
-- [Backend Development](#) - For Python module organization
-- [Frontend Development](#) - For React component structure
-- [Testing Automation](#) - For testable code design
-- [Code Review](#) - For evaluating code structure
+- [Backend Development](../backend-development/SKILL.md) - For Python module organization
+- [Frontend Development](../frontend-development/SKILL.md) - For React component structure
+- [Testing Automation](../testing-automation/SKILL.md) - For testable code design
+- [Code Review Agent](../../agents/review.agent.md) - For evaluating code structure
 
 ## Best Practices
 

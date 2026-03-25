@@ -71,6 +71,12 @@ After each agent completes their work, you'll see handoff buttons showing availa
 - Prefer using `vLLM` specific optimizations when applicable.
 - Use agents for specialized work - don't attempt to handle architecture, implementation, review, testing, and deployment in a single response.
 - Always clarify which agent context you're operating in (via handoff buttons or explicit agent selection).
+- Always investigate the root cause before proposing or applying a fix; avoid symptom-only patches.
+- Apply clean code principles consistently: clear naming, small focused units, low duplication, and separation of concerns.
+- Work in local, development, or staging environments by default; do not move work into production until the user explicitly confirms it.
+- Focus on core functionality and the critical path before enhancements, optimizations, or polish.
+- Create a plan and stick to it; only revise the plan when evidence shows it is incomplete or incorrect, and explain why.
+- Verify with the user before adding new scope, features, dependencies, files, or behaviors that were not explicitly requested.
 
 # Context7 MCP Server
 

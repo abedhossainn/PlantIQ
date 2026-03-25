@@ -1,60 +1,15 @@
 /**
- * Documents API - PostgREST integration
- * Handles document metadata retrieval
+ * Documents API
+ * Handles document metadata retrieval from the FastAPI pipeline service.
  */
 
-import { postgrestFetch, from } from './client';
-import type { Document } from '@/types';
+import { fastapiFetch } from './client';
+import type { Document, DocumentPagesResponse } from '@/types';
+
 
 /**
- * Document summary from document_summaries view
- */
-export interface DocumentSummary {
-  id: string;
-  title: string;
-  version: string;
-  system: string;
-  document_type: string;
-  status: Document['status'];
-  total_pages: number;
-  total_sections: number;
-  review_progress: number;
-  review_progress_percent: number;
-  qa_score?: number;
-  uploaded_by: string;
-  uploaded_by_name: string;
-  uploaded_at: string;
-  approved_by?: string;
-  approved_by_name?: string;
-  approved_at?: string;
-  notes?: string;
-}
-
-/**
- * Convert DocumentSummary to frontend Document type
- */
-function toDocument(summary: DocumentSummary): Document {
-  return {
-    id: summary.id,
-    title: summary.title,
-    version: summary.version,
-    system: summary.system,
-    documentType: summary.document_type,
-    status: summary.status,
-    totalPages: summary.total_pages,
-    totalSections: summary.total_sections,
-    reviewProgress: summary.review_progress_percent,
-    qaScore: summary.qa_score,
-    uploadedBy: summary.uploaded_by_name,
-    uploadedAt: summary.uploaded_at,
-    approvedBy: summary.approved_by_name,
-    approvedAt: summary.approved_at,
-    notes: summary.notes,
-  };
-}
-
-/**
- * Get all documents
+ * Get all documents from the FastAPI pipeline service.
+ * Falls back to empty array if the endpoint is unavailable.
  */
 export async function getDocuments(filters?: {
   status?: Document['status'];
@@ -62,107 +17,100 @@ export async function getDocuments(filters?: {
   limit?: number;
   offset?: number;
 }): Promise<Document[]> {
-  const query = from<DocumentSummary[]>('document_summaries')
-    .select('*')
-    .order('uploaded_at', 'desc');
-  
+  interface FastAPIDocument {
+    id: string;
+    title: string;
+    version: string;
+    system: string;
+    documentType: string;
+    status: string;
+    uploadedBy: string;
+    uploadedAt: string | null;
+    notes?: string;
+    totalPages?: number | null;
+    totalSections?: number | null;
+    reviewProgress?: number | null;
+    qaScore?: number | null;
+    approvedBy?: string | null;
+    approvedAt?: string | null;
+  }
+
+  const rows = await fastapiFetch<FastAPIDocument[]>('/api/v1/documents');
+
+  let docs = rows.map((row): Document => ({
+    id: row.id,
+    title: row.title,
+    version: row.version,
+    system: row.system,
+    documentType: row.documentType,
+    status: row.status as Document['status'],
+    totalPages: row.totalPages ?? 0,
+    totalSections: row.totalSections ?? 0,
+    reviewProgress: row.reviewProgress ?? 0,
+    qaScore: row.qaScore ?? undefined,
+    uploadedBy: row.uploadedBy,
+    uploadedAt: row.uploadedAt ?? new Date().toISOString(),
+    approvedBy: row.approvedBy ?? undefined,
+    approvedAt: row.approvedAt ?? undefined,
+    notes: row.notes,
+  }));
+
   if (filters?.status) {
-    query.eq('status', filters.status);
+    docs = docs.filter((d) => d.status === filters.status);
   }
-  
   if (filters?.system) {
-    query.like('system', filters.system);
+    docs = docs.filter((d) => d.system === filters.system);
   }
-  
-  if (filters?.limit) {
-    query.limit(filters.limit);
-  }
-  
   if (filters?.offset) {
-    query.offset(filters.offset);
+    docs = docs.slice(filters.offset);
   }
-  
-  const summaries = await query.execute();
-  return summaries.map(toDocument);
+  if (filters?.limit) {
+    docs = docs.slice(0, filters.limit);
+  }
+
+  return docs;
 }
 
 /**
  * Get documents in review queue (validation-complete or in-review)
  */
 export async function getReviewQueueDocuments(): Promise<Document[]> {
-  const summaries = await postgrestFetch<DocumentSummary[]>(
-    '/document_summaries?or=(status.eq.validation-complete,status.eq.in-review)&order=uploaded_at.asc'
-  );
-  
-  return summaries.map(toDocument);
+  const all = await getDocuments();
+  return all.filter((d) => d.status === 'validation-complete' || d.status === 'in-review');
 }
 
 /**
  * Get documents ready for QA gates (review-complete)
  */
 export async function getQAGateDocuments(): Promise<Document[]> {
-  const summaries = await postgrestFetch<DocumentSummary[]>(
-    '/document_summaries?status=eq.review-complete&order=uploaded_at.asc'
-  );
-  
-  return summaries.map(toDocument);
+  const all = await getDocuments();
+  return all.filter((d) => d.status === 'review-complete');
 }
 
 /**
- * Get single document by ID
+ * Get single document by ID — looks it up from the full list.
  */
 export async function getDocumentById(id: string): Promise<Document> {
-  const summary = await from<DocumentSummary[]>('document_summaries')
-    .select('*')
-    .eq('id', id)
-    .single();
-  
-  return toDocument(summary);
+  const all = await getDocuments();
+  const doc = all.find((d) => d.id === id);
+  if (!doc) throw new Error(`Document ${id} not found`);
+  return doc;
 }
 
 /**
- * Update document metadata (admin/reviewer only)
+ * Get page-based review units for a document.
+ * Canonical review endpoint superseding the legacy /sections route.
  */
-export async function updateDocument(
-  id: string,
-  updates: Partial<{
-    title: string;
-    version: string;
-    system: string;
-    notes: string;
-  }>
-): Promise<Document> {
-  // Convert camelCase to snake_case for database
-  const dbUpdates: Record<string, unknown> = {};
-  if (updates.title) dbUpdates.title = updates.title;
-  if (updates.version) dbUpdates.version = updates.version;
-  if (updates.system) dbUpdates.system = updates.system;
-  if (updates.notes) dbUpdates.notes = updates.notes;
-  
-  const updated = await postgrestFetch<DocumentSummary[]>(
-    `/documents?id=eq.${id}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(dbUpdates),
-      headers: {
-        'Prefer': 'return=representation',
-      },
-    }
-  );
-  
-  if (!updated || updated.length === 0) {
-    throw new Error('Document not found or update failed');
-  }
-  
-  // Re-fetch from view to get computed fields
-  return getDocumentById(id);
+export async function getDocumentPages(documentId: string): Promise<DocumentPagesResponse> {
+  return fastapiFetch<DocumentPagesResponse>(`/api/v1/documents/${documentId}/pages`);
 }
 
 /**
- * Delete document (admin only)
+ * Build the thumbnail URL for a specific page.
  */
-export async function deleteDocument(id: string): Promise<void> {
-  await postgrestFetch<void>(`/documents?id=eq.${id}`, {
-    method: 'DELETE',
-  });
+export function getPageThumbnailUrl(documentId: string, pageNumber: number): string {
+  const FASTAPI_URL =
+    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_FASTAPI_URL) ||
+    'http://localhost:8000';
+  return `${FASTAPI_URL}/api/v1/documents/${documentId}/pages/${pageNumber}/thumbnail`;
 }

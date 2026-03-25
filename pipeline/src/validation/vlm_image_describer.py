@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 VLM Image Description Generator
-Uses Qwen2.5-VL-32B to generate descriptions for missing images in markdown
+Uses the shared vision model from repo-root .env to generate descriptions for missing images in markdown
 """
 
 import json
@@ -13,7 +13,7 @@ import pdfplumber
 import re
 
 # Import new VLM infrastructure
-from ..utils.vlm_options import VLMOptions
+from ..utils.vlm_options import VLMOptions, get_vision_model_id
 from ..utils.vlm_response_parser import parse_vlm_response, ImageDescription
 from ..utils.progress_tracker import ProgressBar, TimeEstimator, PersistentProgressTracker, log_operation
 
@@ -69,6 +69,7 @@ def generate_image_descriptions_vlm(
     # Use default options if not provided
     if vlm_options is None:
         vlm_options = VLMOptions.get_default("quality")  # Use quality preset for image descriptions
+        vlm_options.model_id = get_vision_model_id()
         vlm_options.max_new_tokens = 2048  # Ensure longer descriptions
         vlm_options.verbose = True
     
@@ -88,7 +89,9 @@ def generate_image_descriptions_vlm(
     
     with log_operation("Load VLM Model", model=vlm_options.model_id):
         try:
-            from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+            # Use the generic multimodal auto-loader because exact Qwen3-VL class names
+            # vary across Transformers releases.
+            from transformers import AutoModelForImageTextToText, AutoProcessor
             from qwen_vl_utils import process_vision_info
             import torch
             import gc
@@ -104,9 +107,8 @@ def generate_image_descriptions_vlm(
             vlm_options.model_id,
             **vlm_options.get_processor_kwargs()
         )
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model = AutoModelForImageTextToText.from_pretrained(
             vlm_options.model_id,
-            torch_dtype=torch.bfloat16,  # Explicitly use bfloat16
             **vlm_options.get_model_kwargs()
         )
     
@@ -182,7 +184,8 @@ If there are NO visual elements (only text), return: []'''
                         padding=True,
                         return_tensors="pt"
                     )
-                    inputs = inputs.to("cuda")
+                    inference_device = next(model.parameters()).device
+                    inputs = inputs.to(inference_device)
                     
                     # Generate with VLM options
                     with torch.no_grad():
@@ -416,6 +419,10 @@ def main():
         page_descriptions,
         args.output
     )
+
+    if total_inserted == 0 and pages_with_images:
+        logger.error("❌ No image descriptions were inserted")
+        return 1
     
     logger.info("=" * 80)
     logger.info(f"✅ Image description complete: {total_inserted} descriptions added")

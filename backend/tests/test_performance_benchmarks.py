@@ -287,7 +287,7 @@ def test_t014_performance_benchmark(
     def _stream_request() -> None:
         with client.stream("POST", "/api/v1/chat/stream", json={"request": {"query": "Stream answer"}}) as response:
             body = "".join(response.iter_text())
-            if response.status_code != 200 or "data: [DONE]" not in body:
+            if response.status_code != 200 or "event: complete" not in body or '"event": "token"' not in body:
                 raise AssertionError("stream status/body invalid")
 
     stream_stats = _run_http_benchmark(

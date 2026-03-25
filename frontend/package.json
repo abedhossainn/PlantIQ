@@ -8,7 +8,7 @@
     "start": "next start",
     "export": "next build",
     "test": "vitest run",
-    "test:integration": "vitest run tests/**/*.test.ts"
+    "test:integration": "vitest run tests/api.integration.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -31,6 +31,7 @@
     "react-dom": "19.2.3",
     "react-hook-form": "^7.71.1",
     "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0",
     "zod": "^4.3.6"
   },

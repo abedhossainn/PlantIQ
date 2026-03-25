@@ -1,13 +1,9 @@
-"""
-Chat API Endpoints.
-
-Endpoints for RAG chat queries, both streaming and non-streaming.
-"""
+"""Chat API Endpoints."""
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.sse import create_sse_response, encode_sse_event
 from ..core.security import get_current_user_id
 from ..models.database import get_db
 from ..models.chat import (
@@ -73,29 +69,12 @@ async def chat_query_stream(
     Client should use EventSource or fetch with stream handling.
     """
     async def event_generator():
-        """Generate SSE events."""
-        try:
-            # Stream tokens from LLM
-            async for token in ChatService.process_query_stream(
-                request=request,
-                user_id=current_user_id,
-                db=db,
-            ):
-                # Format as SSE
-                yield f"data: {token}\n\n"
-            
-            # Signal completion
-            yield "data: [DONE]\n\n"
-            
-        except Exception as e:
-            logger.error(f"Streaming failed: {e}")
-            yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
+        """Generate explicit chat SSE events."""
+        async for event in ChatService.process_query_stream(
+            request=request,
+            user_id=current_user_id,
+            db=db,
+        ):
+            yield encode_sse_event(event)
+
+    return create_sse_response(event_generator())

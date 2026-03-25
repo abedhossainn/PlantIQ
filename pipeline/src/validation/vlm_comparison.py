@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Step 2b: VLM Comparison
-Compare markdown with original PDF using Qwen2.5-VL-32B-Instruct
+Compare markdown with original PDF using the shared vision model from repo-root .env
 Generates validation report for the reformatter
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import logging
 
 # Import new VLM infrastructure
-from ..utils.vlm_options import VLMOptions
+from ..utils.vlm_options import VLMOptions, get_vision_model_id
 from ..utils.vlm_response_parser import parse_vlm_response, ValidationResult, enforce_pydantic_schema
 from ..utils.progress_tracker import log_operation
 
@@ -48,7 +48,7 @@ def extract_pdf_info(pdf_path: str) -> dict:
 
 def compare_with_vlm(markdown_content: str, pdf_path: str, vlm_options: VLMOptions = None) -> dict:
     """
-    Use Qwen2.5-VL-32B to compare markdown with PDF
+    Use the configured shared vision model to compare markdown with PDF
     
     Args:
         markdown_content: Markdown content to validate
@@ -61,11 +61,14 @@ def compare_with_vlm(markdown_content: str, pdf_path: str, vlm_options: VLMOptio
     # Use default options if not provided
     if vlm_options is None:
         vlm_options = VLMOptions.get_default("balanced")
+        vlm_options.model_id = get_vision_model_id()
         vlm_options.verbose = True
     
     with log_operation("VLM Comparison", model=vlm_options.model_id):
         try:
-            from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+            # Use the generic multimodal auto-loader because exact Qwen3-VL class names
+            # vary across Transformers releases.
+            from transformers import AutoModelForImageTextToText, AutoProcessor
             from qwen_vl_utils import process_vision_info
             import torch
             import gc
@@ -79,7 +82,7 @@ def compare_with_vlm(markdown_content: str, pdf_path: str, vlm_options: VLMOptio
                 vlm_options.model_id,
                 **vlm_options.get_processor_kwargs()
             )
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model = AutoModelForImageTextToText.from_pretrained(
                 vlm_options.model_id,
                 **vlm_options.get_model_kwargs()
             )

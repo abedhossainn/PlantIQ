@@ -16,6 +16,8 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import shutil
 
+from ..utils.vlm_options import get_text_model_id, get_vision_model_id
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -404,8 +406,16 @@ def main():
     parser.add_argument("--manifest", help="Manifest JSON path")
     parser.add_argument("--output", help="Output path")
     parser.add_argument("--docling-version", default="1.0.0", help="Docling version")
-    parser.add_argument("--vlm-model", default="Qwen2.5-VL-32B-Instruct", help="VLM model")
-    parser.add_argument("--reformatter-model", default="Qwen2.5-32B-Instruct", help="Reformatter model")
+    parser.add_argument(
+        "--vlm-model",
+        default=None,
+        help="Vision model (defaults to VISION_MODEL_ID from repo-root .env)",
+    )
+    parser.add_argument(
+        "--reformatter-model",
+        default=None,
+        help="Text model (defaults to TEXT_MODEL_ID from repo-root .env)",
+    )
     
     args = parser.parse_args()
     
@@ -421,8 +431,8 @@ def main():
         manifest = create_document_manifest(
             args.pdf,
             args.docling_version,
-            args.vlm_model,
-            args.reformatter_model
+            args.vlm_model or get_vision_model_id(),
+            args.reformatter_model or get_text_model_id()
         )
         
         output = args.output or f"{Path(args.pdf).stem}_manifest.json"

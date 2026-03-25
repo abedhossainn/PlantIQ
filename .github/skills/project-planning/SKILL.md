@@ -2,6 +2,15 @@
 
 This skill provides comprehensive guidance for software project planning, feature breakdown, epic management, and implementation planning for the RAG chatbot.
 
+## Operating Guardrails
+
+- **Root-Cause First**: Build plans around the real problem to solve, not around superficial symptoms or assumed fixes.
+- **Clean Code Alignment**: Ensure planned work encourages maintainable, modular, low-duplication implementation.
+- **Development-First Execution**: Default plans to local, development, and staging execution; treat production rollout as requiring explicit user confirmation.
+- **Core Functionality First**: Prioritize the critical path and must-have requirements before enhancements or polish.
+- **Plan Discipline**: Create a clear plan and keep work aligned to it; only revise the plan when evidence justifies a change.
+- **Confirm Before Expanding Scope**: Verify with the user before adding new features, workstreams, dependencies, or deliverables beyond the request.
+
 ## Overview
 
 The Project Planning skill encompasses:
@@ -93,10 +102,10 @@ The Project Planning skill encompasses:
 6. **For Tracking**: Update PROJECT_STATUS.md throughout
 
 ## Related Skills
-- [Backend Development](#) - For implementation
-- [Frontend Development](#) - For UI implementation
-- [Testing Automation](#) - For test planning
-- [Code Review](#) - For quality gates
+- [Backend Development](../backend-development/SKILL.md) - For implementation
+- [Frontend Development](../frontend-development/SKILL.md) - For UI implementation
+- [Testing Automation](../testing-automation/SKILL.md) - For test planning
+- [Code Review Agent](../../agents/review.agent.md) - For quality gates
 
 ## Planning Templates
 

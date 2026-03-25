@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Step 2c: RAG Text Reformatter
-Use Qwen2.5-32B-Instruct to reformat markdown to RAG-optimized format
+Use the shared text model from repo-root .env to reformat markdown to RAG-optimized format
 Uses validation report from VLM comparison
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import logging
 
 # Import VLM infrastructure
-from ..utils.vlm_options import VLMOptions
+from ..utils.vlm_options import VLMOptions, get_text_model_id
 from ..utils.vlm_response_parser import parse_vlm_response, extract_json_from_text
 from ..utils.progress_tracker import log_operation
 
@@ -39,7 +39,7 @@ def reformat_with_qwen(
     vlm_options: VLMOptions = None
 ) -> dict:
     """
-    Use Qwen2.5-32B to reformat markdown for RAG
+    Use the configured shared text model to reformat markdown for RAG
     
     Args:
         markdown_content: Markdown content to reformat
@@ -54,7 +54,7 @@ def reformat_with_qwen(
     # Use default options if not provided (use text-only model settings)
     if vlm_options is None:
         vlm_options = VLMOptions.get_default("quality")
-        vlm_options.model_id = "Qwen/Qwen2.5-32B-Instruct"  # Text model, not VLM
+        vlm_options.model_id = get_text_model_id()
         vlm_options.max_new_tokens = 8000
         vlm_options.do_sample = False  # Deterministic output
     
@@ -250,7 +250,7 @@ def main():
             vlm_options = VLMOptions.from_json(args.config)
     else:
         vlm_options = VLMOptions.get_default(args.preset)
-        vlm_options.model_id = "Qwen/Qwen2.5-32B-Instruct"  # Text model
+        vlm_options.model_id = get_text_model_id()
         vlm_options.max_new_tokens = 8000
         vlm_options.do_sample = False
     
@@ -273,7 +273,7 @@ def main():
     logger.info("✅ Validation report loaded")
     
     # Reformat with Qwen
-    logger.info("\n[3/4] Reformatting with Qwen2.5-32B...")
+    logger.info(f"\n[3/4] Reformatting with {vlm_options.model_id}...")
     result = reformat_with_qwen(
         markdown_content,
         validation_report,

@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+ROOT_ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_PIPELINE_PYTHON = str(REPO_ROOT / ".venv" / "bin" / "python")
 DEFAULT_PIPELINE_SCRIPT = str(REPO_ROOT / "pipeline" / "src" / "cli" / "hitl_pipeline.py")
 
@@ -88,9 +89,13 @@ class Settings(BaseSettings):
     # vLLM Server
     VLLM_HOST: str = Field(default="localhost", validation_alias="VLLM_HOST")
     VLLM_PORT: int = Field(default=8001, validation_alias="VLLM_PORT")
-    VLLM_MODEL: str = Field(
-        default="Qwen2.5-32B-Instruct",
-        validation_alias="VLLM_MODEL"
+    TEXT_MODEL_ID: str = Field(
+        default="Qwen/Qwen3-4B-Instruct",
+        validation_alias=AliasChoices("TEXT_MODEL_ID", "VLLM_MODEL", "VLLM_MODEL_NAME")
+    )
+    VISION_MODEL_ID: str = Field(
+        default="Qwen/Qwen3-VL-4B-Instruct",
+        validation_alias=AliasChoices("VISION_MODEL_ID", "VLM_MODEL", "VLM_MODEL_NAME")
     )
     VLLM_TIMEOUT: int = Field(default=60, validation_alias="VLLM_TIMEOUT")
     VLLM_MAX_TOKENS: int = Field(default=2048, validation_alias="VLLM_MAX_TOKENS")
@@ -114,9 +119,16 @@ class Settings(BaseSettings):
     WS_MESSAGE_QUEUE_SIZE: int = Field(default=100, validation_alias="WS_MESSAGE_QUEUE_SIZE")
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ROOT_ENV_FILE,
+        env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="ignore",
     )
+
+    @property
+    def VLLM_MODEL(self) -> str:
+        """Backward-compatible alias for the configured text model identifier."""
+        return self.TEXT_MODEL_ID
 
 
 # Global settings instance
@@ -136,17 +148,40 @@ def get_upload_path(filename: str) -> Path:
 
 
 def get_artifacts_path(document_id: str, artifact_type: str) -> Path:
-    """Get path for document artifacts."""
-    artifacts_dir = Path(settings.ARTIFACTS_DIR) / document_id
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-    
-    if artifact_type == "validation":
-        return artifacts_dir / "validation.json"
-    elif artifact_type == "manifest":
-        return artifacts_dir / "manifest.json"
-    elif artifact_type == "qa_report":
-        return artifacts_dir / "qa_report.json"
-    elif artifact_type == "review":
-        return artifacts_dir / "review"
-    else:
-        return artifacts_dir / artifact_type
+    """Get path for document artifacts stored by the HITL pipeline.
+
+    Search order:
+    1. PIPELINE_WORK_DIR/{document_id}/ — UUID-named subdirectory (new uploads)
+    2. PIPELINE_WORK_DIR/ root — title-named flat artifacts (pipeline run offline)
+    3. ARTIFACTS_DIR/{document_id}/ — legacy flat path
+    """
+    import glob as _glob
+
+    # Map API artifact-type name → glob suffix pattern
+    _SUFFIX_MAP: dict[str, str] = {
+        "validation":   "*_validation.json",
+        "manifest":     "*_manifest.json",
+        "qa_report":    "*_qa_pre_review.json",
+        "table_figure": "*_tables_figures.json",
+        "review":       "*_review",
+        "audit":        "*_audit.txt",
+    }
+
+    pattern = _SUFFIX_MAP.get(artifact_type, f"*_{artifact_type}*")
+
+    # 1. UUID-named subdirectory
+    work_dir = Path(settings.PIPELINE_WORK_DIR) / document_id
+    matches = _glob.glob(str(work_dir / pattern))
+    if matches:
+        return Path(matches[0])
+
+    # 2. Root of PIPELINE_WORK_DIR (artifacts named by document title, no UUID subdir)
+    root_dir = Path(settings.PIPELINE_WORK_DIR)
+    root_matches = _glob.glob(str(root_dir / pattern))
+    if root_matches:
+        return Path(sorted(root_matches)[0])
+
+    # 3. Legacy flat path (pre-pipeline documents)
+    legacy_dir = Path(settings.ARTIFACTS_DIR) / document_id
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    return legacy_dir / f"{artifact_type}.json"

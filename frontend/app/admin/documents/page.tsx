@@ -173,29 +173,9 @@ function DocumentsContent() {
           </Button>
         </div>
 
-        {/* {error && (
-              <Card className="p-6 mb-4 border-red-400/50 bg-red-400/5">
-                <div className="flex items-center gap-3">
-                  <AlertCircle className="h-5 w-5 text-red-400" />
-                  <div>
-                    <p className="font-semibold text-red-400">Failed to load documents</p>
-                    <p className="text-sm text-muted-foreground mt-1">{error}</p>
-                  </div>
-                </div>
-              </Card>
-            )}
-            
-            {isLoading ? (
-              <Card className="p-12">
-                <div className="flex flex-col items-center justify-center gap-3">
-                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <p className="text-sm text-muted-foreground">Loading documents...</p>
-                </div>
-              </Card>
-            ) : (
-              <Card className="overflow-hidden border-border">
-          <div className="border-b border-border px-6 py-4 bg-card/30">
-          <div className="grid grid-cols-4 gap-6 max-w-3xl">
+        {/* Stats bar */}
+        <div className="border-b border-border px-6 py-4 bg-card/30">
+          <div className="flex items-center gap-8">
             {stats.map((s) => (
               <div key={s.label} className="flex items-center gap-3">
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted border border-border shrink-0">
@@ -210,9 +190,30 @@ function DocumentsContent() {
           </div>
         </div>
 
-        {/* Documents table */}
+        {error && (
+          <div className="px-6 pt-4">
+            <Card className="p-4 border-red-400/50 bg-red-400/5">
+              <div className="flex items-center gap-3">
+                <AlertCircle className="h-5 w-5 text-red-400" />
+                <div>
+                  <p className="font-semibold text-red-400">Failed to load documents</p>
+                  <p className="text-sm text-muted-foreground mt-1">{error}</p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-7xl mx-auto">
+            {isLoading ? (
+              <Card className="p-12">
+                <div className="flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-sm text-muted-foreground">Loading documents...</p>
+                </div>
+              </Card>
+            ) : (
             <Card className="overflow-hidden border-border">
               <Table>
                 <TableHeader>
@@ -336,6 +337,7 @@ function DocumentsContent() {
                 </div>
               )}
             </Card>
+            )}
           </div>
         </div>
       </div>

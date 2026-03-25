@@ -1,6 +1,15 @@
 # Frontend Development Skill
 
-This skill provides comprehensive guidance for building production-ready frontend interfaces for the RAG chatbot using TypeScript, React, and modern web technologies.
+This skill provides comprehensive guidance for building maintainable frontend interfaces for the RAG chatbot using TypeScript, React, and modern web technologies.
+
+## Operating Guardrails
+
+- **Root-Cause First**: Diagnose the underlying cause of UI bugs, state issues, or UX regressions before changing code.
+- **Clean Code Focus**: Apply clear naming, focused components, low duplication, and separation of concerns.
+- **Development-First Execution**: Build and validate in local, development, or staging environments first; do not move changes into production without explicit user confirmation.
+- **Core Functionality First**: Prioritize the main user flow and required behavior before enhancements, animations, or polish.
+- **Plan Discipline**: Create and follow a frontend plan, and revise it only when evidence shows it is incomplete or wrong.
+- **Confirm Before Expanding Scope**: Verify with the user before adding new features, dependencies, components, files, or behaviors that were not requested.
 
 ## Overview
 
@@ -53,9 +62,9 @@ The Frontend Development skill encompasses:
 5. **For Performance**: Use for optimization when bundle size becomes a concern
 
 ## Related Skills
-- [Testing Automation](#) - For E2E tests with Playwright
-- [Context Engineering](#) - For refactoring large component trees
-- [Security & Quality](#) - For security best practices in frontend
+- [Testing Automation](../testing-automation/SKILL.md) - For E2E tests with Playwright
+- [Context Engineering](../context-engineering/SKILL.md) - For refactoring large component trees
+- [Security & Quality](../security-quality/SKILL.md) - For security best practices in frontend
 
 ## Best Practices
 

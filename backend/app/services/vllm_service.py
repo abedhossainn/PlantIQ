@@ -61,7 +61,7 @@ class VLLMService:
             top_p = settings.VLLM_TOP_P
         
         payload = {
-            "model": settings.VLLM_MODEL,
+            "model": settings.TEXT_MODEL_ID,
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
@@ -122,7 +122,7 @@ class VLLMService:
             top_p = settings.VLLM_TOP_P
         
         payload = {
-            "model": settings.VLLM_MODEL,
+            "model": settings.TEXT_MODEL_ID,
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
