@@ -31,6 +31,8 @@ backend/secrets/
 *.pem
 
 # === Data Directories (Runtime, Not Source-Controlled) ===
+data/artifacts/**
+!data/artifacts/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*
@@ -50,6 +52,7 @@ frontend/node_modules/
 backend/dist/
 pipeline/dist/
 *.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
 
 # === IDE & Editor ===
 .vscode/
@@ -68,6 +71,7 @@ Thumbs.db
 # === Logs ===
 *.log
 logs/
+logs.txt
 
 # === Testing & Coverage ===
 .coverage
@@ -82,10 +86,13 @@ data/*
 backend/tests/
 backend/test_keys/
 backend/scripts/
+logs.txt
 
 # === Temporary Files ===
 *.tmp
 *.temp
+tmp/
+temp/
 
 # === Working Documents (Internal Use Only) ===
 Documents/
