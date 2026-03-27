@@ -17,10 +17,16 @@ import {
   deleteBookmark,
   isMessageBookmarked,
 } from "@/lib/api";
-import { streamChatQuery } from "@/lib/api/chat";
-import type { Citation as ApiCitation } from "@/lib/api/chat";
+import { streamChatQuery, getLlmStatus } from "@/lib/api/chat";
+import type { Citation as ApiCitation, LlmStatus } from "@/lib/api/chat";
 import type { ChatMessage, Citation, Bookmark as BookmarkType } from "@/types";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+// Strip inline citation references appended by the LLM, e.g. [Doc Title, Page 21]
+function stripInlineCitations(content: string): string {
+  return content.replace(/\s*\[[^\]]*,\s*Page[s]?\s+[\d–-]+[^\]]*\]/gi, "").trim();
+}
 
 // Source view drawer
 function SourceDrawer({ cite, onClose }: { cite: Citation; onClose: () => void }) {
@@ -96,7 +102,21 @@ export default function ChatPage() {
   const [activeCite, setActiveCite] = useState<Citation | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const [showColdStartNotice, setShowColdStartNotice] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Poll LLM status every 10 seconds
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchStatus() {
+      const status = await getLlmStatus();
+      if (!cancelled) setLlmStatus(status);
+    }
+    fetchStatus();
+    const id = setInterval(fetchStatus, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   // Load active conversation and saved bookmarks on mount
   useEffect(() => {
@@ -150,6 +170,11 @@ export default function ChatPage() {
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!query.trim() || isStreaming || !user) return;
+
+    // Show cold-start notice if LLM container is not yet reachable
+    if (llmStatus !== null && !llmStatus.container_reachable) {
+      setShowColdStartNotice(true);
+    }
 
     // Create conversation if it doesn't exist
     let currentConvId = conversationId;
@@ -209,6 +234,8 @@ export default function ChatPage() {
         conversation_id: currentConvId,
       })) {
         if (event.type === 'token') {
+          // Dismiss cold-start notice on first token
+          setShowColdStartNotice(false);
           fullContent += event.content;
           // Update message with accumulated content incrementally.
           setMessages((prev) =>
@@ -355,9 +382,23 @@ export default function ChatPage() {
           <div className="flex items-center gap-2">
             <MessageSquare className="h-5 w-5 text-primary" />
             <span className="font-semibold text-sm">PlantIQ Assistant</span>
-            <Badge variant="outline" className="text-xs text-green-400 border-green-400/30 bg-green-400/10">
-              Online
-            </Badge>
+            {llmStatus === null ? (
+              <Badge variant="outline" className="text-xs text-muted-foreground border-muted-foreground/30">
+                LLM Offline
+              </Badge>
+            ) : !llmStatus.container_reachable ? (
+              <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10 animate-pulse">
+                LLM Starting...
+              </Badge>
+            ) : llmStatus.active_requests > 0 ? (
+              <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
+                Generating...
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-xs text-green-400 border-green-400/30 bg-green-400/10">
+                LLM Ready
+              </Badge>
+            )}
           </div>
           {messages.length > 0 && (
             <Button
@@ -419,6 +460,7 @@ export default function ChatPage() {
                       {message.role === "assistant" ? (
                         <div className="text-sm text-foreground/90 prose prose-sm dark:prose-invert max-w-none">
                           <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
                             components={{
                               p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
                               strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
@@ -426,9 +468,13 @@ export default function ChatPage() {
                               ol: ({ children }) => <ol className="list-decimal list-inside my-2 space-y-1">{children}</ol>,
                               li: ({ children }) => <li className="ml-2">{children}</li>,
                               code: ({ children }) => <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
+                              table: ({ children }) => <div className="overflow-x-auto my-3"><table className="w-full text-xs border-collapse border border-border">{children}</table></div>,
+                              thead: ({ children }) => <thead className="bg-muted/50">{children}</thead>,
+                              th: ({ children }) => <th className="border border-border px-2 py-1.5 text-left font-semibold">{children}</th>,
+                              td: ({ children }) => <td className="border border-border px-2 py-1.5">{children}</td>,
                             }}
                           >
-                            {message.content}
+                            {stripInlineCitations(message.content)}
                           </ReactMarkdown>
                         </div>
                       ) : (
@@ -501,6 +547,14 @@ export default function ChatPage() {
             </div>
           )}
         </div>
+
+        {/* Cold-start notice */}
+        {showColdStartNotice && (
+          <div className="border-t border-amber-400/20 bg-amber-400/5 px-6 py-2 text-xs text-amber-400 flex items-center gap-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+            Starting LLM — this may take up to 45 seconds on first request
+          </div>
+        )}
 
         {/* Input */}
         <div className="border-t border-border p-4 bg-card/30">
