@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { fastapiFetch, getDocumentFromPipeline } from "@/lib/api";
+import { isOptimizationPendingStatus } from "@/lib/document-status";
 import type { Document, DocumentPagesResponse, ReviewPage } from "@/types";
 
 /** Remove HTML comments embedded by the pipeline before rendering */
@@ -44,12 +45,26 @@ export default function ReviewClient({ docId }: { docId: string }) {
   const [pages, setPages] = useState<ReviewPage[]>([]);
   const [pagesLoading, setPagesLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [pageContent, setPageContent] = useState<Record<string, string>>({});
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [editBuffer, setEditBuffer] = useState("");
   // Backend save state per page: undefined=untouched, saving, saved, error
   const [pageSaveState, setPageSaveState] = useState<Record<string, "saving" | "saved" | "error">>({}); 
+
+  async function approveForOptimization() {
+    setIsSubmitting(true);
+    setApproveError(null);
+    try {
+      await fastapiFetch(`/api/v1/documents/${docId}/approve-for-optimization`, { method: "POST" });
+      router.push(`/admin/documents/${docId}/optimizing`);
+    } catch (err) {
+      setApproveError(err instanceof Error ? err.message : "Failed to approve document for optimization.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -145,6 +160,46 @@ export default function ReviewClient({ docId }: { docId: string }) {
     );
   }
 
+  if (isOptimizationPendingStatus(doc.status)) {
+    return (
+      <AppLayout>
+        <div className="flex-1 flex flex-col h-full min-h-0">
+          <div className="border-b border-border px-6 py-5 bg-card/50">
+            <Button variant="ghost" size="sm" className="gap-1.5 mb-3 -ml-2" onClick={() => router.push("/admin/documents")}>
+              <ArrowLeft className="h-4 w-4" />
+              Document Pipeline
+            </Button>
+            <h1 className="text-2xl font-bold tracking-tight">Optimization in Progress</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">{doc.title}</p>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-md text-center space-y-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 mx-auto">
+                <RefreshCw className="h-6 w-6 text-primary animate-spin" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">This document has already been approved for optimization</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Review is complete. The backend is generating optimized output before QA can begin.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 pt-2">
+                <Button className="gap-2 font-semibold" onClick={() => router.push(`/admin/documents/${docId}/optimizing`)}>
+                  View Optimization Status
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+                <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents")}>
+                  <ArrowLeft className="h-4 w-4" />
+                  Back to Documents
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
   // ---------- empty state (no pages generated yet) ----------
 
   if (pages.length === 0) {
@@ -157,7 +212,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
               Document Pipeline
             </Button>
             <h1 className="text-2xl font-bold tracking-tight">{doc.title}</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Engineering Review · v{doc.version}</p>
+            <p className="text-sm text-muted-foreground mt-0.5">Fidelity &amp; Safety Review · v{doc.version}</p>
           </div>
           <div className="flex-1 flex items-center justify-center p-8">
             <div className="max-w-sm text-center space-y-4">
@@ -165,10 +220,10 @@ export default function ReviewClient({ docId }: { docId: string }) {
                 <Info className="h-6 w-6 text-muted-foreground" />
               </div>
               <div>
-                <p className="font-semibold text-foreground">Page review data not available</p>
+                <p className="font-semibold text-foreground">Page extraction data not available</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  Page-level review units have not been generated yet.
-                  You can proceed directly to QA Gates or return to the document list.
+                  Page-level extraction has not been generated yet.
+                  You can skip fidelity review and approve for optimization directly, or return to the document list.
                 </p>
               </div>
               <div className="flex flex-col gap-2 pt-2">
@@ -176,22 +231,19 @@ export default function ReviewClient({ docId }: { docId: string }) {
                   className="gap-2 font-semibold"
                   disabled={isSubmitting}
                   onClick={async () => {
-                    setIsSubmitting(true);
-                    try {
-                      await fastapiFetch(`/api/v1/documents/${docId}/review-complete`, { method: "POST" });
-                    } catch { /* noop */ } finally {
-                      setIsSubmitting(false);
-                    }
-                    router.push(`/admin/documents/${docId}/qa-gates`);
+                    await approveForOptimization();
                   }}
                 >
-                  Proceed to QA Gates
+                  {isSubmitting ? "Approving…" : "Approve for Optimization"}
                   <ArrowRight className="h-4 w-4" />
                 </Button>
                 <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents")}>
                   <ArrowLeft className="h-4 w-4" />
                   Back to Documents
                 </Button>
+                {approveError && (
+                  <p className="text-xs text-red-400">{approveError}</p>
+                )}
               </div>
             </div>
           </div>
@@ -219,7 +271,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
               <div>
                 <h1 className="font-bold text-lg leading-tight">{doc.title}</h1>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Engineering Review · {pages.length} page{pages.length !== 1 ? "s" : ""}
+                  Fidelity &amp; Safety Review · {pages.length} page{pages.length !== 1 ? "s" : ""}
                 </p>
               </div>
               <Badge variant="outline" className="text-xs text-primary border-primary/30 bg-primary/10">
@@ -231,18 +283,15 @@ export default function ReviewClient({ docId }: { docId: string }) {
               className="gap-1.5 font-semibold"
               disabled={isSubmitting}
               onClick={async () => {
-                setIsSubmitting(true);
-                try {
-                  await fastapiFetch(`/api/v1/documents/${docId}/review-complete`, { method: "POST" });
-                } catch { /* noop */ } finally {
-                  setIsSubmitting(false);
-                }
-                router.push(`/admin/documents/${docId}/qa-gates`);
+                await approveForOptimization();
               }}
             >
-              {isSubmitting ? "Submitting…" : "Submit for QA"}
+              {isSubmitting ? "Approving…" : "Approve for Optimization"}
               <ArrowRight className="h-4 w-4" />
             </Button>
+            {approveError && (
+              <p className="text-xs text-red-400 mt-1 px-1">{approveError}</p>
+            )}
           </div>
         </div>
 
@@ -250,7 +299,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
         <div className="px-5 py-2 bg-primary/5 border-b border-primary/10 flex items-center gap-2 shrink-0">
           <Info className="h-3.5 w-3.5 text-primary/60 shrink-0" />
           <p className="text-xs text-muted-foreground">
-            Edit and <strong className="text-foreground/70">Save</strong> pages to persist your changes to disk. Use <strong className="text-foreground/70">Re-score Document</strong> on the QA Gates screen after saving to update metrics.
+            Review each page for fidelity to the source PDF. <strong className="text-foreground/70">Edit</strong> and <strong className="text-foreground/70">Save</strong> to correct extraction errors or dangerous omissions. When all pages are verified, use <strong className="text-foreground/70">Approve for Optimization</strong> above.
           </p>
         </div>
 
@@ -311,13 +360,12 @@ export default function ReviewClient({ docId }: { docId: string }) {
 
             {/* Scoring criteria reference */}
             <div className="border-t border-border p-3 shrink-0 bg-muted/20">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Scoring Criteria</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Fidelity Review</p>
               <div className="space-y-1.5">
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Citations ≥90%</span> — add <code className="text-[9px] bg-muted px-0.5 rounded">[Source: …, Page X]</code></div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Headings ≥85%</span> — rephrase to end with "?"</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Table facts ≥95%</span> — add bullet points near each table</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Figure desc. 100%</span> — use alt text ≥10 chars</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Confidence ≥80%</span> — fix validation issues below</div>
+                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Faithful?</span> — is extracted content materially true to the source PDF?</div>
+                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Preserved?</span> — are key tables, figures, and technical statements intact?</div>
+                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">No hallucinations?</span> — verify no fabricated facts or dangerous omissions</div>
+                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Safe to optimize?</span> — is this page ready to enter downstream optimization?</div>
               </div>
             </div>
           </div>

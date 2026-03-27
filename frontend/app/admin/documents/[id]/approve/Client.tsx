@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { getDocumentFromPipeline, fetchArtifactJson } from "@/lib/api";
 import { fastapiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { canStartFinalApproval } from "@/lib/document-status";
 import type { Document } from "@/types";
 
 type Decision = "approve" | "reject" | null;
@@ -35,6 +36,7 @@ export default function ApproveClient({ docId }: { docId: string }) {
   const [submitted, setSubmitted] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
   const [submittedBy, setSubmittedBy] = useState<string | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   // Load persisted decision from localStorage on mount
   useEffect(() => {
@@ -45,7 +47,6 @@ export default function ApproveClient({ docId }: { docId: string }) {
           const parsed = JSON.parse(stored);
           setDecision(parsed.decision ?? null);
           setNotes(parsed.notes ?? "");
-          setSubmitted(true);
           setSubmittedAt(parsed.submittedAt ?? null);
           setSubmittedBy(parsed.submittedBy ?? null);
         } catch { /* noop */ }
@@ -115,31 +116,37 @@ export default function ApproveClient({ docId }: { docId: string }) {
     );
   }
 
-  const isAlreadyApproved = doc.status === "approved" || (submitted && decision === "approve");
+  const isAlreadyApproved = doc.status === "final-approved" || doc.status === "approved" || (submitted && decision === "approve");
   const isAlreadyRejected = doc.status === "rejected" || (submitted && decision === "reject");
   const isFinalized = isAlreadyApproved || isAlreadyRejected;
+  const canSubmitFinalApproval = canStartFinalApproval(doc.status) || decision === "reject";
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!decision) return;
+    setSubmissionError(null);
     const ts = new Date().toISOString();
     const reviewer = user?.fullName ?? "Unknown";
-    setSubmittedAt(ts);
-    setSubmittedBy(reviewer);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(`approval-${docId}`, JSON.stringify({
-        decision,
-        notes,
-        submittedAt: ts,
-        submittedBy: reviewer,
-      }));
+    try {
+      await fastapiFetch(`/api/v1/documents/${docId}/final-approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision, notes: notes || null }),
+      });
+      setSubmittedAt(ts);
+      setSubmittedBy(reviewer);
+      if (typeof window !== "undefined") {
+        localStorage.setItem(`approval-${docId}`, JSON.stringify({
+          decision,
+          notes,
+          submittedAt: ts,
+          submittedBy: reviewer,
+        }));
+      }
+      setSubmitted(true);
+      setDoc((prev) => prev ? { ...prev, status: decision === "approve" ? "final-approved" : "rejected" } : prev);
+    } catch {
+      setSubmissionError("Final approval is only available after QA passes. Return to QA if the document still needs scoring or acceptance.");
     }
-    // Persist to backend (fire-and-forget)
-    void fastapiFetch(`/api/v1/documents/${docId}/final-approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision, notes: notes || null }),
-    }).catch(() => { /* noop — localStorage already saved */ });
-    setSubmitted(true);
   }
 
   return (
@@ -188,7 +195,7 @@ export default function ApproveClient({ docId }: { docId: string }) {
                 <div className="mt-4 pt-4 border-t border-border space-y-2">
                   {doc.qaScore !== undefined && (
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">QA Score</span>
+                      <span className="text-muted-foreground">Optimization QA Score</span>
                       <span
                         className={`font-bold ${
                           doc.qaScore >= 90 ? "text-green-400" : doc.qaScore >= 75 ? "text-amber-400" : "text-red-400"
@@ -200,7 +207,7 @@ export default function ApproveClient({ docId }: { docId: string }) {
                   )}
                   {qaRecommendation && (
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">QA Recommendation</span>
+                      <span className="text-muted-foreground">Optimization QA Recommendation</span>
                       <Badge
                         variant="outline"
                         className={`text-xs font-semibold ${
@@ -277,7 +284,20 @@ export default function ApproveClient({ docId }: { docId: string }) {
             {/* Decision UI — only for non-finalized docs */}
             {!isFinalized && (
               <Card className="p-5 space-y-5">
-                <h2 className="font-semibold">Approval Decision</h2>
+                <h2 className="font-semibold">Final Approval Decision</h2>
+
+                {!canStartFinalApproval(doc.status) && (
+                  <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-4">
+                    <p className="font-medium text-amber-400">QA must pass before final approval</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      This document is currently <span className="font-medium text-foreground">{doc.status}</span>. Return to QA gates to finish scoring and accept the optimized output before granting final approval.
+                    </p>
+                    <Button variant="outline" className="mt-3 gap-2" onClick={() => router.push(`/admin/documents/${docId}/qa-gates`)}>
+                      <ArrowLeft className="h-4 w-4" />
+                      Go to QA Gates
+                    </Button>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3">
                   <button
@@ -334,8 +354,8 @@ export default function ApproveClient({ docId }: { docId: string }) {
                     Reviewed by {user?.fullName ?? "Unknown"} · {new Date().toLocaleDateString()}
                   </p>
                   <Button
-                    disabled={!decision}
-                    onClick={handleSubmit}
+                    disabled={!decision || (decision === "approve" && !canSubmitFinalApproval)}
+                    onClick={() => void handleSubmit()}
                     className={
                       decision === "reject"
                         ? "bg-red-500 hover:bg-red-600 text-white"
@@ -343,12 +363,15 @@ export default function ApproveClient({ docId }: { docId: string }) {
                     }
                   >
                     {decision === "approve"
-                      ? "Approve Document"
+                      ? "Grant Final Approval"
                       : decision === "reject"
                       ? "Reject Document"
                       : "Select a Decision"}
                   </Button>
                 </div>
+                {submissionError && (
+                  <p className="text-sm text-red-400">{submissionError}</p>
+                )}
               </Card>
             )}
 

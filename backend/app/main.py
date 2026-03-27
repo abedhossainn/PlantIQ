@@ -8,12 +8,12 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api.auth import router as auth_router
 from .api.pipeline import router as pipeline_router
 from .api.chat import router as chat_router
 from .api.websocket import router as websocket_router
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+AUTH_DISABLED = os.getenv("AUTH_DISABLED", "true").lower() == "true"
 SLOW_REQUEST_THRESHOLD_MS = float(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500"))
 LOG_REDACTION_ENABLED = os.getenv("LOG_REDACTION_ENABLED", "true").lower() == "true"
 
@@ -154,7 +154,10 @@ app.add_middleware(
 )
 
 # Register routers
-app.include_router(auth_router)
+if not AUTH_DISABLED:
+    from .api.auth import router as auth_router
+
+    app.include_router(auth_router)
 app.include_router(pipeline_router)
 app.include_router(chat_router)
 app.include_router(websocket_router)

@@ -10,3 +10,4 @@ export * from './conversations';
 export * from './pipeline';
 export * from './chat';
 export * from './websocket';
+export * from './optimized-review';

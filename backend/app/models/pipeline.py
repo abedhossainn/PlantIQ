@@ -16,6 +16,12 @@ class PipelineStatus(str, Enum):
     VALIDATION_COMPLETE = "validation-complete"
     IN_REVIEW = "in-review"
     REVIEW_COMPLETE = "review-complete"
+    APPROVED_FOR_OPTIMIZATION = "approved-for-optimization"
+    OPTIMIZING = "optimizing"
+    OPTIMIZATION_COMPLETE = "optimization-complete"
+    QA_REVIEW = "qa-review"
+    QA_PASSED = "qa-passed"
+    FINAL_APPROVED = "final-approved"
     APPROVED = "approved"
     REJECTED = "rejected"
     FAILED = "failed"
@@ -117,6 +123,33 @@ class ReviewPageResponse(BaseModel):
 class PageContentUpdate(BaseModel):
     """Request payload for persisting updated page markdown content."""
     markdown_content: str
+
+
+class OptimizedChunkResponse(BaseModel):
+    """Single editable optimized chunk returned for post-optimization review."""
+    id: str
+    chunk_number: int
+    heading: str
+    markdown_content: str
+    text_preview: str
+    source_pages: List[int] = Field(default_factory=list)
+    table_facts: List[str] = Field(default_factory=list)
+    ambiguity_flags: List[str] = Field(default_factory=list)
+
+
+class OptimizedChunkUpdate(BaseModel):
+    """Request payload for persisting updated optimized chunk content."""
+    heading: str = Field(..., min_length=1)
+    markdown_content: str = Field(..., min_length=1)
+    table_facts: List[str] = Field(default_factory=list)
+    ambiguity_flags: List[str] = Field(default_factory=list)
+
+
+class DocumentOptimizedChunksResponse(BaseModel):
+    """Document-level payload for the post-optimization editor."""
+    document_name: str
+    review_unit: Literal["optimized_chunk"] = "optimized_chunk"
+    chunks: List[OptimizedChunkResponse]
 
 
 class ReviewProgressResponse(BaseModel):
@@ -229,3 +262,5 @@ class ArtifactType(str, Enum):
     QA_REPORT = "qa_report"
     REVIEW_WORKSPACE = "review"
     TABLE_FIGURE = "table_figure"
+    OPTIMIZATION_PREP = "optimization_prep"
+    OPTIMIZED_OUTPUT = "optimized_output"

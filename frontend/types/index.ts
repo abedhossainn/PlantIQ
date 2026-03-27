@@ -14,6 +14,24 @@ export interface User {
   department: string;
 }
 
+export type DocumentStatus =
+  | "pending"
+  | "uploading"
+  | "extracting"
+  | "vlm-validating"
+  | "validation-complete"
+  | "in-review"
+  | "review-complete"
+  | "approved-for-optimization"
+  | "optimizing"
+  | "optimization-complete"
+  | "qa-review"
+  | "qa-passed"
+  | "final-approved"
+  | "approved"
+  | "rejected"
+  | "failed";
+
 export interface Document {
   id: string;
   title: string;
@@ -22,16 +40,7 @@ export interface Document {
   documentType: string;
   uploadedAt: string;
   uploadedBy: string;
-  status:
-    | "pending"
-    | "uploading"
-    | "extracting"
-    | "vlm-validating"
-    | "validation-complete"
-    | "in-review"
-    | "review-complete"
-    | "approved"
-    | "rejected";
+  status: DocumentStatus;
   totalPages: number;
   totalSections: number;
   reviewProgress: number;
@@ -146,6 +155,32 @@ export interface QAGateReport {
   recommendation: "accept" | "reject" | "conditional";
   failingCriteria: string[];
   generatedAt: string;
+}
+
+// --------------- Optimized chunk types (post-optimization review unit) -----------
+
+export interface OptimizedChunk {
+  id: string;
+  chunk_number: number;
+  heading: string;
+  markdown_content: string;
+  text_preview: string;
+  source_pages: number[];
+  table_facts: string[];
+  ambiguity_flags: string[];
+}
+
+export interface DocumentOptimizedChunksResponse {
+  document_name: string;
+  review_unit: "optimized_chunk";
+  chunks: OptimizedChunk[];
+}
+
+export interface OptimizedChunkUpdate {
+  heading: string;
+  markdown_content: string;
+  table_facts: string[];
+  ambiguity_flags: string[];
 }
 
 // --------------- Page-based review types (canonical review unit) -----------------

@@ -12,11 +12,18 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+NON_DATA_TABLE_HEADING_MARKERS = (
+    "contents",
+    "list of figures",
+    "list of tables",
+)
 
 
 class RiskLevel(Enum):
@@ -146,6 +153,38 @@ def calculate_question_heading_compliance(sections: List[Dict]) -> float:
     return compliance
 
 
+def _section_has_markdown_table(content: str) -> bool:
+    return '|' in content and '---' in content
+
+
+def _section_has_structured_table_facts(section: Dict) -> bool:
+    table_facts = section.get('table_facts') or []
+    return any(str(fact).strip() for fact in table_facts)
+
+
+def _is_non_data_table_section(section: Dict) -> bool:
+    heading = str(section.get('heading', '')).strip().lower()
+    if any(marker in heading for marker in NON_DATA_TABLE_HEADING_MARKERS):
+        return True
+
+    content = str(section.get('content', '')).strip().lower()
+    first_lines = '\n'.join(content.splitlines()[:5])
+    return any(marker in first_lines for marker in NON_DATA_TABLE_HEADING_MARKERS)
+
+
+def _has_bullets_near_markdown_table(content: str) -> bool:
+    lines = content.split('\n')
+    for i, line in enumerate(lines):
+        if '|' not in line:
+            continue
+
+        context = '\n'.join(lines[max(0, i - 5):min(len(lines), i + 10)])
+        if '- ' in context or '* ' in context:
+            return True
+
+    return False
+
+
 def calculate_table_to_bullets_ratio(sections: List[Dict]) -> float:
     """
     Calculate ratio of tables with extracted bullet facts
@@ -158,28 +197,16 @@ def calculate_table_to_bullets_ratio(sections: List[Dict]) -> float:
     sections_with_table_facts = 0
     
     for section in sections:
-        content = section.get('content', '')
-        
-        # Check if section has tables
-        if '|' in content and '---' in content:
-            sections_with_tables.append(section)
-            
-            # Check if bullets are near tables
-            lines = content.split('\n')
-            has_table = False
-            has_bullets_near_table = False
-            
-            for i, line in enumerate(lines):
-                if '|' in line:
-                    has_table = True
-                    # Check surrounding lines for bullets
-                    context = '\n'.join(lines[max(0, i-5):min(len(lines), i+10)])
-                    if '- ' in context or '* ' in context:
-                        has_bullets_near_table = True
-                        break
-            
-            if has_bullets_near_table:
-                sections_with_table_facts += 1
+        content = str(section.get('content', ''))
+        has_table = bool(section.get('has_tables')) or _section_has_markdown_table(content)
+
+        if not has_table or _is_non_data_table_section(section):
+            continue
+
+        sections_with_tables.append(section)
+
+        if _section_has_structured_table_facts(section) or _has_bullets_near_markdown_table(content):
+            sections_with_table_facts += 1
     
     if not sections_with_tables:
         return 100.0  # No tables = perfect compliance
@@ -244,6 +271,62 @@ def calculate_hallucination_risk(sections: List[Dict], validation_issues: List[D
     return risk_score
 
 
+def calculate_overall_confidence_score(
+    citation_coverage: float,
+    question_heading_compliance: float,
+    table_to_bullets_ratio: float,
+    figure_description_coverage: float,
+    hallucination_risk: float,
+) -> float:
+    """Calculate QA confidence from current post-optimization quality signals.
+
+    This intentionally avoids inheriting the ingestion-time validation artifact's
+    `overall_confidence`, because QA rescoring should reflect the current optimized
+    output rather than the pre-optimization markdown snapshot.
+    """
+
+    weighted_score = (
+        (citation_coverage * 0.30)
+        + (question_heading_compliance * 0.15)
+        + (table_to_bullets_ratio * 0.25)
+        + (figure_description_coverage * 0.30)
+    )
+    hallucination_penalty = max(0.0, min(10.0, hallucination_risk * 10.0))
+    return max(0.0, min(100.0, weighted_score - hallucination_penalty))
+
+
+def filter_unresolved_validation_issues(
+    validation_issues: List[Dict],
+    *,
+    citation_coverage: float,
+    question_heading_compliance: float,
+    table_to_bullets_ratio: float,
+    figure_description_coverage: float,
+    hallucination_risk: float,
+) -> List[Dict]:
+    """Return only validation issues that are still unresolved in optimized output."""
+
+    unresolved: List[Dict] = []
+
+    for issue in validation_issues:
+        issue_type = str(issue.get('issue_type') or '').strip().lower()
+
+        if issue_type == 'image_loss' and figure_description_coverage >= 100.0:
+            continue
+        if issue_type == 'table_fidelity' and table_to_bullets_ratio >= 100.0:
+            continue
+        if issue_type == 'semantic_mismatch' and hallucination_risk <= 0.0:
+            continue
+        if issue_type == 'missing_content' and citation_coverage >= 100.0:
+            continue
+        if issue_type == 'formatting' and question_heading_compliance >= 100.0:
+            continue
+
+        unresolved.append(issue)
+
+    return unresolved
+
+
 def compute_qa_metrics(
     sections: List[Dict],
     validation_report: Dict,
@@ -260,17 +343,29 @@ def compute_qa_metrics(
         for page_val in validation_report['page_validations']:
             validation_issues.extend(page_val.get('issues', []))
     
-    critical_issues = sum(1 for issue in validation_issues if issue.get('severity') == 'critical')
-    
     # Calculate metrics
     citation_coverage = calculate_citation_coverage(sections)
     question_compliance = calculate_question_heading_compliance(sections)
     table_ratio = calculate_table_to_bullets_ratio(sections)
     figure_coverage = calculate_figure_description_coverage(sections)
     hallucination_risk = calculate_hallucination_risk(sections, validation_issues)
+    unresolved_validation_issues = filter_unresolved_validation_issues(
+        validation_issues,
+        citation_coverage=citation_coverage,
+        question_heading_compliance=question_compliance,
+        table_to_bullets_ratio=table_ratio,
+        figure_description_coverage=figure_coverage,
+        hallucination_risk=hallucination_risk,
+    )
+    critical_issues = sum(1 for issue in unresolved_validation_issues if issue.get('severity') == 'critical')
     
-    # Overall confidence from validation
-    overall_confidence = validation_report.get('overall_confidence', 0.0) * 100
+    overall_confidence = calculate_overall_confidence_score(
+        citation_coverage,
+        question_compliance,
+        table_ratio,
+        figure_coverage,
+        hallucination_risk,
+    )
     
     # Section status counts
     sections_approved = 0
@@ -294,7 +389,7 @@ def compute_qa_metrics(
         figure_description_coverage_percent=figure_coverage,
         overall_confidence_score=overall_confidence,
         critical_issues_count=critical_issues,
-        total_issues_count=len(validation_issues),
+        total_issues_count=len(unresolved_validation_issues),
         hallucination_risk_score=hallucination_risk,
         sections_approved=sections_approved,
         sections_rejected=sections_rejected,
@@ -369,7 +464,7 @@ def evaluate_qa_gate(
     
     result = QAGateResult(
         document_name="unknown",  # Will be set by caller
-        timestamp=datetime.utcnow().isoformat() + "Z",
+        timestamp=datetime.now(timezone.utc).isoformat(),
         decision=decision.value,
         metrics=metrics,
         acceptance_criteria=criteria,

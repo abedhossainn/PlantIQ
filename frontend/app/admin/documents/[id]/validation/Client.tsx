@@ -191,7 +191,7 @@ export default function ValidationClient({ docId }: { docId: string }) {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold tracking-tight">VLM Validation Report</h1>
-              <p className="text-sm text-muted-foreground mt-0.5">{doc.title}</p>
+              <p className="text-sm text-muted-foreground mt-0.5">Pre-review fidelity findings for {doc.title}</p>
             </div>
             <Button variant="outline" size="sm" className="gap-2" onClick={handleDownloadReport} disabled={!rawReport}>
               <Download className="h-4 w-4" />
@@ -315,7 +315,7 @@ export default function ValidationClient({ docId }: { docId: string }) {
                   className="gap-2 font-semibold bg-amber-500 hover:bg-amber-600 text-black"
                   onClick={() => router.push(`/admin/documents/${docId}/review`)}
                 >
-                  Proceed to Review
+                  Start Fidelity Review
                   <ArrowRight className="h-4 w-4" />
                 </Button>
             </div>

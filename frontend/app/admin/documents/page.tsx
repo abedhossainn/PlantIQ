@@ -14,6 +14,7 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { getDocuments, getReviewQueueDocuments, getQAGateDocuments } from "@/lib/api";
 import type { Document } from "@/types";
+import { isQAQueueStatus } from "@/lib/document-status";
 
 const STATUS_CONFIG: Record<
   string,
@@ -33,12 +34,54 @@ const STATUS_CONFIG: Record<
     action: "approve",
     actionLabel: "View Details",
   },
+  "final-approved": {
+    label: "Final Approved",
+    badgeClass: "text-green-400 bg-green-400/10 border-green-400/30",
+    icon: <CheckCircle2 className="h-3 w-3" />,
+    action: "approve",
+    actionLabel: "View Approval",
+  },
   "review-complete": {
     label: "Review Complete",
     badgeClass: "text-blue-400 bg-blue-400/10 border-blue-400/30",
     icon: <CheckCircle2 className="h-3 w-3" />,
     action: "qa-gates",
-    actionLabel: "Run QA Gates",
+    actionLabel: "Open QA Gates",
+  },
+  "approved-for-optimization": {
+    label: "Approved for Optimization",
+    badgeClass: "text-sky-400 bg-sky-400/10 border-sky-400/30",
+    icon: <Clock className="h-3 w-3" />,
+    action: "qa-gates",
+    actionLabel: "Track Optimization",
+  },
+  optimizing: {
+    label: "Optimizing",
+    badgeClass: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    action: "qa-gates",
+    actionLabel: "Track Optimization",
+  },
+  "optimization-complete": {
+    label: "Optimization Complete",
+    badgeClass: "text-blue-400 bg-blue-400/10 border-blue-400/30",
+    icon: <CheckCircle2 className="h-3 w-3" />,
+    action: "optimized-review",
+    actionLabel: "Review Optimized Output",
+  },
+  "qa-review": {
+    label: "QA Review",
+    badgeClass: "text-indigo-400 bg-indigo-400/10 border-indigo-400/30",
+    icon: <ShieldCheck className="h-3 w-3" />,
+    action: "qa-gates",
+    actionLabel: "Continue QA",
+  },
+  "qa-passed": {
+    label: "QA Passed",
+    badgeClass: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    icon: <CheckCircle2 className="h-3 w-3" />,
+    action: "approve",
+    actionLabel: "Final Approval",
   },
   "in-review": {
     label: "In Review",
@@ -51,7 +94,7 @@ const STATUS_CONFIG: Record<
     label: "Validation Complete",
     badgeClass: "text-cyan-400 bg-cyan-400/10 border-cyan-400/30",
     icon: <CheckCircle2 className="h-3 w-3" />,
-    action: "validation",
+    action: "review",
     actionLabel: "Start Review",
   },
   "vlm-validating": {
@@ -71,7 +114,7 @@ const STATUS_CONFIG: Record<
 function DocumentsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const view = searchParams.get("view") ?? "";
+  const view = searchParams?.get("view") ?? "";
   
   const [docs, setDocs] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -126,7 +169,7 @@ function DocumentsContent() {
   const stats = [
     {
       label: "In Pipeline",
-      count: docs.filter((d) => !["approved", "rejected"].includes(d.status)).length,
+      count: docs.filter((d) => !["approved", "final-approved", "rejected"].includes(d.status)).length,
       color: "text-amber-400",
       icon: <FileClock className="h-5 w-5 text-amber-400" />,
     },
@@ -138,7 +181,7 @@ function DocumentsContent() {
     },
     {
       label: "Approved",
-      count: docs.filter((d) => d.status === "approved").length,
+      count: docs.filter((d) => d.status === "approved" || d.status === "final-approved").length,
       color: "text-green-400",
       icon: <ShieldCheck className="h-5 w-5 text-green-400" />,
     },
@@ -266,10 +309,12 @@ function DocumentsContent() {
                         </TableCell>
 
                         <TableCell className="py-4 min-w-[110px]">
-                          {(doc.status === "in-review" || doc.status === "review-complete") ? (
+                          {(doc.status === "in-review" || doc.status === "review-complete" || isQAQueueStatus(doc.status)) ? (
                             <div>
                               <div className="flex justify-between text-xs mb-1.5">
-                                <span className="text-muted-foreground">Review</span>
+                                <span className="text-muted-foreground">
+                                  {doc.status === "in-review" || doc.status === "review-complete" ? "Review" : "Pipeline"}
+                                </span>
                                 <span className="font-semibold">{doc.reviewProgress}%</span>
                               </div>
                               <Progress value={doc.reviewProgress} className="h-1.5" />

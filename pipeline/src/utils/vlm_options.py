@@ -19,6 +19,40 @@ DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B-Instruct"
 DEFAULT_VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
 
 
+def resolve_model_reference(value: str) -> str:
+    """Resolve local model references so they work on both host and container runtimes.
+
+    Supported behavior:
+    - leave Hugging Face repo ids unchanged
+    - resolve repo-relative paths like ``./models/Qwen3.5-4B`` against ``REPO_ROOT``
+    - remap stale host-only absolute paths ending in ``models/...`` to the current
+      runtime's ``REPO_ROOT/models/...`` when that directory exists
+    """
+    if not value:
+        return value
+
+    expanded = Path(value).expanduser()
+    if not expanded.is_absolute():
+        repo_relative_candidate = (REPO_ROOT / expanded).resolve(strict=False)
+        if repo_relative_candidate.exists():
+            return str(repo_relative_candidate)
+        if expanded.exists():
+            return str(expanded.resolve())
+        return value
+
+    if expanded.exists():
+        return str(expanded.resolve())
+
+    parts = expanded.parts
+    if "models" in parts:
+        models_index = len(parts) - 1 - parts[::-1].index("models")
+        repo_mapped_candidate = (REPO_ROOT / Path(*parts[models_index:])).resolve(strict=False)
+        if repo_mapped_candidate.exists():
+            return str(repo_mapped_candidate)
+
+    return value
+
+
 def _read_root_env() -> Dict[str, str]:
     """Read repo-root environment values without requiring external dotenv helpers."""
     if not ROOT_ENV_PATH.exists():
@@ -42,13 +76,13 @@ def _get_model_id_from_sources(*env_names: str, default: str) -> str:
     for env_name in env_names:
         value = os.getenv(env_name)
         if value:
-            return value
+            return resolve_model_reference(value)
 
     env_values = _read_root_env()
     for env_name in env_names:
         value = env_values.get(env_name)
         if value:
-            return value
+            return resolve_model_reference(value)
 
     return default
 
@@ -70,6 +104,35 @@ def get_vision_model_id() -> str:
         "VLM_MODEL",
         "VLM_MODEL_NAME",
         default=DEFAULT_VISION_MODEL_ID,
+    )
+
+
+def _get_int_from_sources(*env_names: str, default: int, minimum: int | None = None) -> int:
+    """Resolve integer settings from process env first, then repo-root .env."""
+    env_values = _read_root_env()
+
+    for env_name in env_names:
+        raw_value = os.getenv(env_name)
+        if raw_value is None:
+            raw_value = env_values.get(env_name)
+        if raw_value in (None, ""):
+            continue
+
+        value = int(str(raw_value).strip())
+        if minimum is not None and value < minimum:
+            raise ValueError(f"{env_name} must be >= {minimum}")
+        return value
+
+    return default
+
+
+def get_generation_timeout_seconds(default: int = 300) -> int:
+    """Return the streamer wait timeout for text generation chunks."""
+    return _get_int_from_sources(
+        "GENERATION_TIMEOUT_SECONDS",
+        "TEXT_GENERATION_TIMEOUT_SECONDS",
+        default=default,
+        minimum=1,
     )
 
 
@@ -124,6 +187,7 @@ class VLMOptions:
     
     # ===== Timeout and Performance =====
     timeout: int = 300  # seconds (5 minutes)
+    generation_timeout_seconds: int = field(default_factory=get_generation_timeout_seconds)
     image_scale: float = 1.0  # Image scaling factor
     image_resolution: int = 100  # DPI for PDF page rendering
     
@@ -161,6 +225,8 @@ class VLMOptions:
         # Validation
         if self.timeout < 60:
             raise ValueError("timeout must be >= 60 seconds for VLM operations")
+        if self.generation_timeout_seconds < 1:
+            raise ValueError("generation_timeout_seconds must be >= 1 second")
         if not 0 < self.temperature <= 2.0:
             raise ValueError("temperature must be in (0, 2.0]")
         if not 0 < self.top_p <= 1.0:
@@ -364,6 +430,7 @@ class VLMOptions:
             f"  model={self.model_id}\n"
             f"  backend={self.backend_type.value}\n"
             f"  timeout={self.timeout}s\n"
+            f"  generation_timeout={self.generation_timeout_seconds}s\n"
             f"  max_tokens={self.max_new_tokens}\n"
             f"  temperature={self.temperature}\n"
             f"  response_format={self.response_format.value}\n"

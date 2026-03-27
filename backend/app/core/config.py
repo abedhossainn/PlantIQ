@@ -4,15 +4,18 @@ Configuration management for PlantIQ Backend.
 Loads settings from environment variables with sensible defaults.
 """
 import os
+import sys
 from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AliasChoices, Field
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(os.getenv("PLANTIQ_REPO_ROOT", Path(__file__).resolve().parents[3]))
 ROOT_ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_PIPELINE_PYTHON = str(REPO_ROOT / ".venv" / "bin" / "python")
+if not Path(DEFAULT_PIPELINE_PYTHON).exists():
+    DEFAULT_PIPELINE_PYTHON = sys.executable
 DEFAULT_PIPELINE_SCRIPT = str(REPO_ROOT / "pipeline" / "src" / "cli" / "hitl_pipeline.py")
 
 
@@ -45,8 +48,8 @@ class Settings(BaseSettings):
     JWT_REFRESH_TOKEN_EXPIRE_HOURS: int = 8
     JWT_ISSUER: str = "plantig-auth"
     JWT_AUDIENCE: str = "plantig"
-    JWT_PRIVATE_KEY_PATH: str = "./secrets/jwt-private.pem"
-    JWT_PUBLIC_KEY_PATH: str = "./secrets/jwt-public.pem"
+    JWT_PRIVATE_KEY_PATH: str = str(REPO_ROOT / "backend" / "secrets" / "jwt-private.pem")
+    JWT_PUBLIC_KEY_PATH: str = str(REPO_ROOT / "backend" / "secrets" / "jwt-public.pem")
     
     # LDAP
     LDAP_SERVER: str = Field(default="ldap://localhost:389", validation_alias="LDAP_SERVER")
@@ -55,7 +58,7 @@ class Settings(BaseSettings):
     
     # Pipeline
     PIPELINE_WORK_DIR: str = Field(
-        default="./data/artifacts/hitl_workspace",
+        default=str(REPO_ROOT / "data" / "artifacts" / "hitl_workspace"),
         validation_alias="PIPELINE_WORK_DIR"
     )
     PIPELINE_PYTHON_PATH: str = Field(
@@ -72,8 +75,8 @@ class Settings(BaseSettings):
     )
     
     # File Storage
-    UPLOAD_DIR: str = Field(default="./data/raw", validation_alias="UPLOAD_DIR")
-    ARTIFACTS_DIR: str = Field(default="./data/artifacts", validation_alias="ARTIFACTS_DIR")
+    UPLOAD_DIR: str = Field(default=str(REPO_ROOT / "data" / "raw"), validation_alias="UPLOAD_DIR")
+    ARTIFACTS_DIR: str = Field(default=str(REPO_ROOT / "data" / "artifacts"), validation_alias="ARTIFACTS_DIR")
     MAX_UPLOAD_SIZE_MB: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")
     ALLOWED_EXTENSIONS: List[str] = Field(
         default=[".pdf"],
@@ -147,7 +150,12 @@ def get_upload_path(filename: str) -> Path:
     return upload_dir / filename
 
 
-def get_artifacts_path(document_id: str, artifact_type: str) -> Path:
+def get_artifacts_path(
+    document_id: str,
+    artifact_type: str,
+    *,
+    allow_legacy_qa_fallback: bool = True,
+) -> Path:
     """Get path for document artifacts stored by the HITL pipeline.
 
     Search order:
@@ -158,28 +166,44 @@ def get_artifacts_path(document_id: str, artifact_type: str) -> Path:
     import glob as _glob
 
     # Map API artifact-type name → glob suffix pattern
-    _SUFFIX_MAP: dict[str, str] = {
-        "validation":   "*_validation.json",
-        "manifest":     "*_manifest.json",
-        "qa_report":    "*_qa_pre_review.json",
-        "table_figure": "*_tables_figures.json",
-        "review":       "*_review",
-        "audit":        "*_audit.txt",
+    qa_report_patterns = ["*_qa_report.json"]
+    if allow_legacy_qa_fallback:
+        qa_report_patterns.append("*_qa_pre_review.json")
+
+    _SUFFIX_MAP: dict[str, list[str]] = {
+        "validation": ["*_validation.json"],
+        "manifest": ["*_manifest.json"],
+        "qa_report": qa_report_patterns,
+        "table_figure": ["*_tables_figures.json"],
+        "review": ["*_review"],
+        "audit": ["*_audit.txt"],
+        "optimization_prep": ["*_optimization_prep.json"],
+        "optimized_output": ["*_rag_optimized.json", "*_rag_optimized.md"],
     }
 
-    pattern = _SUFFIX_MAP.get(artifact_type, f"*_{artifact_type}*")
+    patterns = _SUFFIX_MAP.get(artifact_type, [f"*_{artifact_type}*"])
+
+    def _find_first_match(search_root: Path) -> Path | None:
+        # Try patterns in declaration order so earlier patterns take priority.
+        # Critical for "qa_report": *_qa_report.json must win over the legacy
+        # *_qa_pre_review.json when both are present in the same directory.
+        for pattern in patterns:
+            pattern_matches = sorted(_glob.glob(str(search_root / pattern)))
+            if pattern_matches:
+                return Path(pattern_matches[0])
+        return None
 
     # 1. UUID-named subdirectory
     work_dir = Path(settings.PIPELINE_WORK_DIR) / document_id
-    matches = _glob.glob(str(work_dir / pattern))
-    if matches:
-        return Path(matches[0])
+    work_match = _find_first_match(work_dir)
+    if work_match is not None:
+        return work_match
 
     # 2. Root of PIPELINE_WORK_DIR (artifacts named by document title, no UUID subdir)
     root_dir = Path(settings.PIPELINE_WORK_DIR)
-    root_matches = _glob.glob(str(root_dir / pattern))
-    if root_matches:
-        return Path(sorted(root_matches)[0])
+    root_match = _find_first_match(root_dir)
+    if root_match is not None:
+        return root_match
 
     # 3. Legacy flat path (pre-pipeline documents)
     legacy_dir = Path(settings.ARTIFACTS_DIR) / document_id

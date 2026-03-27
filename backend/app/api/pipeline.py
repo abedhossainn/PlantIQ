@@ -3,11 +3,13 @@ Pipeline API Endpoints.
 
 Endpoints for document upload, pipeline control, and artifact retrieval.
 """
+import asyncio
 import json
 import logging
 import re
 import shutil
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -21,6 +23,7 @@ from fastapi import (
     UploadFile,
     File,
     Form,
+    BackgroundTasks,
 )
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,10 +33,14 @@ from uuid import UUID
 from ..core.config import REPO_ROOT, settings, get_artifacts_path, get_upload_path
 from ..core.sse import create_sse_response, encode_sse_event
 from ..core.security import get_current_user_id
-from ..models.database import get_db
+from ..core.optimization_log import OptimizationLogManager, OptimizationLogHandler
+from ..models.database import get_db, AsyncSessionLocal
 from ..models.pipeline import (
+    DocumentOptimizedChunksResponse,
     DocumentPagesResponse,
     DocumentUploadResponse,
+    OptimizedChunkResponse,
+    OptimizedChunkUpdate,
     PageEvidenceResponse,
     PageContentUpdate,
     PipelineStatusResponse,
@@ -52,7 +59,20 @@ from ..services.pipeline_service import PipelineService
 
 logger = logging.getLogger(__name__)
 
+_UNCHANGED = object()
+_SET_NOW = object()
+_CLEAR = object()
+
 router = APIRouter(prefix="/api/v1", tags=["Pipeline"])
+
+_POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
+    PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+    PipelineStatus.OPTIMIZING.value,
+    PipelineStatus.OPTIMIZATION_COMPLETE.value,
+    PipelineStatus.QA_REVIEW.value,
+    PipelineStatus.QA_PASSED.value,
+    PipelineStatus.FINAL_APPROVED.value,
+}
 
 
 def _candidate_work_roots() -> list[Path]:
@@ -287,6 +307,162 @@ def _load_page_markdown(review_dir: Path, page_entry: dict) -> str:
     return f"# Page {page_number}".strip()
 
 
+def _extract_page_numbers_from_chunk(chunk: dict, content: str) -> list[int]:
+    source_pages = chunk.get("source_pages")
+    if isinstance(source_pages, list):
+        normalized_pages: list[int] = []
+        for page_number in source_pages:
+            if isinstance(page_number, int) and page_number not in normalized_pages:
+                normalized_pages.append(page_number)
+        if normalized_pages:
+            return normalized_pages
+
+    return [
+        page_number
+        for page_number in dict.fromkeys(
+            int(match)
+            for match in re.findall(r"Page\s+(\d+)", content or "", flags=re.IGNORECASE)
+        )
+    ]
+
+
+def _preview_text(content: str, *, limit: int = 180) -> str:
+    normalized = re.sub(r"\s+", " ", _strip_embedded_html_comments(content or "")).strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1].rstrip() + "…"
+
+
+def _optimized_chunk_id(chunk: dict, index: int) -> str:
+    explicit_id = str(chunk.get("chunk_id") or chunk.get("id") or "").strip()
+    if explicit_id:
+        return explicit_id
+    return f"chunk_{index:03d}"
+
+
+def _coerce_optimized_chunk(chunk: dict, index: int) -> dict:
+    content = str(chunk.get("content") or chunk.get("markdown") or chunk.get("body") or chunk.get("text") or "").strip()
+    heading = str(
+        chunk.get("heading")
+        or chunk.get("title")
+        or chunk.get("question")
+        or f"Chunk {index}"
+    ).strip()
+
+    table_facts = [
+        str(fact).strip()
+        for fact in (chunk.get("table_facts") or chunk.get("facts") or [])
+        if str(fact).strip()
+    ]
+    ambiguity_flags = [
+        str(flag).strip()
+        for flag in (chunk.get("ambiguity_flags") or chunk.get("ambiguities") or [])
+        if str(flag).strip()
+    ]
+
+    return {
+        "id": _optimized_chunk_id(chunk, index),
+        "heading": heading,
+        "markdown_content": content,
+        "source_pages": _extract_page_numbers_from_chunk(chunk, content),
+        "table_facts": table_facts,
+        "ambiguity_flags": ambiguity_flags,
+    }
+
+
+def _build_markdown_from_optimized_chunks(document_name: str, chunks: list[dict]) -> str:
+    sections: list[str] = [f"# {document_name}"]
+    for chunk in chunks:
+        content = str(chunk.get("markdown_content") or chunk.get("content") or "").strip()
+        if content:
+            sections.append(content)
+    return "\n\n".join(section for section in sections if section.strip()).strip() + "\n"
+
+
+def _build_editable_optimized_chunks(work_dir: Path) -> tuple[dict, str, list[dict], Optional[Path], Optional[Path]]:
+    optimized_json_path, optimized_markdown_path = _find_optimized_artifact_paths(work_dir)
+    optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
+    document_name = str(optimized_payload.get("document_name") or work_dir.name).strip() or work_dir.name
+
+    editable_chunks: list[dict] = []
+    raw_chunks = optimized_payload.get("chunks") or []
+    if isinstance(raw_chunks, list) and raw_chunks:
+        for index, raw_chunk in enumerate(raw_chunks, start=1):
+            if isinstance(raw_chunk, dict):
+                editable_chunks.append(_coerce_optimized_chunk(raw_chunk, index))
+
+    if not editable_chunks and markdown_content:
+        for index, section in enumerate(_split_markdown_into_sections(markdown_content), start=1):
+            content = str(section.get("content") or "").strip()
+            if not content:
+                continue
+            editable_chunks.append(
+                {
+                    "id": f"chunk_{index:03d}",
+                    "heading": str(section.get("heading") or f"Chunk {index}").strip(),
+                    "markdown_content": content,
+                    "source_pages": _extract_page_numbers_from_chunk({}, content),
+                    "table_facts": [],
+                    "ambiguity_flags": [],
+                }
+            )
+
+    if not editable_chunks:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Optimization output is incomplete; rerun optimization before editing",
+        )
+
+    return optimized_payload, document_name, editable_chunks, optimized_json_path, optimized_markdown_path
+
+
+def _save_optimized_chunks(
+    *,
+    optimized_payload: dict,
+    document_name: str,
+    editable_chunks: list[dict],
+    optimized_json_path: Optional[Path],
+    optimized_markdown_path: Optional[Path],
+    work_dir: Path,
+) -> None:
+    json_path = optimized_json_path or (work_dir / f"{document_name}_rag_optimized.json")
+    markdown_path = optimized_markdown_path or (work_dir / f"{document_name}_rag_optimized.md")
+
+    persisted_chunks = [
+        {
+            "heading": chunk["heading"],
+            "content": chunk["markdown_content"],
+            "source_pages": chunk.get("source_pages") or [],
+            "table_facts": chunk.get("table_facts") or [],
+            "ambiguity_flags": chunk.get("ambiguity_flags") or [],
+        }
+        for chunk in editable_chunks
+    ]
+
+    optimized_payload = dict(optimized_payload or {})
+    optimized_payload["document_name"] = document_name
+    optimized_payload["chunks"] = persisted_chunks
+    optimized_payload["markdown"] = _build_markdown_from_optimized_chunks(document_name, persisted_chunks)
+
+    json_path.write_text(json.dumps(optimized_payload, indent=2), encoding="utf-8")
+    markdown_path.write_text(str(optimized_payload["markdown"]), encoding="utf-8")
+
+
+def _remove_stale_qa_report(document_id: UUID4 | str, work_dir: Path) -> None:
+    qa_report_path = get_artifacts_path(
+        str(document_id),
+        "qa_report",
+        allow_legacy_qa_fallback=False,
+    )
+    if qa_report_path.exists() and qa_report_path.is_file():
+        qa_report_path.unlink()
+
+    validation_path = _find_validation_report(work_dir)
+    fallback_qa_report_path = _resolve_qa_report_path(document_id, validation_path)
+    if fallback_qa_report_path.exists() and fallback_qa_report_path.is_file():
+        fallback_qa_report_path.unlink()
+
+
 def _build_qa_sections_from_pages(review_dir: Path, page_manifest: dict) -> list[dict]:
     sections: list[dict] = []
     for page_entry in page_manifest.get("pages", []):
@@ -304,15 +480,381 @@ def _build_qa_sections_from_pages(review_dir: Path, page_manifest: dict) -> list
 
 
 def _resolve_qa_report_path(document_id: UUID4 | str, validation_path: Path) -> Path:
-    qa_report_path = get_artifacts_path(str(document_id), "qa_report")
+    qa_report_path = get_artifacts_path(
+        str(document_id),
+        "qa_report",
+        allow_legacy_qa_fallback=False,
+    )
     if qa_report_path.exists():
         return qa_report_path
 
     validation_name = validation_path.name
     if validation_name.endswith("_validation.json"):
-        return validation_path.with_name(validation_name.replace("_validation.json", "_qa_pre_review.json"))
+        return validation_path.with_name(validation_name.replace("_validation.json", "_qa_report.json"))
 
     return validation_path.with_name("qa_report.json")
+
+
+def _find_manifest_path(work_dir: Path) -> Optional[Path]:
+    manifest_files = sorted(work_dir.glob("*_manifest.json"))
+    return manifest_files[0] if manifest_files else None
+
+
+def _find_table_figure_report_path(work_dir: Path) -> Optional[Path]:
+    report_files = sorted(work_dir.glob("*_tables_figures.json"))
+    return report_files[0] if report_files else None
+
+
+def _find_optimized_artifact_paths(work_dir: Path) -> tuple[Optional[Path], Optional[Path]]:
+    optimized_json = sorted(work_dir.glob("*_rag_optimized.json"))
+    optimized_markdown = sorted(work_dir.glob("*_rag_optimized.md"))
+    return (
+        optimized_json[0] if optimized_json else None,
+        optimized_markdown[0] if optimized_markdown else None,
+    )
+
+
+def _is_post_optimization_lifecycle(status_value: Optional[str]) -> bool:
+    return status_value in _POST_OPTIMIZATION_LIFECYCLE_STATUSES
+
+
+def _has_usable_optimized_chunks(optimized_payload: dict) -> bool:
+    chunks = optimized_payload.get("chunks")
+    if not isinstance(chunks, list):
+        return False
+
+    for chunk in chunks:
+        if isinstance(chunk, str) and chunk.strip():
+            return True
+        if not isinstance(chunk, dict):
+            continue
+        for key in ("content", "markdown", "body", "text"):
+            if str(chunk.get(key) or "").strip():
+                return True
+    return False
+
+
+def _extract_optimized_markdown(optimized_payload: dict, optimized_markdown_path: Optional[Path]) -> str:
+    payload_markdown = optimized_payload.get("markdown")
+    if isinstance(payload_markdown, str) and payload_markdown.strip():
+        return payload_markdown.strip()
+
+    if optimized_markdown_path and optimized_markdown_path.exists() and optimized_markdown_path.is_file():
+        markdown_content = optimized_markdown_path.read_text(encoding="utf-8").strip()
+        if markdown_content:
+            return markdown_content
+
+    return ""
+
+
+def _load_validated_optimized_output(work_dir: Path) -> tuple[dict, str]:
+    optimized_json_path, optimized_markdown_path = _find_optimized_artifact_paths(work_dir)
+    optimized_payload = _load_optional_json(optimized_json_path)
+    markdown_content = _extract_optimized_markdown(optimized_payload, optimized_markdown_path)
+
+    if not _has_usable_optimized_chunks(optimized_payload) and not markdown_content:
+        raise ValueError(
+            "Optimization output is incomplete; rerun optimization before QA or finalization"
+        )
+
+    return optimized_payload, markdown_content
+
+
+def _load_optional_json(path: Optional[Path]) -> dict:
+    if path is None or not path.exists() or not path.is_file():
+        return {}
+    return _load_json_file(path)
+
+
+def _split_markdown_into_sections(markdown_content: str) -> list[dict]:
+    stripped_content = markdown_content.strip()
+    if not stripped_content:
+        return []
+
+    heading_matches = list(re.finditer(r"^##\s+(.+)$", stripped_content, flags=re.MULTILINE))
+    if not heading_matches:
+        first_heading = _extract_page_heading(stripped_content, 1)
+        return [{"heading": first_heading, "content": stripped_content, "has_tables": "|" in stripped_content}]
+
+    sections: list[dict] = []
+    for index, match in enumerate(heading_matches):
+        start = match.start()
+        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(stripped_content)
+        section_content = stripped_content[start:end].strip()
+        sections.append(
+            {
+                "heading": match.group(1).strip(),
+                "content": section_content,
+                "has_tables": "|" in section_content,
+            }
+        )
+    return sections
+
+
+def _build_qa_sections_from_optimized_output(work_dir: Path) -> list[dict]:
+    try:
+        optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    sections: list[dict] = []
+    chunks = optimized_payload.get("chunks") or []
+    if isinstance(chunks, list) and chunks:
+        for index, chunk in enumerate(chunks, start=1):
+            if not isinstance(chunk, dict):
+                continue
+            content = str(chunk.get("content") or chunk.get("markdown") or "").strip()
+            if not content:
+                content = json.dumps(chunk, indent=2)
+            heading = str(
+                chunk.get("heading")
+                or chunk.get("title")
+                or chunk.get("question")
+                or f"Chunk {index}"
+            ).strip()
+            sections.append(
+                {
+                    "heading": heading,
+                    "content": content,
+                    "has_tables": "|" in content or bool(chunk.get("table_facts")),
+                    "table_facts": chunk.get("table_facts") or chunk.get("facts") or [],
+                }
+            )
+
+    if sections:
+        return sections
+
+    if markdown_content:
+        return _split_markdown_into_sections(markdown_content)
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Optimization output is incomplete; rerun optimization before QA or finalization",
+    )
+
+
+async def _set_document_status(
+    db: AsyncSession,
+    document_id: UUID4 | str,
+    new_status: str,
+    *,
+    review_progress: Optional[int] = None,
+    qa_score: object = _UNCHANGED,
+    approved_by: Optional[str] = None,
+    approved_at: bool = False,
+    notes: Optional[str] = None,
+    optimization_started_at: object = _UNCHANGED,
+    optimization_completed_at: object = _UNCHANGED,
+    optimization_error: object = _UNCHANGED,
+) -> None:
+    from sqlalchemy import text as _text
+
+    assignments = ["status = :new_status", "updated_at = NOW()"]
+    params: dict[str, object] = {"doc_id": str(document_id), "new_status": new_status}
+
+    if review_progress is not None:
+        assignments.append("review_progress = :review_progress")
+        params["review_progress"] = review_progress
+    if qa_score is _CLEAR:
+        assignments.append("qa_score = NULL")
+    elif qa_score is not _UNCHANGED:
+        assignments.append("qa_score = :qa_score")
+        params["qa_score"] = qa_score
+    if approved_by is not None:
+        assignments.append("approved_by = :approved_by")
+        params["approved_by"] = approved_by
+    if approved_at:
+        assignments.append("approved_at = NOW()")
+    if notes is not None:
+        assignments.append("notes = :notes")
+        params["notes"] = notes
+    if optimization_started_at is _SET_NOW:
+        assignments.append("optimization_started_at = NOW()")
+    elif optimization_started_at is _CLEAR:
+        assignments.append("optimization_started_at = NULL")
+    elif optimization_started_at is not _UNCHANGED:
+        assignments.append("optimization_started_at = :optimization_started_at")
+        params["optimization_started_at"] = optimization_started_at
+
+    if optimization_completed_at is _SET_NOW:
+        assignments.append("optimization_completed_at = NOW()")
+    elif optimization_completed_at is _CLEAR:
+        assignments.append("optimization_completed_at = NULL")
+    elif optimization_completed_at is not _UNCHANGED:
+        assignments.append("optimization_completed_at = :optimization_completed_at")
+        params["optimization_completed_at"] = optimization_completed_at
+
+    if optimization_error is _CLEAR:
+        assignments.append("optimization_error = NULL")
+    elif optimization_error is not _UNCHANGED:
+        assignments.append("optimization_error = :optimization_error")
+        params["optimization_error"] = optimization_error
+
+    await db.execute(
+        _text(f"UPDATE documents SET {', '.join(assignments)} WHERE id = :doc_id"),
+        params,
+    )
+    await db.commit()
+
+
+def _emit_optimization_log(document_id: str, level: str, message: str) -> None:
+    normalized_level = level.upper()
+    if normalized_level not in {"INFO", "WARNING", "ERROR"}:
+        normalized_level = "INFO"
+    OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": pipeline_timestamp(),
+            "level": normalized_level,
+            "message": message,
+        },
+    )
+
+
+def pipeline_timestamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def _execute_optimization_stage(
+    *,
+    document_id: str,
+    reviewer: str,
+    work_dir: str,
+    optimization_prep_path: str,
+) -> None:
+    work_root = Path(work_dir)
+    OptimizationLogManager.start(document_id)
+    closed_stream = False
+    started_monotonic = time.monotonic()
+    try:
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+
+        # Resolve all paths synchronously before touching the DB
+        manifest_path = _find_manifest_path(work_root)
+        validation_path = get_artifacts_path(document_id, "validation")
+        if not validation_path.exists():
+            raise FileNotFoundError("Validation artifact not found for optimization")
+
+        manifest = _load_optional_json(manifest_path)
+        document_name = str(
+            manifest.get("document_name")
+            or validation_path.name.replace("_validation.json", "")
+        )
+        pdf_path = manifest.get("pdf_path")
+        if not pdf_path:
+            raise FileNotFoundError("Manifest is missing source PDF path")
+
+        from pipeline.src.cli.hitl_pipeline import HITLPipeline  # noqa: WPS433
+        from pipeline.src.lineage.lineage_tracker import (  # noqa: WPS433
+            load_manifest,
+            save_manifest,
+            update_manifest_timestamp,
+        )
+
+        async with AsyncSessionLocal() as db:
+            await _set_document_status(
+                db,
+                document_id,
+                PipelineStatus.OPTIMIZING.value,
+                review_progress=100,
+                optimization_started_at=_SET_NOW,
+                optimization_completed_at=_CLEAR,
+                optimization_error=_CLEAR,
+            )
+
+        _emit_optimization_log(
+            document_id,
+            "INFO",
+            "Optimization started",
+        )
+
+        logger.info("Starting Stage 10 reformatting for %s in thread pool", document_id)
+        pipeline_runner = HITLPipeline(str(work_root))
+
+        # Wire per-document log capture so the SSE /optimization/logs endpoint
+        # can stream live log lines from the thread-pool worker to the browser.
+        _loop = asyncio.get_event_loop()
+        _opt_handler = OptimizationLogHandler(document_id, _loop)
+        _opt_logger_names = [
+            "pipeline.src.cli.hitl_pipeline",
+            "pipeline.src.cli.text_reformatter",
+            "pipeline.src.utils.progress_tracker",
+        ]
+        for _lname in _opt_logger_names:
+            logging.getLogger(_lname).addHandler(_opt_handler)
+
+        # Run the blocking ~40-60 min reformatting in a thread so the event loop stays free
+        result = None
+        try:
+            result = await asyncio.to_thread(
+                pipeline_runner.run_post_approval_reformatting,
+                doc_name=document_name,
+                pdf_path=str(pdf_path),
+                validation_report_path=str(validation_path),
+                optimization_prep_path=optimization_prep_path,
+            )
+        finally:
+            for _lname in _opt_logger_names:
+                logging.getLogger(_lname).removeHandler(_opt_handler)
+
+        if result.get("status") != "complete":
+            _emit_optimization_log(
+                document_id,
+                "ERROR",
+                result.get("message") or "Optimization stage failed",
+            )
+            OptimizationLogManager.close(document_id, "failed")
+            closed_stream = True
+            raise RuntimeError(result.get("message") or "Optimization stage failed")
+
+        _load_validated_optimized_output(work_root)
+
+        duration_seconds = int(time.monotonic() - started_monotonic)
+        _emit_optimization_log(
+            document_id,
+            "INFO",
+            f"Optimization completed in {duration_seconds}s",
+        )
+
+        if manifest_path and manifest_path.exists():
+            manifest_record = load_manifest(str(manifest_path))
+            manifest_record = update_manifest_timestamp(manifest_record, "reformatting", reviewer)
+            save_manifest(manifest_record, str(manifest_path))
+
+        async with AsyncSessionLocal() as db:
+            await _set_document_status(
+                db,
+                document_id,
+                PipelineStatus.OPTIMIZATION_COMPLETE.value,
+                review_progress=100,
+                optimization_completed_at=_SET_NOW,
+                optimization_error=_CLEAR,
+            )
+
+        OptimizationLogManager.close(document_id, "optimization-complete")
+        closed_stream = True
+
+    except Exception as exc:
+        _emit_optimization_log(document_id, "ERROR", f"Optimization failed: {exc}")
+        if not closed_stream:
+            OptimizationLogManager.close(document_id, "failed")
+        logger.error("Optimization stage failed for %s: %s", document_id, exc, exc_info=True)
+        async with AsyncSessionLocal() as db:
+            await _set_document_status(
+                db,
+                document_id,
+                PipelineStatus.FAILED.value,
+                review_progress=100,
+                notes=str(exc),
+                optimization_completed_at=_SET_NOW,
+                optimization_error=str(exc),
+            )
 
 
 async def _get_document_status_value(document_id: UUID4, db: AsyncSession) -> Optional[str]:
@@ -487,17 +1029,18 @@ async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
         except Exception:
             pass
 
-    # Collect from qa_pre_review files (overall_confidence_score)
-    for qa_path in _glob.glob(str(root / "*_qa_pre_review.json")):
-        try:
-            data = _json.loads(Path(qa_path).read_text())
-            name = data.get("document_name") or data.get("document", "")
-            if name:
-                score = (data.get("metrics") or {}).get("overall_confidence_score")
-                if score is not None:
-                    index.setdefault(name, {})["qa_score"] = score
-        except Exception:
-            pass
+    # Collect from QA report artifacts (optimization QA preferred, legacy pre-review fallback)
+    for qa_pattern in ("*_qa_report.json", "*_qa_pre_review.json"):
+        for qa_path in _glob.glob(str(root / qa_pattern)):
+            try:
+                data = _json.loads(Path(qa_path).read_text())
+                name = data.get("document_name") or data.get("document", "")
+                if name:
+                    score = (data.get("metrics") or {}).get("overall_confidence_score")
+                    if score is not None and ("qa_score" not in index.setdefault(name, {}) or qa_pattern == "*_qa_report.json"):
+                        index.setdefault(name, {})["qa_score"] = score
+            except Exception:
+                pass
 
     if not index:
         return docs
@@ -699,6 +1242,7 @@ async def get_document_status(
 @router.get("/documents/{document_id}/events")
 async def stream_document_events(
     document_id: UUID4,
+    request: Request,
     current_user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -721,13 +1265,102 @@ async def stream_document_events(
         )
 
     async def event_generator():
-        async for event in PipelineService.stream_events(
+        event_stream = PipelineService.stream_events(
             document_id=str(document_id),
             initial_status=status_info,
-        ):
-            yield encode_sse_event(event)
+        )
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    event = await asyncio.wait_for(anext(event_stream), timeout=15.0)
+                except StopAsyncIteration:
+                    return
+                except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        return
+                    yield ": heartbeat\n\n"
+                    continue
+
+                yield encode_sse_event(event)
+        except asyncio.CancelledError:
+            return
+        finally:
+            await event_stream.aclose()
 
     return create_sse_response(event_generator())
+
+
+@router.get("/documents/{document_id}/optimization/logs")
+async def stream_optimization_logs(
+    document_id: UUID4,
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream Stage 10 optimization log lines as SSE.
+
+    Events:
+      - ``log``  — ``{"event": "log", "timestamp": "<iso>", "level": "INFO|WARNING|ERROR", "message": "<text>"}``
+      - ``done`` — ``{"event": "done", "status": "optimization-complete"|"failed"}``
+
+    Replays the in-memory buffer on connect (so late joiners see history),
+    then delivers live lines until the optimization finishes.
+    Heartbeat comment lines are emitted every 15 s to keep the connection open.
+    """
+    doc_id = str(document_id)
+
+    async def log_generator():
+        buffer, queue = OptimizationLogManager.subscribe(doc_id)
+
+        # Replay history for late-joining clients
+        for entry in buffer:
+            yield encode_sse_event({"event": "log", **entry})
+
+        # Already finished — emit done and close
+        if queue is None:
+            yield encode_sse_event({
+                "event": "done",
+                "status": OptimizationLogManager.get_final_status(doc_id) or "optimization-complete",
+            })
+            return
+
+        status_info = await PipelineService.get_pipeline_status(document_id=doc_id, db=db)
+        current_status = status_info.status.value
+        if not buffer and current_status in {
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            PipelineStatus.FAILED.value,
+        }:
+            yield encode_sse_event({
+                "event": "done",
+                "status": "failed" if current_status == PipelineStatus.FAILED.value else "optimization-complete",
+            })
+            return
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        return
+                    yield ": heartbeat\n\n"
+                    continue
+
+                if kind == "log":
+                    yield encode_sse_event({"event": "log", **payload})
+                elif kind == "done":
+                    yield encode_sse_event({"event": "done", **payload})
+                    return
+        except asyncio.CancelledError:
+            return
+        finally:
+            OptimizationLogManager.unsubscribe(doc_id, queue)
+
+    return create_sse_response(log_generator())
 
 
 @router.get("/documents/{document_id}/sections")
@@ -910,31 +1543,275 @@ async def update_document_page_content(
     return {"page_id": page_id, "status": "saved"}
 
 
-@router.post("/documents/{document_id}/review-complete")
-async def mark_review_complete(
+@router.get("/documents/{document_id}/optimized-chunks", response_model=DocumentOptimizedChunksResponse)
+async def get_document_optimized_chunks(
     document_id: UUID4,
     current_user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark document review as complete, advancing status to review-complete."""
-    from sqlalchemy import text as _text
-    try:
-        await db.execute(
-            _text("""
-                UPDATE documents
-                SET status = 'review-complete', review_progress = 100, updated_at = NOW()
-                WHERE id = :doc_id
-            """),
-            {"doc_id": str(document_id)},
+    """Return editable optimized chunks for the post-optimization editor."""
+    del current_user_id
+
+    document_status = await _get_document_status_value(document_id, db)
+    if document_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
         )
-        await db.commit()
-        return {"status": "review-complete"}
+
+    if document_status not in {
+        PipelineStatus.OPTIMIZATION_COMPLETE.value,
+        PipelineStatus.QA_REVIEW.value,
+        PipelineStatus.QA_PASSED.value,
+        PipelineStatus.FINAL_APPROVED.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Optimized output is only available after optimization has completed",
+        )
+
+    try:
+        work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        _optimized_payload, document_name, editable_chunks, _json_path, _markdown_path = _build_editable_optimized_chunks(work_dir)
+        return DocumentOptimizedChunksResponse(
+            document_name=document_name,
+            chunks=[
+                OptimizedChunkResponse(
+                    id=chunk["id"],
+                    chunk_number=index,
+                    heading=chunk["heading"],
+                    markdown_content=chunk["markdown_content"],
+                    text_preview=_preview_text(chunk["markdown_content"]),
+                    source_pages=chunk.get("source_pages") or [],
+                    table_facts=chunk.get("table_facts") or [],
+                    ambiguity_flags=chunk.get("ambiguity_flags") or [],
+                )
+                for index, chunk in enumerate(editable_chunks, start=1)
+            ],
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.error(f"Error marking review complete for {document_id}: {exc}")
+        logger.error(f"Error loading optimized chunks for {document_id}: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update document status",
+            detail="Failed to load optimized chunks",
         )
+
+
+@router.patch("/documents/{document_id}/optimized-chunks/{chunk_id}")
+async def update_document_optimized_chunk(
+    document_id: UUID4,
+    chunk_id: str,
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist updated optimized chunk content and invalidate stale QA results."""
+    del current_user_id
+
+    document_status = await _get_document_status_value(document_id, db)
+    if document_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    if document_status not in {
+        PipelineStatus.OPTIMIZATION_COMPLETE.value,
+        PipelineStatus.QA_REVIEW.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Optimized output can only be edited before QA has passed",
+        )
+
+    try:
+        payload = OptimizedChunkUpdate.model_validate(await request.json())
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="heading and markdown_content are required",
+        )
+
+    try:
+        work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        optimized_payload, document_name, editable_chunks, optimized_json_path, optimized_markdown_path = _build_editable_optimized_chunks(work_dir)
+        target_chunk = next((chunk for chunk in editable_chunks if chunk["id"] == chunk_id), None)
+        if target_chunk is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Optimized chunk not found",
+            )
+
+        target_chunk["heading"] = payload.heading.strip()
+        target_chunk["markdown_content"] = payload.markdown_content.strip()
+        target_chunk["table_facts"] = [fact.strip() for fact in payload.table_facts if fact.strip()]
+        target_chunk["ambiguity_flags"] = [flag.strip() for flag in payload.ambiguity_flags if flag.strip()]
+        target_chunk["source_pages"] = _extract_page_numbers_from_chunk(target_chunk, target_chunk["markdown_content"])
+
+        _save_optimized_chunks(
+            optimized_payload=optimized_payload,
+            document_name=document_name,
+            editable_chunks=editable_chunks,
+            optimized_json_path=optimized_json_path,
+            optimized_markdown_path=optimized_markdown_path,
+            work_dir=work_dir,
+        )
+        _remove_stale_qa_report(document_id, work_dir)
+
+        await _set_document_status(
+            db,
+            document_id,
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            qa_score=_CLEAR,
+        )
+    except HTTPException:
+        raise
+    except OSError as exc:
+        logger.error(f"Error saving optimized chunk for {document_id}/{chunk_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save optimized chunk",
+        )
+    except Exception as exc:
+        logger.error(f"Error updating optimized chunk for {document_id}/{chunk_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to update optimized chunk",
+        )
+
+    return {"chunk_id": chunk_id, "status": "saved"}
+
+
+async def _approve_for_optimization(
+    document_id: UUID4,
+    background_tasks: BackgroundTasks,
+    current_user_id: str,
+    db: AsyncSession,
+):
+    """Generate optimization-prep artifacts and trigger Stage 10 after fidelity review."""
+    try:
+        document_status = await _get_document_status_value(document_id, db)
+        if document_status is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        if document_status in {
+            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            PipelineStatus.OPTIMIZING.value,
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            PipelineStatus.QA_REVIEW.value,
+            PipelineStatus.QA_PASSED.value,
+            PipelineStatus.FINAL_APPROVED.value,
+            PipelineStatus.APPROVED.value,
+            PipelineStatus.REJECTED.value,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot approve document in {document_status} status",
+            )
+
+        if document_status not in {
+            PipelineStatus.VALIDATION_COMPLETE.value,
+            PipelineStatus.IN_REVIEW.value,
+            PipelineStatus.REVIEW_COMPLETE.value,
+            PipelineStatus.FAILED.value,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "Approve for optimization is only available for documents in "
+                    "validation-complete, in-review, review-complete, or failed status"
+                ),
+            )
+
+        work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        review_dir = _find_review_workspace(document_id)
+        page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
+
+        validation_path = get_artifacts_path(str(document_id), "validation")
+        if not validation_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Validation artifact not found for this document",
+            )
+
+        validation_report = _load_json_file(validation_path)
+        table_figure_report = _load_optional_json(_find_table_figure_report_path(work_dir))
+
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+
+        from pipeline.src.cli.hitl_pipeline import build_optimization_prep  # noqa: WPS433
+
+        document_name = page_manifest.get("document_name") or validation_report.get("document_name") or str(document_id)
+        optimization_prep = build_optimization_prep(
+            document_id=str(document_id),
+            document_name=document_name,
+            review_dir=str(review_dir),
+            validation_report=validation_report,
+            table_figure_report=table_figure_report,
+        )
+
+        optimization_prep_path = work_dir / f"{document_name}_optimization_prep.json"
+        optimization_prep_path.write_text(json.dumps(optimization_prep, indent=2), encoding="utf-8")
+
+        await _set_document_status(
+            db,
+            document_id,
+            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            review_progress=100,
+            optimization_started_at=_CLEAR,
+            optimization_completed_at=_CLEAR,
+            optimization_error=_CLEAR,
+        )
+        background_tasks.add_task(
+            _execute_optimization_stage,
+            document_id=str(document_id),
+            reviewer=str(current_user_id),
+            work_dir=str(work_dir),
+            optimization_prep_path=str(optimization_prep_path),
+        )
+
+        return {
+            "document_id": str(document_id),
+            "status": PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            "optimization_triggered": True,
+            "optimization_prep_path": str(optimization_prep_path),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error approving optimization for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to approve document for optimization",
+        )
+
+
+@router.post("/documents/{document_id}/approve-for-optimization")
+async def approve_for_optimization(
+    document_id: UUID4,
+    background_tasks: BackgroundTasks,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve reviewed content for Stage 10 optimization and trigger the optimization flow."""
+    return await _approve_for_optimization(document_id, background_tasks, current_user_id, db)
+
+
+@router.post("/documents/{document_id}/review-complete")
+async def mark_review_complete(
+    document_id: UUID4,
+    background_tasks: BackgroundTasks,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Compatibility alias for approve-for-optimization."""
+    return await _approve_for_optimization(document_id, background_tasks, current_user_id, db)
 
 
 @router.post("/documents/{document_id}/qa-rescore", response_model=QARescoreResponse)
@@ -943,7 +1820,7 @@ async def rescore_document_qa(
     current_user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Recompute QA gate results from persisted page-review artifacts."""
+    """Recompute QA gate results from persisted optimization output artifacts."""
     del current_user_id
 
     try:
@@ -954,24 +1831,30 @@ async def rescore_document_qa(
                 detail="Document not found",
             )
 
-        if document_status in {PipelineStatus.APPROVED.value, PipelineStatus.REJECTED.value}:
+        if document_status in {
+            PipelineStatus.APPROVED.value,
+            PipelineStatus.FINAL_APPROVED.value,
+            PipelineStatus.REJECTED.value,
+        }:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Cannot rescore document in {document_status} status",
             )
 
-        if document_status not in {PipelineStatus.IN_REVIEW.value, PipelineStatus.REVIEW_COMPLETE.value}:
+        if document_status not in {
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            PipelineStatus.QA_REVIEW.value,
+            PipelineStatus.QA_PASSED.value,
+        }:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    "QA rescore is only available for documents in in-review or "
-                    "review-complete status"
+                    "QA rescore is only available for documents after optimization "
+                    "has completed"
                 ),
             )
 
         work_dir = _find_document_workspace(document_id, require_document_dir=True)
-        review_dir = _find_review_workspace(document_id)
-        page_manifest = _ensure_page_review_manifest(review_dir, work_dir)
 
         validation_path = get_artifacts_path(str(document_id), "validation")
         if not validation_path.exists():
@@ -992,14 +1875,23 @@ async def rescore_document_qa(
             save_qa_report,
         )
 
-        sections = _build_qa_sections_from_pages(review_dir, page_manifest)
+        await _set_document_status(db, document_id, PipelineStatus.QA_REVIEW.value)
+
+        sections = _build_qa_sections_from_optimized_output(work_dir)
         metrics = compute_qa_metrics(sections, validation_report)
         result = evaluate_qa_gate(metrics, AcceptanceCriteria())
-        result.document_name = page_manifest.get("document_name") or validation_report.get("document_name") or str(document_id)
+        result.document_name = validation_report.get("document_name") or str(document_id)
 
         qa_report_path = _resolve_qa_report_path(document_id, validation_path)
         qa_report_path.parent.mkdir(parents=True, exist_ok=True)
         save_qa_report(result, str(qa_report_path))
+
+        await _set_document_status(
+            db,
+            document_id,
+            PipelineStatus.QA_REVIEW.value,
+            qa_score=float(result.metrics.overall_confidence_score),
+        )
 
         return QARescoreResponse(
             document_id=document_id,
@@ -1027,8 +1919,7 @@ async def record_qa_decision(
     current_user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Record QA gate decision (accept → in-review status; reject → rejected)."""
-    from sqlalchemy import text as _text
+    """Record QA gate decision (accept → qa-passed; reject → rejected)."""
     try:
         payload = await request.json()
     except Exception:
@@ -1041,27 +1932,44 @@ async def record_qa_decision(
             detail="decision must be 'accept' or 'reject'",
         )
 
-    if decision == "accept":
-        qa_report_path = get_artifacts_path(str(document_id), "qa_report")
-        if qa_report_path.exists() and qa_report_path.is_file():
-            qa_report = _load_json_file(qa_report_path)
-            if qa_report.get("decision") == "rejected":
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="QA criteria currently fail; rescore and resolve issues before accepting",
-                )
-
-    new_status = "in-review" if decision == "accept" else "rejected"
-    try:
-        await db.execute(
-            _text("""
-                UPDATE documents
-                SET status = :new_status, updated_at = NOW()
-                WHERE id = :doc_id
-            """),
-            {"new_status": new_status, "doc_id": str(document_id)},
+    current_status = await _get_document_status_value(document_id, db)
+    if current_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
         )
-        await db.commit()
+    if current_status in {
+        PipelineStatus.FINAL_APPROVED.value,
+        PipelineStatus.APPROVED.value,
+        PipelineStatus.REJECTED.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot record QA decision for document in {current_status} status",
+        )
+
+    if decision == "accept":
+        qa_report_path = get_artifacts_path(
+            str(document_id),
+            "qa_report",
+            allow_legacy_qa_fallback=False,
+        )
+        if not qa_report_path.exists() or not qa_report_path.is_file():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="QA report not found; run QA rescore on the optimized output first",
+            )
+
+        qa_report = _load_json_file(qa_report_path)
+        if qa_report.get("decision") == "rejected":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="QA criteria currently fail; rescore and resolve issues before accepting",
+            )
+
+    new_status = PipelineStatus.QA_PASSED.value if decision == "accept" else PipelineStatus.REJECTED.value
+    try:
+        await _set_document_status(db, document_id, new_status)
         return {"status": new_status}
     except Exception as exc:
         logger.error(f"Error recording QA decision for {document_id}: {exc}")
@@ -1074,39 +1982,57 @@ async def record_qa_decision(
 @router.post("/documents/{document_id}/final-approve")
 async def final_approve_document(
     document_id: UUID4,
-    payload: dict,
+    request: Request,
     current_user_id: str = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
     """Record final approval or rejection decision."""
-    from sqlalchemy import text as _text
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
     decision = payload.get("decision")
     if decision not in ("approve", "reject"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="decision must be 'approve' or 'reject'",
         )
-    new_status = "approved" if decision == "approve" else "rejected"
+
+    current_status = await _get_document_status_value(document_id, db)
+    if current_status is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    if current_status in {
+        PipelineStatus.FINAL_APPROVED.value,
+        PipelineStatus.APPROVED.value,
+        PipelineStatus.REJECTED.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document is already in {current_status} status",
+        )
+
+    if decision == "approve" and current_status != PipelineStatus.QA_PASSED.value:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Final approval requires a QA-passed document",
+        )
+
+    new_status = PipelineStatus.FINAL_APPROVED.value if decision == "approve" else PipelineStatus.REJECTED.value
     notes = payload.get("notes") or None
     try:
-        await db.execute(
-            _text("""
-                UPDATE documents
-                SET status = :new_status,
-                    approved_by = :approved_by,
-                    approved_at = NOW(),
-                    notes = COALESCE(:notes, notes),
-                    updated_at = NOW()
-                WHERE id = :doc_id
-            """),
-            {
-                "new_status": new_status,
-                "approved_by": current_user_id,
-                "notes": notes,
-                "doc_id": str(document_id),
-            },
+        await _set_document_status(
+            db,
+            document_id,
+            new_status,
+            approved_by=current_user_id,
+            approved_at=True,
+            notes=notes,
         )
-        await db.commit()
         return {"status": new_status}
     except Exception as exc:
         logger.error(f"Error recording final approval for {document_id}: {exc}")
@@ -1145,7 +2071,7 @@ async def reprocess_document(
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    locked_statuses = {"approved", "rejected"}
+    locked_statuses = {PipelineStatus.APPROVED.value, PipelineStatus.FINAL_APPROVED.value, PipelineStatus.REJECTED.value}
     if row["status"] in locked_statuses and not getattr(request, "force", False):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1163,7 +2089,7 @@ async def reprocess_document(
         job_id = await PipelineService.trigger_pipeline(
             document_id=str(document_id),
             pdf_path=pdf_path,
-            reviewer=current_user_id,
+            reviewer=str(current_user_id),
             db=db,
         )
         return ReprocessResponse(
@@ -1198,10 +2124,35 @@ async def get_document_artifact(
     - table_figure: Table/figure report (JSON)
     """
     try:
-        artifact_path = await PipelineService.get_artifact(
-            document_id=str(document_id),
-            artifact_type=artifact_type.value,
-        )
+        document_status = await _get_document_status_value(document_id, db)
+        if document_status is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        if artifact_type == ArtifactType.QA_REPORT:
+            allow_legacy_qa_fallback = not _is_post_optimization_lifecycle(document_status)
+            artifact_path = get_artifacts_path(
+                str(document_id),
+                artifact_type.value,
+                allow_legacy_qa_fallback=allow_legacy_qa_fallback,
+            )
+            if not artifact_path.exists():
+                if not allow_legacy_qa_fallback:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Post-optimization QA report not found; run QA rescore on the optimized output first",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Artifact {artifact_type} not found",
+                )
+        else:
+            artifact_path = await PipelineService.get_artifact(
+                document_id=str(document_id),
+                artifact_type=artifact_type.value,
+            )
 
         if not artifact_path.exists():
             raise HTTPException(

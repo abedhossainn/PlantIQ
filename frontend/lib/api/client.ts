@@ -4,7 +4,14 @@
  */
 
 const POSTGREST_URL = process.env.NEXT_PUBLIC_POSTGREST_URL || 'http://localhost:3001';
-const FASTAPI_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+
+export function getFastApiBaseUrl(): string {
+  return (
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.NEXT_PUBLIC_FASTAPI_URL ||
+    'http://localhost:8000'
+  );
+}
 
 export class ApiError extends Error {
   constructor(
@@ -138,7 +145,7 @@ export async function fastapiFetch<T>(
   // Ensure path starts with /
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   
-  return apiFetch<T>(`${FASTAPI_URL}${normalizedPath}`, options);
+  return apiFetch<T>(`${getFastApiBaseUrl()}${normalizedPath}`, options);
 }
 
 /**

@@ -597,7 +597,7 @@ def convert_pdf_with_qwen(
             except Exception as e:
                 print(f"❌ Error during conversion: {e}")
                 sys.exit(1)
-        
+
         # Parse response
         try:
             result = response.json()
@@ -606,16 +606,16 @@ def convert_pdf_with_qwen(
             print(f"   Status: {response.status_code}")
             print(f"   Response: {response.text[:500]}")
             sys.exit(1)
-        
+
         # Check for conversion errors
         if result.get("status") != "success":
             print(f"❌ Conversion failed: {result.get('errors', 'Unknown error')}")
             sys.exit(1)
-        
+
         # Extract markdown content from API response
         document = result.get("document", {})
         md_content = document.get("md_content", "")
-        
+
         if not md_content:
             print("❌ Error: No markdown content in response")
             sys.exit(1)

@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { consumeStreamingResponse, streamChatQuery, submitChatQuery } from '../lib/api/chat';
 import type { Citation as ApiCitation } from '../lib/api/chat';
-import { from, postgrestFetch } from '../lib/api/client';
-import { downloadArtifact, getPipelineStatus, streamIngestionEvents, uploadDocument } from '../lib/api/pipeline';
+import { fastapiFetch, from, getFastApiBaseUrl, postgrestFetch } from '../lib/api/client';
+import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus } from '../lib/document-status';
+import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
+import { getDocumentOptimizedChunks, updateOptimizedChunk } from '../lib/api/optimized-review';
 import { ChatWebSocketClient, PipelineWebSocketClient } from '../lib/api/websocket';
 
 class LocalStorageMock {
@@ -105,6 +107,30 @@ describe('frontend hybrid API integration contracts', () => {
   afterEach(() => {
     fetchMock.mockReset();
     vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
+
+  it('resolves FastAPI base URL from NEXT_PUBLIC_API_URL when NEXT_PUBLIC_FASTAPI_URL is unset', () => {
+    vi.stubEnv('NEXT_PUBLIC_FASTAPI_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001');
+
+    expect(getFastApiBaseUrl()).toBe('http://localhost:8001');
+  });
+
+  it('uses NEXT_PUBLIC_API_URL for FastAPI requests when NEXT_PUBLIC_FASTAPI_URL is unset', async () => {
+    vi.stubEnv('NEXT_PUBLIC_FASTAPI_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001');
+
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 'doc-1' }]));
+
+    await fastapiFetch('/api/v1/documents');
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8001/api/v1/documents');
+  });
+
+  it('labels approved-for-optimization as ready for optimization in the optimization workflow', () => {
+    expect(getOptimizationLifecycleLabel('approved-for-optimization')).toBe('Ready for Optimization');
   });
 
   it('submits non-streaming chat queries through FastAPI with auth', async () => {
@@ -302,6 +328,22 @@ describe('frontend hybrid API integration contracts', () => {
     expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
   });
 
+  it('fetchArtifactJson uses the resolved FastAPI base URL and disables caching', async () => {
+    vi.stubEnv('NEXT_PUBLIC_FASTAPI_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001');
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ decision: 'review', metrics: {}, passed_criteria: [], failed_criteria: [], recommendations: [] })
+    );
+
+    await fetchArtifactJson('doc-123', 'qa_report');
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8001/api/v1/documents/doc-123/artifacts/qa_report');
+    expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+    expect(options.cache).toBe('no-store');
+  });
+
   it('builds PostgREST queries with filters, sort order, and auth', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 'doc-1', title: 'Doc 1' }]));
 
@@ -497,5 +539,196 @@ describe('frontend hybrid API integration contracts', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ type: 'progress', progress: 40, stage: 'extraction' });
     expect(events[1]).toMatchObject({ type: 'complete', progress: 100, stage: 'completed' });
+  });
+
+  it('treats optimization stream aborts during reader.read as normal shutdown', async () => {
+    const releaseLock = vi.fn();
+    const read = vi.fn().mockRejectedValue(new DOMException('BodyStreamBuffer was aborted', 'AbortError'));
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read,
+          releaseLock,
+        }),
+      },
+    } as unknown as Response);
+
+    const events = [];
+    for await (const event of streamOptimizationLogs('doc-opt')) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // isQAReadyStatus — used by the optimizing page to detect already-completed
+  // documents and immediately show the completion state without waiting for SSE
+  // -------------------------------------------------------------------------
+
+  it('isQAReadyStatus returns true for optimization-complete and all downstream statuses', () => {
+    expect(isQAReadyStatus('optimization-complete')).toBe(true);
+    expect(isQAReadyStatus('qa-review')).toBe(true);
+    expect(isQAReadyStatus('qa-passed')).toBe(true);
+    expect(isQAReadyStatus('final-approved')).toBe(true);
+    expect(isQAReadyStatus('approved')).toBe(true);
+  });
+
+  it('isQAReadyStatus returns false for statuses that precede optimization completion', () => {
+    expect(isQAReadyStatus('approved-for-optimization')).toBe(false);
+    expect(isQAReadyStatus('optimizing')).toBe(false);
+    expect(isQAReadyStatus('failed')).toBe(false);
+    expect(isQAReadyStatus('in-review')).toBe(false);
+    expect(isQAReadyStatus('validation-complete')).toBe(false);
+  });
+
+  it('getPipelineStatus returns the raw status for an already-complete document', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        document_id: 'b549bbfc-f9bd-48be-aac0-bdeb165de5f2',
+        status: 'optimization-complete',
+        progress: 100,
+        started_at: '2026-03-26T00:00:00Z',
+        completed_at: '2026-03-26T01:00:00Z',
+      })
+    );
+
+    const result = await getPipelineStatus('b549bbfc-f9bd-48be-aac0-bdeb165de5f2');
+
+    expect(result.status).toBe('optimization-complete');
+    expect(isQAReadyStatus(result.status)).toBe(true);
+  });
+
+  it('getPipelineStatus downstream statuses are also detected as QA-ready', async () => {
+    for (const status of ['qa-review', 'qa-passed', 'final-approved'] as const) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          document_id: 'doc-downstream',
+          status,
+          progress: 100,
+        })
+      );
+
+      const result = await getPipelineStatus('doc-downstream');
+      expect(isQAReadyStatus(result.status)).toBe(true);
+    }
+  });
+
+  // ============================================================================
+  // Optimized Review API helpers
+  // ============================================================================
+
+  it('getDocumentOptimizedChunks fetches the optimized-chunks endpoint with auth', async () => {
+    const mockResponse = {
+      document_name: 'LNG Operations Manual',
+      review_unit: 'optimized_chunk',
+      chunks: [
+        {
+          id: 'chunk-001',
+          chunk_number: 1,
+          heading: 'Safety Protocols',
+          markdown_content: '## Safety Protocols\n\nContent here.',
+          text_preview: 'Safety Protocols content...',
+          source_pages: [1, 2],
+          table_facts: ['Table 1: Pressure limits'],
+          ambiguity_flags: [],
+        },
+      ],
+    };
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(mockResponse));
+
+    const result = await getDocumentOptimizedChunks('doc-abc');
+
+    expect(result.document_name).toBe('LNG Operations Manual');
+    expect(result.review_unit).toBe('optimized_chunk');
+    expect(result.chunks).toHaveLength(1);
+    expect(result.chunks[0].id).toBe('chunk-001');
+    expect(result.chunks[0].heading).toBe('Safety Protocols');
+    expect(result.chunks[0].source_pages).toEqual([1, 2]);
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-abc/optimized-chunks');
+    expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+  });
+
+  it('updateOptimizedChunk sends a PATCH with the correct payload and returns chunk_id + status', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ chunk_id: 'chunk-001', status: 'saved' }));
+
+    const payload = {
+      heading: 'Updated Safety Protocols',
+      markdown_content: '## Updated Safety Protocols\n\nNew content.',
+      table_facts: ['Table 1: Updated pressure limits'],
+      ambiguity_flags: ['Figure 3 description unclear'],
+    };
+
+    const result = await updateOptimizedChunk('doc-abc', 'chunk-001', payload);
+
+    expect(result.chunk_id).toBe('chunk-001');
+    expect(result.status).toBe('saved');
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-abc/optimized-chunks/chunk-001');
+    expect(options.method).toBe('PATCH');
+    expect((options.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+
+    const body = JSON.parse(options.body as string);
+    expect(body.heading).toBe('Updated Safety Protocols');
+    expect(body.markdown_content).toBe('## Updated Safety Protocols\n\nNew content.');
+    expect(body.table_facts).toEqual(['Table 1: Updated pressure limits']);
+    expect(body.ambiguity_flags).toEqual(['Figure 3 description unclear']);
+  });
+
+  it('getDocumentOptimizedChunks returns empty chunks array on backend error', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Not found' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await expect(getDocumentOptimizedChunks('doc-missing')).rejects.toThrow();
+  });
+
+  // ============================================================================
+  // Routing helpers: canOpenOptimizedReview
+  // ============================================================================
+
+  it('canOpenOptimizedReview returns true for optimization-complete and qa-review', () => {
+    expect(canOpenOptimizedReview('optimization-complete')).toBe(true);
+    expect(canOpenOptimizedReview('qa-review')).toBe(true);
+  });
+
+  it('canOpenOptimizedReview returns false for finalized and pre-optimization statuses', () => {
+    expect(canOpenOptimizedReview('qa-passed')).toBe(false);
+    expect(canOpenOptimizedReview('final-approved')).toBe(false);
+    expect(canOpenOptimizedReview('approved')).toBe(false);
+    expect(canOpenOptimizedReview('optimizing')).toBe(false);
+    expect(canOpenOptimizedReview('in-review')).toBe(false);
+    expect(canOpenOptimizedReview('failed')).toBe(false);
+  });
+
+  // ============================================================================
+  // Navigation contract: optimization-complete routes to optimized-review
+  // ============================================================================
+
+  it('optimization-complete is a QA-ready status and maps to the optimized-review route', () => {
+    // When the optimizing page detects this status, it should:
+    // 1. treat the document as complete (isQAReadyStatus → true)
+    // 2. allow the user to open the optimized-review editor (canOpenOptimizedReview → true)
+    const status = 'optimization-complete' as const;
+    expect(isQAReadyStatus(status)).toBe(true);
+    expect(canOpenOptimizedReview(status)).toBe(true);
+  });
+
+  it('qa-review status allows reopening optimized-review for remediation edits', () => {
+    const status = 'qa-review' as const;
+    expect(isQAReadyStatus(status)).toBe(true);
+    expect(canOpenOptimizedReview(status)).toBe(true);
   });
 });

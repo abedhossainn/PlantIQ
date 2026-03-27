@@ -3,8 +3,9 @@
  * Handles document metadata retrieval from the FastAPI pipeline service.
  */
 
-import { fastapiFetch } from './client';
+import { fastapiFetch, getFastApiBaseUrl } from './client';
 import type { Document, DocumentPagesResponse } from '@/types';
+import { isQAQueueStatus, isReviewQueueStatus } from '@/lib/document-status';
 
 
 /**
@@ -76,7 +77,7 @@ export async function getDocuments(filters?: {
  */
 export async function getReviewQueueDocuments(): Promise<Document[]> {
   const all = await getDocuments();
-  return all.filter((d) => d.status === 'validation-complete' || d.status === 'in-review');
+  return all.filter((d) => isReviewQueueStatus(d.status));
 }
 
 /**
@@ -84,7 +85,7 @@ export async function getReviewQueueDocuments(): Promise<Document[]> {
  */
 export async function getQAGateDocuments(): Promise<Document[]> {
   const all = await getDocuments();
-  return all.filter((d) => d.status === 'review-complete');
+  return all.filter((d) => isQAQueueStatus(d.status));
 }
 
 /**
@@ -109,8 +110,5 @@ export async function getDocumentPages(documentId: string): Promise<DocumentPage
  * Build the thumbnail URL for a specific page.
  */
 export function getPageThumbnailUrl(documentId: string, pageNumber: number): string {
-  const FASTAPI_URL =
-    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_FASTAPI_URL) ||
-    'http://localhost:8000';
-  return `${FASTAPI_URL}/api/v1/documents/${documentId}/pages/${pageNumber}/thumbnail`;
+  return `${getFastApiBaseUrl()}/api/v1/documents/${documentId}/pages/${pageNumber}/thumbnail`;
 }

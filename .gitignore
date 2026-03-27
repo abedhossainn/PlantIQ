@@ -135,3 +135,6 @@ validate_t004_t005.sh
 !next.config.ts
 !postcss.config.mjs
 !vitest.config.ts
+
+# Downloaded model weights (large files, not tracked)
+models/

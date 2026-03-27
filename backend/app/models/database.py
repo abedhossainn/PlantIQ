@@ -2,10 +2,13 @@
 Database connection and session management for PlantIQ backend.
 """
 from typing import AsyncGenerator, Optional, Dict, Any
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import text
 import os
+
+from ..core.security import get_jwt_payload
 
 # Database URL from environment - AUTHENTICATOR PASSWORD MUST BE SET VIA ENV
 DATABASE_URL = os.getenv(
@@ -42,24 +45,17 @@ AsyncSessionLocal = async_sessionmaker(
 Base = declarative_base()
 
 
-async def get_db(
-    jwt_claims: Optional[Dict[str, Any]] = None
+async def _db_session(
+    jwt_claims: Optional[Dict[str, Any]] = None,
 ) -> AsyncGenerator[AsyncSession, None]:
     """
-    Dependency that provides async database session with RLS role enforcement.
+    Internal async database session generator with optional RLS role enforcement.
     
     SECURITY: Sets PostgreSQL role based on JWT claims to activate RLS policies.
     
     Args:
         jwt_claims: JWT payload with 'role' and 'sub' claims
         
-    Usage:
-        @app.get("/items")
-        async def read_items(
-            db: AsyncSession = Depends(get_db_with_user),
-            user_id: UUID = Depends(get_current_user_id)
-        ):
-            ...
     """
     async with AsyncSessionLocal() as session:
         try:
@@ -80,11 +76,11 @@ async def get_db(
                 await session.execute(text(f"SET LOCAL ROLE {db_role}"))
                 if user_id:
                     await session.execute(
-                        text("SET LOCAL request.jwt.claims.sub = :user_id"),
+                        text("SELECT set_config('request.jwt.claims.sub', :user_id, true)"),
                         {"user_id": str(user_id)}
                     )
                     await session.execute(
-                        text("SET LOCAL request.jwt.claims.role = :role"),
+                        text("SELECT set_config('request.jwt.claims.role', :role, true)"),
                         {"role": role}
                     )
             
@@ -100,6 +96,28 @@ async def get_db(
             except Exception:
                 pass
             await session.close()
+
+
+async def get_db(
+    jwt_claims: dict = Depends(get_jwt_payload),
+) -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI dependency that provides an async database session with JWT-backed RLS.
+
+    This function should be used for request-scoped dependency injection only.
+    Internal/background code should use ``get_db_with_claims()`` or ``AsyncSessionLocal``
+    so FastAPI dependency markers do not leak into non-request code paths.
+    """
+    async for session in _db_session(jwt_claims):
+        yield session
+
+
+async def get_db_with_claims(
+    jwt_claims: Optional[Dict[str, Any]] = None,
+) -> AsyncGenerator[AsyncSession, None]:
+    """Create a database session for non-request callers with optional JWT claims."""
+    async for session in _db_session(jwt_claims):
+        yield session
 
 
 async def get_db_with_user(
@@ -125,5 +143,5 @@ async def get_db_with_user(
             ...
     """
     jwt_claims = {"sub": str(user_id), "role": role}
-    async for session in get_db(jwt_claims):
+    async for session in get_db_with_claims(jwt_claims):
         yield session

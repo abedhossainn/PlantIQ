@@ -12,6 +12,7 @@ import { CheckCircle2, XCircle, AlertTriangle, ArrowLeft, FileText, Table as Tab
 import { useRouter } from "next/navigation";
 import { getDocumentFromPipeline } from "@/lib/api";
 import { fetchArtifactJson, fastapiFetch, ApiError } from "@/lib/api";
+import { canStartFinalApproval, canOpenOptimizedReview, isFinalizedDocumentStatus, isOptimizationPendingStatus, isQAReadyStatus } from "@/lib/document-status";
 import type { Document, QAMetric } from "@/types";
 
 // ---------- Backend types --------------------------------------------------
@@ -107,6 +108,7 @@ export default function QAGatesClient({ docId }: { docId: string }) {
 
   const [doc, setDoc] = useState<Document | null>(null);
   const [isDocLoading, setIsDocLoading] = useState(true);
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
 
   // QA artifact state
   const [metrics, setMetrics] = useState<QAMetric[]>([]);
@@ -116,7 +118,10 @@ export default function QAGatesClient({ docId }: { docId: string }) {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadDocument() {
+    async function loadDocument(showRefreshState = false) {
+      if (showRefreshState) {
+        setIsRefreshingStatus(true);
+      }
       try {
         const loaded = await getDocumentFromPipeline(docId);
         if (!cancelled) {
@@ -127,14 +132,20 @@ export default function QAGatesClient({ docId }: { docId: string }) {
       } finally {
         if (!cancelled) {
           setIsDocLoading(false);
+          setIsRefreshingStatus(false);
         }
       }
     }
 
     void loadDocument();
 
+    const poller = window.setInterval(() => {
+      void loadDocument(true);
+    }, 5000);
+
     return () => {
       cancelled = true;
+      window.clearInterval(poller);
     };
   }, [docId]);
 
@@ -151,7 +162,11 @@ export default function QAGatesClient({ docId }: { docId: string }) {
           setRecommendation(decisionToRecommendation(report.decision));
         }
       } catch {
-        // No artifact yet — metrics stay empty, recommendation stays "review"
+        if (!cancelled) {
+          setQaReport(null);
+          setMetrics([]);
+          setRecommendation("review");
+        }
       }
     }
 
@@ -188,6 +203,10 @@ export default function QAGatesClient({ docId }: { docId: string }) {
   }
 
   const hasFails = metrics.some((m) => m.status === "fail");
+  const isOptimizationPending = doc ? isOptimizationPendingStatus(doc.status) : false;
+  const isFinalized = doc ? isFinalizedDocumentStatus(doc.status) : false;
+  const canRunQAScoring = doc ? isQAReadyStatus(doc.status) && !isFinalizedDocumentStatus(doc.status) : false;
+  const canProceedToFinalApproval = doc ? canStartFinalApproval(doc.status) : false;
 
   async function handleDecision(d: "accept" | "reject") {
     setDecisionError(null);
@@ -232,8 +251,16 @@ export default function QAGatesClient({ docId }: { docId: string }) {
       setQaReport((prev) =>
         prev
           ? { ...prev, timestamp: result.timestamp, decision: result.decision as QAPreReviewArtifact["decision"], passed_criteria: result.passed_criteria, failed_criteria: result.failed_criteria }
-          : null
+          : {
+              timestamp: result.timestamp,
+              decision: result.decision as QAPreReviewArtifact["decision"],
+              metrics: result.metrics,
+              passed_criteria: result.passed_criteria,
+              failed_criteria: result.failed_criteria,
+              recommendations: result.recommendations,
+            }
       );
+      setDoc((prev) => (prev ? { ...prev, status: result.decision === "approved" || result.decision === "conditional_approval" ? "qa-review" : prev.status } : prev));
     } catch {
       setRescoreError("Re-score failed. Please try again or contact support.");
     } finally {
@@ -253,14 +280,14 @@ export default function QAGatesClient({ docId }: { docId: string }) {
       <div className="flex-1 flex flex-col h-full min-h-0">
         {/* Header */}
         <div className="border-b border-border px-6 py-5 bg-card/50">
-          <Button variant="ghost" size="sm" className="gap-1.5 mb-3 -ml-2" onClick={() => router.push(`/admin/documents/${docId}/review`)}>
+          <Button variant="ghost" size="sm" className="gap-1.5 mb-3 -ml-2" onClick={() => router.push(`/admin/documents/${docId}/optimized-review`)}>
             <ArrowLeft className="h-4 w-4" />
-            Back
+            Optimized Output Review
           </Button>
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">QA Gate Metrics</h1>
-              <p className="text-sm text-muted-foreground mt-0.5">{doc.title}</p>
+              <h1 className="text-2xl font-bold tracking-tight">Optimization QA</h1>
+              <p className="text-sm text-muted-foreground mt-0.5">Post-optimization quality scoring · {doc.title}</p>
             </div>
             <div className="text-sm text-muted-foreground">
               {qaReport?.timestamp ? (
@@ -297,26 +324,74 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                   <>
                     <p className="font-bold text-green-400">Recommendation: ACCEPT</p>
                     <p className="text-sm text-muted-foreground">
-                      • All QA metrics meet or exceed configured thresholds. This document is ready for final approval.
+                      • All optimization QA metrics meet or exceed configured thresholds. This document is ready for final approval.
                     </p>
                   </>
                 ) : (recommendation === "reject" || hasFails) ? (
                   <>
                     <p className="font-bold text-red-400">Recommendation: REJECT</p>
                     <p className="text-sm text-muted-foreground">
-                      • One or more quality gates failed. Go back and edit the page content to address the issues, then use <strong className="text-foreground/70">Re-score Document</strong> to recompute metrics.
+                      • One or more optimization QA gates failed. Return to fidelity review to correct source content, then re-submit for optimization and use <strong className="text-foreground/70">Re-score Document</strong> to recompute metrics.
                     </p>
                   </>
                 ) : (
                   <>
                     <p className="font-bold text-amber-400">Recommendation: MANUAL REVIEW</p>
                     <p className="text-sm text-muted-foreground">
-                      • Some metrics have warnings. Re-score after reviewing content to confirm status.
+                      • Some optimization QA metrics have warnings. Re-score after reviewing content to confirm status.
                     </p>
                   </>
                 )}
               </div>
             </div>
+
+            {isOptimizationPending && (
+              <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-5 flex items-start justify-between gap-4">
+                <div>
+                  <p className="font-semibold text-sky-400">Optimization is still running</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    QA gates will unlock once the optimized artifact is ready. This page refreshes status automatically every few seconds.
+                  </p>
+                </div>
+                <Button variant="outline" className="gap-2 shrink-0" disabled={isRefreshingStatus} onClick={() => window.location.reload()}>
+                  <RefreshCw className={`h-4 w-4 ${isRefreshingStatus ? "animate-spin" : ""}`} />
+                  Refresh Status
+                </Button>
+              </div>
+            )}
+
+            {!isOptimizationPending && !canRunQAScoring && !canProceedToFinalApproval && (
+              <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-5">
+                <p className="font-semibold text-amber-400">Return to review before QA</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  This document has not completed the review → optimization handoff yet. Finish fidelity review first, then approve it for optimization.
+                </p>
+              </div>
+            )}
+
+            {/* Stale-report notice — shown when no QA report is present but doc is in a scoreable state */}
+            {!isOptimizationPending && canRunQAScoring && metrics.length === 0 && (
+              <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-5 flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <p className="font-semibold text-sky-400">QA report unavailable — rescore required</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    No QA report exists for this document. This may be because optimized content was
+                    edited after the last score run. Use <strong className="text-foreground/70">Re-score Document</strong> below to generate fresh metrics.
+                  </p>
+                </div>
+                {doc && canOpenOptimizedReview(doc.status) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-2 shrink-0"
+                    onClick={() => router.push(`/admin/documents/${docId}/optimized-review`)}
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    Edit Optimized Output
+                  </Button>
+                )}
+              </div>
+            )}
 
             {/* Metric cards */}
             {metrics.length === 0 ? (
@@ -324,8 +399,7 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                 <AlertTriangle className="h-8 w-8 text-muted-foreground/40 mx-auto mb-3" />
                 <p className="font-medium text-muted-foreground">Automated QA metrics not available</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  The local ingestion pipeline does not produce QA metric data.
-                  Use the controls below to make a manual decision.
+                  Run QA scoring after optimization completes to generate the metric report used for acceptance and final approval.
                 </p>
               </div>
             ) : (
@@ -379,7 +453,7 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               <div className="px-6 py-4 border-b border-border">
                 <h2 className="font-semibold">Threshold Configuration</h2>
                 <p className="text-sm text-muted-foreground mt-0.5">
-                  Adjust QA gate thresholds (changes apply to future validations)
+                  Adjust optimization QA thresholds (changes apply to future scoring runs)
                 </p>
               </div>
               <div className="p-6 grid grid-cols-2 gap-4">
@@ -434,24 +508,25 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               <Button
                 variant="outline"
                 className="gap-2"
-                onClick={() => router.push(`/admin/documents/${docId}/review`)}
+                onClick={() => router.push(`/admin/documents/${docId}/optimized-review`)}
               >
                 <ArrowLeft className="h-4 w-4" />
-                Back to Review
+                Edit Optimized Output
               </Button>
               <div className="flex gap-3">
                 <Button
                   variant="outline"
                   className="gap-2"
-                  disabled={isRescoring}
+                  disabled={isRescoring || !canRunQAScoring}
                   onClick={() => void handleRescore()}
                 >
                   <RefreshCw className={`h-4 w-4 ${isRescoring ? "animate-spin" : ""}`} />
-                  {isRescoring ? "Re-scoring…" : "Re-score Document"}
+                  {isOptimizationPending ? "Waiting for Optimization" : isRescoring ? "Re-scoring…" : "Re-score Document"}
                 </Button>
                 <Button
                   variant="outline"
                   className="gap-2 border-red-400/30 text-red-400 hover:bg-red-400/10 hover:border-red-400/50"
+                  disabled={isFinalized || (!canRunQAScoring && !canProceedToFinalApproval)}
                   onClick={() => void handleDecision("reject")}
                 >
                   <XCircle className="h-4 w-4" />
@@ -459,11 +534,17 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                 </Button>
                 <Button
                   className="gap-2 font-semibold"
-                  disabled={recommendation !== "accept"}
-                  onClick={() => void handleDecision("accept")}
+                  disabled={recommendation !== "accept" || (!canRunQAScoring && !canProceedToFinalApproval)}
+                  onClick={() => {
+                    if (canProceedToFinalApproval) {
+                      router.push(`/admin/documents/${docId}/approve`);
+                      return;
+                    }
+                    void handleDecision("accept");
+                  }}
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  Accept & Proceed to Approval
+                  {canProceedToFinalApproval ? "Proceed to Final Approval" : "Accept &amp; Proceed to Final Approval"}
                 </Button>
               </div>
             </div>

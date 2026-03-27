@@ -10,6 +10,9 @@ import os
 import uuid
 
 
+AUTH_DISABLED = os.getenv("AUTH_DISABLED", "false").lower() == "true"
+
+
 class JWTManager:
     """
     Manages JWT token generation and validation using RS256 asymmetric signing.
@@ -39,6 +42,11 @@ class JWTManager:
         self.issuer = issuer
         self.audience = audience
         self.access_token_expire_minutes = access_token_expire_minutes
+
+        if AUTH_DISABLED:
+            self.private_key = ""
+            self.public_key = ""
+            return
         
         # Load private key for signing
         if private_key_path:
@@ -133,6 +141,9 @@ class JWTManager:
         Returns:
             Signed JWT token string
         """
+        if AUTH_DISABLED:
+            raise RuntimeError("JWT token creation is disabled while AUTH_DISABLED=true")
+
         now = datetime.now(timezone.utc)
         expire = now + timedelta(minutes=self.access_token_expire_minutes)
         
@@ -170,6 +181,9 @@ class JWTManager:
         Raises:
             InvalidTokenError: If token is invalid, expired, or has wrong claims
         """
+        if AUTH_DISABLED:
+            raise RuntimeError("JWT token verification is disabled while AUTH_DISABLED=true")
+
         try:
             payload = jwt.decode(
                 token,
@@ -192,6 +206,9 @@ class JWTManager:
         Returns:
             Decoded token payload (unverified)
         """
+        if AUTH_DISABLED:
+            raise RuntimeError("JWT token decoding is disabled while AUTH_DISABLED=true")
+
         return jwt.decode(token, options={"verify_signature": False})
 
 

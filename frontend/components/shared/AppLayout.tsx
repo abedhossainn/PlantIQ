@@ -29,7 +29,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const viewParam = searchParams.get("view") ?? "";
+  const viewParam = searchParams?.get("view") ?? "";
 
   // RBAC route guard — prevent 'user' role from accessing admin pages (US-3.2)
   useEffect(() => {
