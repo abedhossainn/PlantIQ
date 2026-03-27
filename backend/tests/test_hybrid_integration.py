@@ -38,16 +38,19 @@ PNG_1X1 = (
 
 
 class FakeMappings:
-    def __init__(self, row: Any = None):
-        self._row = row
+    def __init__(self, rows: Any = None):
+        if rows is None:
+            self._rows: list[Any] = []
+        elif isinstance(rows, list):
+            self._rows = rows
+        else:
+            self._rows = [rows]
 
     def first(self):
-        return self._row
+        return self._rows[0] if self._rows else None
 
     def all(self):
-        if self._row is None:
-            return []
-        return [self._row]
+        return list(self._rows)
 
 
 class FakeResult:
@@ -118,6 +121,11 @@ class FakeAsyncSession:
                 "optimization_started_at": None,
                 "optimization_completed_at": None,
                 "optimization_error": None,
+                "publication_status": None,
+                "published_at": None,
+                "publication_error": None,
+                "indexed_chunk_count": None,
+                "qdrant_collection": None,
                 "created_at": now,
                 "updated_at": now,
             }
@@ -137,6 +145,16 @@ class FakeAsyncSession:
                     document["qa_score"] = params["qa_score"]
                 if "optimization_error" in params:
                     document["optimization_error"] = params["optimization_error"]
+                if "publication_status" in params:
+                    document["publication_status"] = params["publication_status"]
+                if "published_at" in params:
+                    document["published_at"] = params["published_at"]
+                if "publication_error" in params:
+                    document["publication_error"] = params["publication_error"]
+                if "indexed_chunk_count" in params:
+                    document["indexed_chunk_count"] = params["indexed_chunk_count"]
+                if "qdrant_collection" in params:
+                    document["qdrant_collection"] = params["qdrant_collection"]
                 if "optimization_started_at" in params:
                     document["optimization_started_at"] = params["optimization_started_at"]
                 if "optimization_completed_at" in params:
@@ -149,12 +167,50 @@ class FakeAsyncSession:
                     document["optimization_completed_at"] = datetime.now(timezone.utc)
                 if "optimization_completed_at = null" in sql:
                     document["optimization_completed_at"] = None
+                if "published_at = now()" in sql:
+                    document["published_at"] = datetime.now(timezone.utc)
+                if "publication_status = null" in sql:
+                    document["publication_status"] = None
+                if "published_at = null" in sql:
+                    document["published_at"] = None
                 if "qa_score = null" in sql:
                     document["qa_score"] = None
                 if "optimization_error = null" in sql:
                     document["optimization_error"] = None
+                if "publication_error = null" in sql:
+                    document["publication_error"] = None
+                if "indexed_chunk_count = null" in sql:
+                    document["indexed_chunk_count"] = None
+                if "qdrant_collection = null" in sql:
+                    document["qdrant_collection"] = None
             document["updated_at"] = datetime.now(timezone.utc)
             return FakeResult(None)
+
+        if "select title, system, status, publication_status" in sql:
+            document = self.documents.get(str(params["doc_id"]))
+            if not document:
+                return FakeResult(None)
+            return FakeResult(
+                {
+                    "title": document.get("title"),
+                    "system": document.get("system"),
+                    "status": document["status"],
+                    "publication_status": document.get("publication_status"),
+                }
+            )
+
+        if "select published_at, publication_error, indexed_chunk_count, qdrant_collection" in sql:
+            document = self.documents.get(str(params["doc_id"]))
+            if not document:
+                return FakeResult(None)
+            return FakeResult(
+                {
+                    "published_at": document.get("published_at"),
+                    "publication_error": document.get("publication_error"),
+                    "indexed_chunk_count": document.get("indexed_chunk_count"),
+                    "qdrant_collection": document.get("qdrant_collection"),
+                }
+            )
 
         if "select status, file_path from documents where id = :doc_id" in sql:
             document = self.documents.get(str(params["doc_id"]))
@@ -182,8 +238,45 @@ class FakeAsyncSession:
                     document.get("optimization_started_at"),
                     document.get("optimization_completed_at"),
                     document.get("optimization_error"),
+                    document.get("publication_status"),
+                    document.get("published_at"),
+                    document.get("publication_error"),
+                    document.get("indexed_chunk_count"),
+                    document.get("qdrant_collection"),
                 )
             )
+
+        if "from documents" in sql and "order by uploaded_at desc" in sql:
+            rows = []
+            for document in self.documents.values():
+                rows.append(
+                    {
+                        "id": document["id"],
+                        "title": document.get("title"),
+                        "version": document.get("version"),
+                        "system": document.get("system"),
+                        "document_type": document.get("document_type"),
+                        "status": document.get("status"),
+                        "file_path": document.get("file_path"),
+                        "uploaded_by": document.get("uploaded_by"),
+                        "notes": document.get("notes"),
+                        "uploaded_at": document.get("uploaded_at"),
+                        "updated_at": document.get("updated_at"),
+                        "total_pages": document.get("total_pages"),
+                        "total_sections": document.get("total_sections"),
+                        "review_progress": document.get("review_progress"),
+                        "qa_score": document.get("qa_score"),
+                        "approved_by": document.get("approved_by"),
+                        "approved_at": document.get("approved_at"),
+                        "publication_status": document.get("publication_status"),
+                        "published_at": document.get("published_at"),
+                        "publication_error": document.get("publication_error"),
+                        "indexed_chunk_count": document.get("indexed_chunk_count"),
+                        "qdrant_collection": document.get("qdrant_collection"),
+                    }
+                )
+            rows.sort(key=lambda row: row.get("uploaded_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+            return FakeResult(rows)
 
         if "select status, created_at, updated_at, notes from documents" in sql:
             document = self.documents.get(str(params["doc_id"]))
@@ -1968,6 +2061,224 @@ def test_final_approve_sets_final_approved_after_qa_passes(
 
     assert response.status_code == 200
     assert response.json() == {"status": "final-approved"}
+    assert fake_db.documents[document_id]["publication_status"] == "pending"
+    assert fake_db.documents[document_id]["published_at"] is None
+
+
+def test_publish_endpoint_blocks_documents_that_are_not_final_approved(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Sample Document",
+        "system": "LNG",
+        "status": "qa-passed",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "uploaded_at": datetime.now(timezone.utc),
+        "notes": None,
+        "publication_status": None,
+    }
+
+    response = client.post(f"/api/v1/documents/{document_id}/publish")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Only final-approved documents can be published to RAG"
+
+
+def test_publish_endpoint_indexes_optimized_chunks_and_updates_publication_metadata(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Sample Document",
+        "system": "LNG",
+        "status": "final-approved",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "uploaded_at": datetime.now(timezone.utc),
+        "notes": None,
+        "publication_status": "pending",
+        "published_at": None,
+        "publication_error": None,
+        "indexed_chunk_count": None,
+        "qdrant_collection": None,
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(
+        work_dir / "sample_document_rag_optimized.json",
+        {
+            "document_name": "sample_document",
+            "chunks": [
+                {
+                    "heading": "What is LNG?",
+                    "content": "## What is LNG?\n\n[Source: sample_document, Page 7]\n\nLNG is a cryogenic fuel.",
+                    "source_pages": [7],
+                    "table_facts": ["LNG is a cryogenic fuel."],
+                    "ambiguity_flags": ["Verify temperature range against source table"],
+                }
+            ],
+        },
+    )
+
+    embedded_texts: list[list[str]] = []
+    deleted_documents: list[str] = []
+    upsert_calls: list[list[dict[str, Any]]] = []
+
+    async def fake_ensure_collection():
+        return True
+
+    async def fake_embed_batch(texts: list[str]):
+        embedded_texts.append(texts)
+        return [[0.1, 0.2, 0.3]]
+
+    async def fake_delete_document_chunks(doc_id: str):
+        deleted_documents.append(doc_id)
+        return True
+
+    async def fake_upsert_chunks(chunks: list[dict[str, Any]]):
+        upsert_calls.append(chunks)
+        return True
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_api.QdrantService, "ensure_collection", fake_ensure_collection)
+    monkeypatch.setattr(pipeline_api.EmbeddingService, "embed_batch", fake_embed_batch)
+    monkeypatch.setattr(pipeline_api.QdrantService, "delete_document_chunks", fake_delete_document_chunks)
+    monkeypatch.setattr(pipeline_api.QdrantService, "upsert_chunks", fake_upsert_chunks)
+
+    response = client.post(f"/api/v1/documents/{document_id}/publish")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "final-approved"
+    assert payload["publication_status"] == "published"
+    assert payload["indexed_chunk_count"] == 1
+    assert payload["qdrant_collection"] == pipeline_api.settings.QDRANT_COLLECTION
+    assert embedded_texts == [["## What is LNG?\n\n[Source: sample_document, Page 7]\n\nLNG is a cryogenic fuel."]]
+    assert deleted_documents == [document_id]
+    assert len(upsert_calls) == 1
+    stored_chunk = upsert_calls[0][0]
+    assert uuid.UUID(str(stored_chunk["id"]))
+    assert stored_chunk["payload"]["document_id"] == document_id
+    assert stored_chunk["payload"]["document_title"] == "Sample Document"
+    assert stored_chunk["payload"]["system"] == "LNG"
+    assert stored_chunk["payload"]["chunk_id"] == "chunk_001"
+    assert stored_chunk["payload"]["section_heading"] == "What is LNG?"
+    assert stored_chunk["payload"]["page_number"] == 7
+    assert stored_chunk["payload"]["source_pages"] == [7]
+    assert stored_chunk["payload"]["table_facts"] == ["LNG is a cryogenic fuel."]
+    assert fake_db.documents[document_id]["publication_status"] == "published"
+    assert fake_db.documents[document_id]["indexed_chunk_count"] == 1
+    assert fake_db.documents[document_id]["qdrant_collection"] == pipeline_api.settings.QDRANT_COLLECTION
+    assert fake_db.documents[document_id]["published_at"] is not None
+
+
+def test_publish_endpoint_persists_failure_state_when_publication_raises(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Sample Document",
+        "system": "LNG",
+        "status": "final-approved",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "uploaded_at": datetime.now(timezone.utc),
+        "notes": None,
+        "publication_status": "pending",
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(
+        work_dir / "sample_document_rag_optimized.json",
+        {
+            "document_name": "sample_document",
+            "chunks": [{"heading": "What is LNG?", "content": "LNG is a cryogenic fuel."}],
+        },
+    )
+
+    async def fake_ensure_collection():
+        return True
+
+    async def fake_embed_batch(_texts: list[str]):
+        raise RuntimeError("embedding service offline")
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_api.QdrantService, "ensure_collection", fake_ensure_collection)
+    monkeypatch.setattr(pipeline_api.EmbeddingService, "embed_batch", fake_embed_batch)
+
+    response = client.post(f"/api/v1/documents/{document_id}/publish")
+
+    assert response.status_code == 500
+    assert "embedding service offline" in response.json()["detail"]
+    assert fake_db.documents[document_id]["publication_status"] == "failed"
+    assert fake_db.documents[document_id]["publication_error"] == "embedding service offline"
+    assert fake_db.documents[document_id]["published_at"] is None
+    assert fake_db.documents[document_id]["indexed_chunk_count"] is None
+
+
+def test_status_and_list_documents_include_publication_fields(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+):
+    document_id = str(uuid.uuid4())
+    published_at = datetime.now(timezone.utc)
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Published Doc",
+        "version": "1.0",
+        "system": "LNG",
+        "document_type": "manual",
+        "file_path": "/tmp/published.pdf",
+        "status": "final-approved",
+        "uploaded_by": str(TEST_USER_ID),
+        "notes": None,
+        "uploaded_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(timezone.utc),
+        "total_pages": 30,
+        "total_sections": 28,
+        "review_progress": 100,
+        "qa_score": 100.0,
+        "approved_by": str(TEST_USER_ID),
+        "approved_at": datetime.now(timezone.utc),
+        "optimization_started_at": None,
+        "optimization_completed_at": None,
+        "optimization_error": None,
+        "publication_status": "published",
+        "published_at": published_at,
+        "publication_error": None,
+        "indexed_chunk_count": 28,
+        "qdrant_collection": "plantig_documents",
+    }
+
+    status_response = client.get(f"/api/v1/documents/{document_id}/status")
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["publication_status"] == "published"
+    assert status_payload["indexed_chunk_count"] == 28
+    assert status_payload["qdrant_collection"] == "plantig_documents"
+    assert status_payload["published_at"].startswith(published_at.isoformat().replace("+00:00", ""))
+
+    list_response = client.get("/api/v1/documents")
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert list_payload[0]["publicationStatus"] == "published"
+    assert list_payload[0]["indexedChunkCount"] == 28
+    assert list_payload[0]["qdrantCollection"] == "plantig_documents"
 
 
 def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytest.MonkeyPatch):

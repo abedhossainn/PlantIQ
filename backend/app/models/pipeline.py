@@ -27,6 +27,15 @@ class PipelineStatus(str, Enum):
     FAILED = "failed"
 
 
+class PublicationStatus(str, Enum):
+    """Publication lifecycle status after human final approval."""
+
+    PENDING = "pending"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+
+
 class PipelineStage(str, Enum):
     """Pipeline stage identifiers."""
     MANIFEST = "manifest"
@@ -67,6 +76,24 @@ class PipelineStatusResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
+    publication_status: Optional[PublicationStatus] = None
+    published_at: Optional[datetime] = None
+    publication_error: Optional[str] = None
+    indexed_chunk_count: Optional[int] = None
+    qdrant_collection: Optional[str] = None
+
+
+class DocumentPublishResponse(BaseModel):
+    """Response payload for publishing a final-approved document to RAG."""
+
+    document_id: UUID4
+    status: PipelineStatus
+    publication_status: PublicationStatus
+    published_at: Optional[datetime] = None
+    publication_error: Optional[str] = None
+    indexed_chunk_count: Optional[int] = None
+    qdrant_collection: Optional[str] = None
+    message: str
 
 
 class ReviewChecklistItemResponse(BaseModel):

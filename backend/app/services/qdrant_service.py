@@ -108,10 +108,10 @@ class QdrantService:
             )
         
         try:
-            # Perform vector search
-            results = client.search(  # type: ignore[attr-defined]
+            # Perform vector search (qdrant-client >= 1.10 uses query_points)
+            response = client.query_points(
                 collection_name=settings.QDRANT_COLLECTION,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
                 score_threshold=score_threshold,
                 query_filter=query_filter,
@@ -120,7 +120,7 @@ class QdrantService:
             
             # Convert to RAGContext objects
             contexts = []
-            for result in results:
+            for result in response.points:
                 payload = result.payload
                 contexts.append(
                     RAGContext(
@@ -172,6 +172,7 @@ class QdrantService:
             client.upsert(
                 collection_name=settings.QDRANT_COLLECTION,
                 points=points,
+                wait=True,
             )
             
             logger.info(f"Upserted {len(chunks)} chunks to Qdrant")

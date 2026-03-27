@@ -1,7 +1,7 @@
 # PlantIQ Development Makefile
 # Air-Gapped RAG System for Industrial OT Environments
 
-.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs venv activate ensure-compose
+.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs venv activate ensure-compose llm-supervisor-start llm-supervisor-stop llm-supervisor-status
 
 # Path to Python interpreter
 PYTHON := python3
@@ -45,6 +45,9 @@ help:
 	@echo "  make docker-down     Stop all services"
 	@echo "  make docker-build    Build all Docker images"
 	@echo "  make docker-logs     View logs from all containers"
+	@echo "  make llm-supervisor-start  Start host-side on-demand LLM lifecycle supervisor"
+	@echo "  make llm-supervisor-stop   Stop host-side on-demand LLM lifecycle supervisor"
+	@echo "  make llm-supervisor-status Show supervisor process status"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean           Remove build artifacts and caches"
@@ -220,6 +223,51 @@ docker-build: ensure-compose
 
 docker-logs: ensure-compose
 	@$(COMPOSE) logs -f
+
+llm-supervisor-start: ensure-compose
+	@mkdir -p data/artifacts/runtime
+	@if [ -f data/artifacts/runtime/llm_supervisor.pid ]; then \
+		PID=$$(cat data/artifacts/runtime/llm_supervisor.pid); \
+		if kill -0 $$PID >/dev/null 2>&1 && ps -p $$PID -o args= | grep -q "llm_lifecycle_supervisor.py"; then \
+			echo "LLM lifecycle supervisor is already running (PID $$PID)"; \
+			exit 0; \
+		fi; \
+		rm -f data/artifacts/runtime/llm_supervisor.pid; \
+	fi; \
+	echo "Starting LLM lifecycle supervisor in background..."; \
+	nohup $(PYTHON) infra/scripts/llm_lifecycle_supervisor.py \
+		--project-root . \
+		--heartbeat-file $${LLM_DEMAND_HEARTBEAT_FILE:-./data/artifacts/runtime/llm_last_used} \
+		--service $${LLM_SERVICE_NAME:-llm} \
+		--idle-timeout-seconds $${LLM_IDLE_TIMEOUT_SECONDS:-300} \
+		--request-window-seconds $${LLM_REQUEST_WINDOW_SECONDS:-30} \
+		> data/artifacts/runtime/llm_supervisor.log 2>&1 & \
+	echo $$! > data/artifacts/runtime/llm_supervisor.pid; \
+	echo "LLM lifecycle supervisor started (PID $$!)"
+
+llm-supervisor-stop:
+	@if [ -f data/artifacts/runtime/llm_supervisor.pid ]; then \
+		PID=$$(cat data/artifacts/runtime/llm_supervisor.pid); \
+		if kill -0 $$PID >/dev/null 2>&1 && ps -p $$PID -o args= | grep -q "llm_lifecycle_supervisor.py"; then \
+			echo "Stopping LLM lifecycle supervisor (PID $$PID)..."; \
+			kill $$PID; \
+		fi; \
+		rm -f data/artifacts/runtime/llm_supervisor.pid; \
+	else \
+		echo "No supervisor pid file found"; \
+	fi
+	@echo "LLM lifecycle supervisor stopped"
+
+llm-supervisor-status:
+	@if [ -f data/artifacts/runtime/llm_supervisor.pid ]; then \
+		PID=$$(cat data/artifacts/runtime/llm_supervisor.pid); \
+		if kill -0 $$PID >/dev/null 2>&1 && ps -p $$PID -o args= | grep -q "llm_lifecycle_supervisor.py"; then \
+			echo "LLM lifecycle supervisor is running (PID $$PID)"; \
+			exit 0; \
+		fi; \
+		rm -f data/artifacts/runtime/llm_supervisor.pid; \
+	fi; \
+	echo "LLM lifecycle supervisor is not running"
 
 # === Cleanup ===
 

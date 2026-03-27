@@ -258,6 +258,35 @@ export async function* streamChatQuery(
  * @param onCitation Called with each citation received from the stream
  * @returns Complete accumulated text content
  */
+// ============================================================================
+// LLM Status
+// ============================================================================
+
+export interface LlmStatus {
+  backend: string;
+  model: string;
+  host: string;
+  port: number;
+  container_reachable: boolean;
+  active_requests: number;
+  unload_after_request: boolean;
+  startup_wait_seconds: number;
+  last_demand_utc: string | null;
+  idle_seconds: number | null;
+}
+
+/**
+ * Fetch the current LLM lifecycle state from the backend.
+ * Returns null if the request fails (treated as unreachable).
+ */
+export async function getLlmStatus(): Promise<LlmStatus | null> {
+  try {
+    return await fastapiFetch<LlmStatus>('/api/v1/llm/status');
+  } catch {
+    return null;
+  }
+}
+
 export async function consumeStreamingResponse(
   request: ChatQueryRequest,
   onToken?: (token: string) => void,

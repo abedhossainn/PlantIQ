@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.pipeline import router as pipeline_router
 from .api.chat import router as chat_router
 from .api.websocket import router as websocket_router
+from .services.llm_service import LLMService
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 AUTH_DISABLED = os.getenv("AUTH_DISABLED", "true").lower() == "true"
@@ -167,6 +168,12 @@ app.include_router(websocket_router)
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "plantig-backend"}
+
+
+@app.get("/api/v1/llm/status", tags=["LLM"])
+async def llm_lifecycle_status():
+    """LLM lifecycle status: container reachability, active requests, demand idle time."""
+    return await LLMService.get_lifecycle_status()
 
 
 @app.get("/")

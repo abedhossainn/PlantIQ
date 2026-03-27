@@ -22,7 +22,10 @@ from ..models.sse import (
 )
 from .embedding_service import EmbeddingService
 from .qdrant_service import QdrantService
-from .vllm_service import VLLMService
+from .llm_service import LLMService
+
+# Backward-compatibility alias for tests and older call sites.
+VLLMService = LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -101,14 +104,23 @@ Guidelines:
             
             # Step 6: Generate LLM response
             logger.info("Generating LLM response...")
-            response_text = await VLLMService.generate(
-                prompt=prompt,
-                max_tokens=settings.VLLM_MAX_TOKENS,
-                temperature=settings.VLLM_TEMPERATURE,
-            )
-            
-            # Step 7: Create citations
             citations = cls._create_citations(contexts)
+            try:
+                response_text = await LLMService.generate(
+                    prompt=prompt,
+                    max_tokens=settings.LLM_MAX_TOKENS,
+                    temperature=settings.LLM_TEMPERATURE,
+                )
+            except Exception as llm_err:
+                logger.warning(f"LLM generation unavailable: {llm_err}. Returning retrieval results only.")
+                doc_list = ", ".join(
+                    f'"{c.document_title}" p.{c.metadata.get("page_number", "?")}'
+                    for c in contexts
+                )
+                response_text = (
+                    f"Retrieved {len(contexts)} relevant section(s) from: {doc_list}. "
+                    "LLM generation is currently unavailable — please check that the inference service is running."
+                )
         
         # Step 8: Save assistant message
         assistant_message_id = await cls._save_message(
@@ -212,10 +224,10 @@ Guidelines:
 
             # Step 6: Stream LLM response
             full_response = ""
-            async for token in VLLMService.generate_stream(
+            async for token in LLMService.generate_stream(
                 prompt=prompt,
-                max_tokens=settings.VLLM_MAX_TOKENS,
-                temperature=settings.VLLM_TEMPERATURE,
+                max_tokens=settings.LLM_MAX_TOKENS,
+                temperature=settings.LLM_TEMPERATURE,
             ):
                 full_response += token
                 yield ChatTokenEvent(
@@ -297,8 +309,8 @@ Answer:"""
             page_number = ctx.metadata.get("page_number")
             section_heading = ctx.metadata.get("section_heading")
             
-            # Truncate excerpt to 500 chars
-            excerpt = ctx.content[:500] + "..." if len(ctx.content) > 500 else ctx.content
+            # Truncate excerpt to 500 chars (max_length constraint on Citation.excerpt)
+            excerpt = ctx.content[:497] + "..." if len(ctx.content) > 500 else ctx.content
             
             citation = Citation(
                 id=f"cite-{idx+1}",
@@ -354,15 +366,16 @@ Answer:"""
         """Save message to database."""
         message_id = message_id or str(uuid.uuid4())
         
-        # Serialize citations to JSON
-        citations_json = None
+        # Serialize citations to JSON string (asyncpg requires a JSON string for JSONB columns)
+        citations_json: Optional[str] = None
         if citations:
-            citations_json = [c.model_dump() for c in citations]
+            import json
+            citations_json = json.dumps([c.model_dump(mode="json") for c in citations])
         
         await db.execute(
             text("""
                 INSERT INTO chat_messages (id, conversation_id, role, content, citations, timestamp)
-                VALUES (:id, :conv_id, :role, :content, :citations, NOW())
+                VALUES (:id, :conv_id, :role, :content, CAST(:citations AS jsonb), NOW())
             """),
             {
                 "id": message_id,

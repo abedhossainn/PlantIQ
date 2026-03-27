@@ -28,7 +28,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import UUID4
-from uuid import UUID
+from uuid import UUID, NAMESPACE_URL, uuid5
 
 from ..core.config import REPO_ROOT, settings, get_artifacts_path, get_upload_path
 from ..core.sse import create_sse_response, encode_sse_event
@@ -36,6 +36,7 @@ from ..core.security import get_current_user_id
 from ..core.optimization_log import OptimizationLogManager, OptimizationLogHandler
 from ..models.database import get_db, AsyncSessionLocal
 from ..models.pipeline import (
+    DocumentPublishResponse,
     DocumentOptimizedChunksResponse,
     DocumentPagesResponse,
     DocumentUploadResponse,
@@ -44,6 +45,7 @@ from ..models.pipeline import (
     PageEvidenceResponse,
     PageContentUpdate,
     PipelineStatusResponse,
+    PublicationStatus,
     QARescoreResponse,
     ReprocessRequest,
     ReprocessResponse,
@@ -55,6 +57,8 @@ from ..models.pipeline import (
     ArtifactType,
     PipelineStatus,
 )
+from ..services.embedding_service import EmbeddingService
+from ..services.qdrant_service import QdrantService
 from ..services.pipeline_service import PipelineService
 
 logger = logging.getLogger(__name__)
@@ -73,6 +77,17 @@ _POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
     PipelineStatus.QA_PASSED.value,
     PipelineStatus.FINAL_APPROVED.value,
 }
+
+
+def _normalize_publication_status(
+    document_status: Optional[str],
+    publication_status: Optional[str],
+) -> Optional[str]:
+    if publication_status:
+        return publication_status
+    if document_status == PipelineStatus.FINAL_APPROVED.value:
+        return PublicationStatus.PENDING.value
+    return None
 
 
 def _candidate_work_roots() -> list[Path]:
@@ -649,6 +664,11 @@ async def _set_document_status(
     optimization_started_at: object = _UNCHANGED,
     optimization_completed_at: object = _UNCHANGED,
     optimization_error: object = _UNCHANGED,
+    publication_status: object = _UNCHANGED,
+    published_at: object = _UNCHANGED,
+    publication_error: object = _UNCHANGED,
+    indexed_chunk_count: object = _UNCHANGED,
+    qdrant_collection: object = _UNCHANGED,
 ) -> None:
     from sqlalchemy import text as _text
 
@@ -692,6 +712,38 @@ async def _set_document_status(
     elif optimization_error is not _UNCHANGED:
         assignments.append("optimization_error = :optimization_error")
         params["optimization_error"] = optimization_error
+
+    if publication_status is _CLEAR:
+        assignments.append("publication_status = NULL")
+    elif publication_status is not _UNCHANGED:
+        assignments.append("publication_status = :publication_status")
+        params["publication_status"] = publication_status
+
+    if published_at is _SET_NOW:
+        assignments.append("published_at = NOW()")
+    elif published_at is _CLEAR:
+        assignments.append("published_at = NULL")
+    elif published_at is not _UNCHANGED:
+        assignments.append("published_at = :published_at")
+        params["published_at"] = published_at
+
+    if publication_error is _CLEAR:
+        assignments.append("publication_error = NULL")
+    elif publication_error is not _UNCHANGED:
+        assignments.append("publication_error = :publication_error")
+        params["publication_error"] = publication_error
+
+    if indexed_chunk_count is _CLEAR:
+        assignments.append("indexed_chunk_count = NULL")
+    elif indexed_chunk_count is not _UNCHANGED:
+        assignments.append("indexed_chunk_count = :indexed_chunk_count")
+        params["indexed_chunk_count"] = indexed_chunk_count
+
+    if qdrant_collection is _CLEAR:
+        assignments.append("qdrant_collection = NULL")
+    elif qdrant_collection is not _UNCHANGED:
+        assignments.append("qdrant_collection = :qdrant_collection")
+        params["qdrant_collection"] = qdrant_collection
 
     await db.execute(
         _text(f"UPDATE documents SET {', '.join(assignments)} WHERE id = :doc_id"),
@@ -941,6 +993,93 @@ def _build_review_progress(pages: list[ReviewPageResponse]) -> ReviewProgressRes
     )
 
 
+def _build_publishable_chunks(work_dir: Path) -> list[dict]:
+    optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
+
+    publishable_chunks: list[dict] = []
+    raw_chunks = optimized_payload.get("chunks") or []
+    if isinstance(raw_chunks, list) and raw_chunks:
+        for index, raw_chunk in enumerate(raw_chunks, start=1):
+            if not isinstance(raw_chunk, dict):
+                continue
+            normalized_chunk = _coerce_optimized_chunk(raw_chunk, index)
+            if normalized_chunk["markdown_content"]:
+                publishable_chunks.append(normalized_chunk)
+
+    if not publishable_chunks and markdown_content:
+        for index, section in enumerate(_split_markdown_into_sections(markdown_content), start=1):
+            content = str(section.get("content") or "").strip()
+            if not content:
+                continue
+            publishable_chunks.append(
+                {
+                    "id": f"chunk_{index:03d}",
+                    "heading": str(section.get("heading") or f"Chunk {index}").strip(),
+                    "markdown_content": content,
+                    "source_pages": _extract_page_numbers_from_chunk({}, content),
+                    "table_facts": [],
+                    "ambiguity_flags": [],
+                }
+            )
+
+    if not publishable_chunks:
+        raise ValueError("Optimization output is incomplete; nothing is available to publish")
+
+    return publishable_chunks
+
+
+async def _publish_document_to_rag(
+    *,
+    document_id: str,
+    document_title: str,
+    system: Optional[str],
+    work_dir: Path,
+) -> dict[str, object]:
+    publishable_chunks = _build_publishable_chunks(work_dir)
+    chunk_contents = [chunk["markdown_content"] for chunk in publishable_chunks]
+
+    if not await QdrantService.ensure_collection():
+        raise RuntimeError("Failed to ensure Qdrant collection exists")
+
+    embeddings = await EmbeddingService.embed_batch(chunk_contents)
+    if len(embeddings) != len(publishable_chunks):
+        raise RuntimeError("Embedding generation returned an unexpected number of vectors")
+
+    if not await QdrantService.delete_document_chunks(document_id):
+        raise RuntimeError("Failed to clear existing Qdrant chunks for this document")
+
+    qdrant_chunks: list[dict[str, object]] = []
+    for index, (chunk, vector) in enumerate(zip(publishable_chunks, embeddings, strict=True), start=1):
+        source_pages = [int(page) for page in chunk.get("source_pages") or []]
+        point_id = str(uuid5(NAMESPACE_URL, f"{document_id}:{chunk['id'] or index}"))
+        qdrant_chunks.append(
+            {
+                "id": point_id,
+                "vector": vector,
+                "payload": {
+                    "chunk_id": chunk["id"],
+                    "document_id": document_id,
+                    "document_title": document_title,
+                    "system": system,
+                    "content": chunk["markdown_content"],
+                    "section_heading": chunk["heading"],
+                    "page_number": source_pages[0] if source_pages else None,
+                    "source_pages": source_pages,
+                    "table_facts": chunk.get("table_facts") or [],
+                    "ambiguity_flags": chunk.get("ambiguity_flags") or [],
+                },
+            }
+        )
+
+    if not await QdrantService.upsert_chunks(qdrant_chunks):
+        raise RuntimeError("Failed to upsert optimized chunks into Qdrant")
+
+    return {
+        "indexed_chunk_count": len(qdrant_chunks),
+        "qdrant_collection": settings.QDRANT_COLLECTION,
+    }
+
+
 @router.get("/documents")
 async def list_documents(
     current_user_id: str = Depends(get_current_user_id),
@@ -960,7 +1099,9 @@ async def list_documents(
                     status, file_path, uploaded_by, notes,
                     uploaded_at, updated_at,
                     total_pages, total_sections, review_progress, qa_score,
-                    approved_by, approved_at
+                    approved_by, approved_at,
+                    publication_status, published_at, publication_error,
+                    indexed_chunk_count, qdrant_collection
                 FROM documents
                 ORDER BY uploaded_at DESC
             """)
@@ -983,6 +1124,11 @@ async def list_documents(
                 "qaScore": float(row["qa_score"]) if row["qa_score"] is not None else None,
                 "approvedBy": str(row["approved_by"]) if row["approved_by"] else None,
                 "approvedAt": row["approved_at"].isoformat() if row["approved_at"] else None,
+                "publicationStatus": _normalize_publication_status(row["status"], row["publication_status"]),
+                "publishedAt": row["published_at"].isoformat() if row["published_at"] else None,
+                "publicationError": row["publication_error"],
+                "indexedChunkCount": row["indexed_chunk_count"],
+                "qdrantCollection": row["qdrant_collection"],
             }
             for row in rows
         ]
@@ -2032,6 +2178,11 @@ async def final_approve_document(
             approved_by=current_user_id,
             approved_at=True,
             notes=notes,
+            publication_status=(PublicationStatus.PENDING.value if decision == "approve" else _CLEAR),
+            published_at=_CLEAR,
+            publication_error=_CLEAR,
+            indexed_chunk_count=_CLEAR,
+            qdrant_collection=_CLEAR,
         )
         return {"status": new_status}
     except Exception as exc:
@@ -2039,6 +2190,129 @@ async def final_approve_document(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to record approval decision",
+        )
+
+
+@router.post("/documents/{document_id}/publish", response_model=DocumentPublishResponse)
+async def publish_document(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Publish a final-approved document into the RAG knowledge base."""
+    del current_user_id
+
+    from sqlalchemy import text as _text
+
+    result = await db.execute(
+        _text(
+            """
+            SELECT title, system, status, publication_status
+            FROM documents
+            WHERE id = :doc_id
+            """
+        ),
+        {"doc_id": str(document_id)},
+    )
+    row = result.mappings().first()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    document_status = row["status"]
+    publication_status = _normalize_publication_status(document_status, row["publication_status"])
+
+    if document_status != PipelineStatus.FINAL_APPROVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only final-approved documents can be published to RAG",
+        )
+
+    if publication_status == PublicationStatus.PUBLISHING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document publication is already in progress",
+        )
+
+    if publication_status == PublicationStatus.PUBLISHED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Document is already published to RAG",
+        )
+
+    work_dir = _find_document_workspace(document_id, require_document_dir=True)
+
+    await _set_document_status(
+        db,
+        document_id,
+        document_status,
+        publication_status=PublicationStatus.PUBLISHING.value,
+        published_at=_CLEAR,
+        publication_error=_CLEAR,
+        indexed_chunk_count=_CLEAR,
+        qdrant_collection=_CLEAR,
+    )
+
+    try:
+        publish_result = await _publish_document_to_rag(
+            document_id=str(document_id),
+            document_title=str(row["title"] or document_id),
+            system=row["system"],
+            work_dir=work_dir,
+        )
+
+        await _set_document_status(
+            db,
+            document_id,
+            document_status,
+            publication_status=PublicationStatus.PUBLISHED.value,
+            published_at=_SET_NOW,
+            publication_error=_CLEAR,
+            indexed_chunk_count=publish_result["indexed_chunk_count"],
+            qdrant_collection=publish_result["qdrant_collection"],
+        )
+
+        status_result = await db.execute(
+            _text(
+                """
+                SELECT published_at, publication_error, indexed_chunk_count, qdrant_collection
+                FROM documents
+                WHERE id = :doc_id
+                """
+            ),
+            {"doc_id": str(document_id)},
+        )
+        status_row = status_result.mappings().first() or {}
+
+        return DocumentPublishResponse(
+            document_id=document_id,
+            status=PipelineStatus(document_status),
+            publication_status=PublicationStatus.PUBLISHED,
+            published_at=status_row.get("published_at"),
+            publication_error=status_row.get("publication_error"),
+            indexed_chunk_count=status_row.get("indexed_chunk_count"),
+            qdrant_collection=status_row.get("qdrant_collection"),
+            message="Document published to RAG knowledge base successfully.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await _set_document_status(
+            db,
+            document_id,
+            document_status,
+            publication_status=PublicationStatus.FAILED.value,
+            published_at=_CLEAR,
+            publication_error=str(exc),
+            indexed_chunk_count=_CLEAR,
+        )
+        logger.error(f"Error publishing document {document_id} to RAG: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to publish document to RAG: {exc}",
         )
 
 

@@ -74,7 +74,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(authenticatedUser);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
       localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      // Store the dev JWT so PostgREST can identify the user via plantig_uid().
+      // NEXT_PUBLIC_DEV_JWT is a pre-signed HS256 token for the auth-disabled admin,
+      // verified by PostgREST using PGRST_JWT_SECRET.
+      if (process.env.NEXT_PUBLIC_DEV_JWT) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
+      } else {
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+      }
       setIsLoading(false);
       return;
     }
@@ -110,7 +117,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(authenticatedUser);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
       localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
+      if (process.env.NEXT_PUBLIC_DEV_JWT) {
+        localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
+      } else {
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+      }
       return;
     }
 

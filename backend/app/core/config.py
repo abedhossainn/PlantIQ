@@ -89,21 +89,52 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION: str = Field(default="plantig_documents", validation_alias="QDRANT_COLLECTION")
     QDRANT_TIMEOUT: int = Field(default=30, validation_alias="QDRANT_TIMEOUT")
     
-    # vLLM Server
-    VLLM_HOST: str = Field(default="localhost", validation_alias="VLLM_HOST")
-    VLLM_PORT: int = Field(default=8001, validation_alias="VLLM_PORT")
+    # LLM Inference Server (OpenAI-compatible; supports vLLM, Ollama, etc.)
+    LLM_HOST: str = Field(
+        default="localhost",
+        validation_alias=AliasChoices("LLM_HOST", "VLLM_HOST")
+    )
+    LLM_PORT: int = Field(
+        default=11434,
+        validation_alias=AliasChoices("LLM_PORT", "VLLM_PORT")
+    )
     TEXT_MODEL_ID: str = Field(
         default="Qwen/Qwen3-4B-Instruct",
         validation_alias=AliasChoices("TEXT_MODEL_ID", "VLLM_MODEL", "VLLM_MODEL_NAME")
     )
+    LLM_BACKEND: str = Field(
+        default="openai-compatible",
+        validation_alias=AliasChoices("LLM_BACKEND", "TEXT_INFERENCE_BACKEND")
+    )
+    LLM_UNLOAD_AFTER_REQUEST: bool = Field(default=False, validation_alias="LLM_UNLOAD_AFTER_REQUEST")
+    LLM_DEMAND_HEARTBEAT_FILE: str = Field(
+        default=str(REPO_ROOT / "data" / "artifacts" / "runtime" / "llm_last_used"),
+        validation_alias="LLM_DEMAND_HEARTBEAT_FILE"
+    )
+    LLM_STARTUP_WAIT_SECONDS: int = Field(default=45, validation_alias="LLM_STARTUP_WAIT_SECONDS")
+    LLM_RETRY_INTERVAL_SECONDS: float = Field(default=1.0, validation_alias="LLM_RETRY_INTERVAL_SECONDS")
+    VLM_HOST: str = Field(default="localhost", validation_alias="VLM_HOST")
+    VLM_PORT: int = Field(default=8000, validation_alias="VLM_PORT")
     VISION_MODEL_ID: str = Field(
         default="Qwen/Qwen3-VL-4B-Instruct",
         validation_alias=AliasChoices("VISION_MODEL_ID", "VLM_MODEL", "VLM_MODEL_NAME")
     )
-    VLLM_TIMEOUT: int = Field(default=60, validation_alias="VLLM_TIMEOUT")
-    VLLM_MAX_TOKENS: int = Field(default=2048, validation_alias="VLLM_MAX_TOKENS")
-    VLLM_TEMPERATURE: float = Field(default=0.7, validation_alias="VLLM_TEMPERATURE")
-    VLLM_TOP_P: float = Field(default=0.9, validation_alias="VLLM_TOP_P")
+    LLM_TIMEOUT: int = Field(
+        default=60,
+        validation_alias=AliasChoices("LLM_TIMEOUT", "VLLM_TIMEOUT")
+    )
+    LLM_MAX_TOKENS: int = Field(
+        default=2048,
+        validation_alias=AliasChoices("LLM_MAX_TOKENS", "VLLM_MAX_TOKENS")
+    )
+    LLM_TEMPERATURE: float = Field(
+        default=0.7,
+        validation_alias=AliasChoices("LLM_TEMPERATURE", "VLLM_TEMPERATURE")
+    )
+    LLM_TOP_P: float = Field(
+        default=0.9,
+        validation_alias=AliasChoices("LLM_TOP_P", "VLLM_TOP_P")
+    )
     
     # Embedding Model (for Qdrant queries)
     EMBEDDING_MODEL: str = Field(
@@ -132,6 +163,36 @@ class Settings(BaseSettings):
     def VLLM_MODEL(self) -> str:
         """Backward-compatible alias for the configured text model identifier."""
         return self.TEXT_MODEL_ID
+
+    @property
+    def VLLM_HOST(self) -> str:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_HOST
+
+    @property
+    def VLLM_PORT(self) -> int:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_PORT
+
+    @property
+    def VLLM_TIMEOUT(self) -> int:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_TIMEOUT
+
+    @property
+    def VLLM_MAX_TOKENS(self) -> int:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_MAX_TOKENS
+
+    @property
+    def VLLM_TEMPERATURE(self) -> float:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_TEMPERATURE
+
+    @property
+    def VLLM_TOP_P(self) -> float:
+        """Backward-compatible alias for legacy settings access."""
+        return self.LLM_TOP_P
 
 
 # Global settings instance

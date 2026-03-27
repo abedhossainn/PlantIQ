@@ -13,6 +13,7 @@ from ..core.config import settings, get_artifacts_path
 from ..models.pipeline import (
     PipelineStatus,
     PipelineStatusResponse,
+    PublicationStatus,
 )
 from ..models.sse import (
     IngestionCompleteEvent,
@@ -500,7 +501,12 @@ class PipelineService:
                     notes,
                     optimization_started_at,
                     optimization_completed_at,
-                    optimization_error
+                    optimization_error,
+                    publication_status,
+                    published_at,
+                    publication_error,
+                    indexed_chunk_count,
+                    qdrant_collection
                 FROM documents
                 WHERE id = :doc_id
                 """
@@ -520,6 +526,11 @@ class PipelineService:
             optimization_started_at,
             optimization_completed_at,
             optimization_error,
+            publication_status,
+            published_at,
+            publication_error,
+            indexed_chunk_count,
+            qdrant_collection,
         ) = row
 
         if status in {
@@ -598,6 +609,9 @@ class PipelineService:
             else (updated_at if progress == 100 or status == PipelineStatus.FAILED.value else None)
         )
         error = optimization_error or (notes if status == PipelineStatus.FAILED.value else None)
+        normalized_publication_status = publication_status
+        if normalized_publication_status is None and status == PipelineStatus.FINAL_APPROVED.value:
+            normalized_publication_status = PublicationStatus.PENDING.value
         
         return PipelineStatusResponse(
             document_id=UUID(document_id),
@@ -608,6 +622,11 @@ class PipelineService:
             started_at=started_at,
             completed_at=completed_at,
             error=error,
+            publication_status=normalized_publication_status,
+            published_at=published_at,
+            publication_error=publication_error,
+            indexed_chunk_count=indexed_chunk_count,
+            qdrant_collection=qdrant_collection,
         )
 
     @classmethod
