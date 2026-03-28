@@ -11,6 +11,7 @@ from ..models.chat import (
     ChatQueryResponse,
 )
 from ..services.chat_service import ChatService
+from ..services.llm_service import LLMConfigurationError, LLMUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,13 @@ async def chat_query(
             db=db,
         )
         return response
+
+    except (LLMConfigurationError, LLMUnavailableError) as e:
+        logger.error(f"Chat generation unavailable: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Chat generation unavailable: {str(e)}",
+        )
         
     except Exception as e:
         logger.error(f"Query processing failed: {e}")

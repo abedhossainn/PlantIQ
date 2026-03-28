@@ -32,10 +32,11 @@ from uuid import UUID, NAMESPACE_URL, uuid5
 
 from ..core.config import REPO_ROOT, settings, get_artifacts_path, get_upload_path
 from ..core.sse import create_sse_response, encode_sse_event
-from ..core.security import get_current_user_id
+from ..core.security import get_current_user_id, require_admin
 from ..core.optimization_log import OptimizationLogManager, OptimizationLogHandler
 from ..models.database import get_db, AsyncSessionLocal
 from ..models.pipeline import (
+    DocumentDeleteResponse,
     DocumentPublishResponse,
     DocumentOptimizedChunksResponse,
     DocumentPagesResponse,
@@ -67,7 +68,7 @@ _UNCHANGED = object()
 _SET_NOW = object()
 _CLEAR = object()
 
-router = APIRouter(prefix="/api/v1", tags=["Pipeline"])
+router = APIRouter(prefix="/api/v1", tags=["Pipeline"], dependencies=[Depends(require_admin)])
 
 _POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
     PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
@@ -77,6 +78,29 @@ _POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
     PipelineStatus.QA_PASSED.value,
     PipelineStatus.FINAL_APPROVED.value,
 }
+
+_DELETE_BLOCKED_STATUSES = {
+    PipelineStatus.UPLOADING.value,
+    PipelineStatus.EXTRACTING.value,
+    PipelineStatus.VLM_VALIDATING.value,
+    PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+    PipelineStatus.OPTIMIZING.value,
+}
+
+_FLAT_ARTIFACT_SUFFIXES = [
+    "_validation.json",
+    "_manifest.json",
+    "_pipeline_results.json",
+    "_qa_report.json",
+    "_qa_pre_review.json",
+    "_tables_figures.json",
+    "_optimization_prep.json",
+    "_rag_optimized.json",
+    "_rag_optimized.md",
+    "_audit.txt",
+]
+
+_FLAT_ARTIFACT_DIRECTORIES = ["_review"]
 
 
 def _normalize_publication_status(
@@ -581,6 +605,89 @@ def _load_optional_json(path: Optional[Path]) -> dict:
     return _load_json_file(path)
 
 
+def _load_artifact_manifest(path: Path) -> dict:
+    try:
+        return _load_json_file(path)
+    except Exception:
+        return {}
+
+
+def _collect_document_cleanup_paths(
+    *,
+    document_id: UUID4 | str,
+    document_title: Optional[str],
+    file_path: Optional[str],
+) -> list[Path]:
+    seen: set[Path] = set()
+    paths: list[Path] = []
+
+    def _add(candidate: Path) -> None:
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen or not candidate.exists():
+            return
+        seen.add(resolved)
+        paths.append(candidate)
+
+    document_id_str = str(document_id)
+    normalized_file_path = str(file_path or "").strip()
+    normalized_title = str(document_title or "").strip()
+
+    if normalized_file_path:
+        _add(Path(normalized_file_path))
+
+    cleanup_roots: list[Path] = []
+    for root in [*_candidate_work_roots(), Path(settings.ARTIFACTS_DIR).expanduser().resolve()]:
+        resolved = root.resolve(strict=False)
+        if resolved not in cleanup_roots:
+            cleanup_roots.append(resolved)
+
+    for root in cleanup_roots:
+        _add(root / document_id_str)
+
+        for manifest_path in sorted(root.glob("*_manifest.json")):
+            manifest_payload = _load_artifact_manifest(manifest_path)
+            manifest_pdf_path = str(manifest_payload.get("pdf_path") or "").strip()
+            manifest_document_id = str(manifest_payload.get("document_id") or "").strip()
+            manifest_document_name = str(manifest_payload.get("document_name") or "").strip()
+
+            if not any(
+                [
+                    manifest_document_id == document_id_str,
+                    normalized_file_path and manifest_pdf_path == normalized_file_path,
+                    normalized_title and manifest_document_name == normalized_title,
+                ]
+            ):
+                continue
+
+            stem = manifest_path.name[: -len("_manifest.json")]
+            for suffix in _FLAT_ARTIFACT_SUFFIXES:
+                _add(root / f"{stem}{suffix}")
+            for directory_suffix in _FLAT_ARTIFACT_DIRECTORIES:
+                _add(root / f"{stem}{directory_suffix}")
+
+    return paths
+
+
+def _delete_document_storage(
+    *,
+    document_id: UUID4 | str,
+    document_title: Optional[str],
+    file_path: Optional[str],
+) -> list[str]:
+    deleted_paths: list[str] = []
+    for path in _collect_document_cleanup_paths(
+        document_id=document_id,
+        document_title=document_title,
+        file_path=file_path,
+    ):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        deleted_paths.append(str(path))
+    return deleted_paths
+
+
 def _split_markdown_into_sections(markdown_content: str) -> list[dict]:
     stripped_content = markdown_content.strip()
     if not stripped_content:
@@ -649,6 +756,53 @@ def _build_qa_sections_from_optimized_output(work_dir: Path) -> list[dict]:
         status_code=status.HTTP_409_CONFLICT,
         detail="Optimization output is incomplete; rerun optimization before QA or finalization",
     )
+
+
+async def _compute_and_persist_qa_report(
+    *,
+    document_id: UUID4,
+    db: AsyncSession,
+    persisted_status: str,
+) -> object:
+    """Compute post-optimization QA metrics and persist *_qa_report.json + qa_score."""
+    work_dir = _find_document_workspace(document_id, require_document_dir=True)
+
+    validation_path = get_artifacts_path(str(document_id), "validation")
+    if not validation_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Validation artifact not found for this document",
+        )
+
+    validation_report = _load_json_file(validation_path)
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+
+    from pipeline.src.qa.qa_gates import (  # noqa: WPS433
+        AcceptanceCriteria,
+        compute_qa_metrics,
+        evaluate_qa_gate,
+        save_qa_report,
+    )
+
+    sections = _build_qa_sections_from_optimized_output(work_dir)
+    metrics = compute_qa_metrics(sections, validation_report)
+    result = evaluate_qa_gate(metrics, AcceptanceCriteria())
+    result.document_name = validation_report.get("document_name") or str(document_id)
+
+    qa_report_path = _resolve_qa_report_path(document_id, validation_path)
+    qa_report_path.parent.mkdir(parents=True, exist_ok=True)
+    save_qa_report(result, str(qa_report_path))
+
+    await _set_document_status(
+        db,
+        document_id,
+        persisted_status,
+        qa_score=float(result.metrics.overall_confidence_score),
+    )
+
+    return result
 
 
 async def _set_document_status(
@@ -1033,6 +1187,7 @@ async def _publish_document_to_rag(
     document_id: str,
     document_title: str,
     system: Optional[str],
+    document_type: Optional[str],
     work_dir: Path,
 ) -> dict[str, object]:
     publishable_chunks = _build_publishable_chunks(work_dir)
@@ -1048,6 +1203,10 @@ async def _publish_document_to_rag(
     if not await QdrantService.delete_document_chunks(document_id):
         raise RuntimeError("Failed to clear existing Qdrant chunks for this document")
 
+    workspace = str(system or "").strip()
+    normalized_workspace = workspace.lower() if workspace else None
+    is_shared_document = normalized_workspace in {"shared", "global", "cross-functional"}
+
     qdrant_chunks: list[dict[str, object]] = []
     for index, (chunk, vector) in enumerate(zip(publishable_chunks, embeddings, strict=True), start=1):
         source_pages = [int(page) for page in chunk.get("source_pages") or []]
@@ -1061,6 +1220,9 @@ async def _publish_document_to_rag(
                     "document_id": document_id,
                     "document_title": document_title,
                     "system": system,
+                    "workspace": normalized_workspace,
+                    "document_type": document_type,
+                    "is_shared": is_shared_document,
                     "content": chunk["markdown_content"],
                     "section_heading": chunk["heading"],
                     "page_number": source_pages[0] if source_pages else None,
@@ -1107,6 +1269,56 @@ async def list_documents(
             """)
         )
         rows = result.mappings().all()
+
+        stale_error = (
+            "Ingestion appears to have stopped unexpectedly because no active "
+            "pipeline process is running. Please reprocess this document."
+        )
+
+        stale_document_ids: list[str] = []
+        for row in rows:
+            row_id = str(row["id"])
+            row_status = row["status"]
+            row_updated_at = row["updated_at"]
+            if PipelineService._is_stale_ingestion_status(
+                document_id=row_id,
+                status_value=row_status,
+                updated_at=row_updated_at,
+            ):
+                stale_document_ids.append(row_id)
+
+        if stale_document_ids:
+            for stale_id in stale_document_ids:
+                await db.execute(
+                    _text(
+                        """
+                        UPDATE documents
+                        SET status = 'failed',
+                            notes = :notes,
+                            updated_at = NOW()
+                        WHERE id = :doc_id
+                        """
+                    ),
+                    {"doc_id": stale_id, "notes": stale_error},
+                )
+            await db.commit()
+
+            result = await db.execute(
+                _text("""
+                    SELECT
+                        id, title, version, system, document_type,
+                        status, file_path, uploaded_by, notes,
+                        uploaded_at, updated_at,
+                        total_pages, total_sections, review_progress, qa_score,
+                        approved_by, approved_at,
+                        publication_status, published_at, publication_error,
+                        indexed_chunk_count, qdrant_collection
+                    FROM documents
+                    ORDER BY uploaded_at DESC
+                """)
+            )
+            rows = result.mappings().all()
+
         docs = [
             {
                 "id": str(row["id"]),
@@ -1142,6 +1354,81 @@ async def list_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list documents",
         )
+
+
+@router.delete("/documents/{document_id}", response_model=DocumentDeleteResponse)
+async def delete_document(
+    document_id: UUID4,
+    current_user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently delete a document and its related storage artifacts."""
+    del current_user_id
+
+    from sqlalchemy import text as _text
+
+    result = await db.execute(
+        _text(
+            """
+            SELECT title, file_path, status
+            FROM documents
+            WHERE id = :doc_id
+            """
+        ),
+        {"doc_id": str(document_id)},
+    )
+    row = result.mappings().first()
+
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    if row["status"] in _DELETE_BLOCKED_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Documents cannot be deleted while ingestion or optimization is still running",
+        )
+
+    qdrant_deleted = await QdrantService.delete_document_chunks(str(document_id))
+    if not qdrant_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove document chunks from vector storage",
+        )
+
+    try:
+        deleted_paths = _delete_document_storage(
+            document_id=document_id,
+            document_title=row.get("title"),
+            file_path=row.get("file_path"),
+        )
+    except OSError as exc:
+        logger.error(f"Error deleting storage for {document_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove document files from storage",
+        ) from exc
+
+    await db.execute(
+        _text("DELETE FROM documents WHERE id = :doc_id"),
+        {"doc_id": str(document_id)},
+    )
+    await db.commit()
+
+    PipelineService._event_history.pop(str(document_id), None)
+    PipelineService._event_subscribers.pop(str(document_id), None)
+    PipelineService._job_ids_by_document.pop(str(document_id), None)
+    PipelineService._status_cache.pop(str(document_id), None)
+    OptimizationLogManager.clear_document(str(document_id))
+
+    return DocumentDeleteResponse(
+        document_id=document_id,
+        qdrant_chunks_deleted=True,
+        deleted_paths=deleted_paths,
+        message="Document and related artifacts deleted successfully.",
+    )
 
 
 async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
@@ -1420,15 +1707,9 @@ async def stream_document_events(
                 if await request.is_disconnected():
                     return
                 try:
-                    event = await asyncio.wait_for(anext(event_stream), timeout=15.0)
+                    event = await anext(event_stream)
                 except StopAsyncIteration:
                     return
-                except asyncio.TimeoutError:
-                    if await request.is_disconnected():
-                        return
-                    yield ": heartbeat\n\n"
-                    continue
-
                 yield encode_sse_event(event)
         except asyncio.CancelledError:
             return
@@ -1493,7 +1774,11 @@ async def stream_optimization_logs(
                 except asyncio.TimeoutError:
                     if await request.is_disconnected():
                         return
-                    yield ": heartbeat\n\n"
+                    yield encode_sse_event({
+                        "event": "ping",
+                        "document_id": doc_id,
+                        "timestamp": pipeline_timestamp(),
+                    })
                     continue
 
                 if kind == "log":
@@ -2000,43 +2285,10 @@ async def rescore_document_qa(
                 ),
             )
 
-        work_dir = _find_document_workspace(document_id, require_document_dir=True)
-
-        validation_path = get_artifacts_path(str(document_id), "validation")
-        if not validation_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Validation artifact not found for this document",
-            )
-
-        validation_report = _load_json_file(validation_path)
-
-        if str(REPO_ROOT) not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT))
-
-        from pipeline.src.qa.qa_gates import (  # noqa: WPS433
-            AcceptanceCriteria,
-            compute_qa_metrics,
-            evaluate_qa_gate,
-            save_qa_report,
-        )
-
-        await _set_document_status(db, document_id, PipelineStatus.QA_REVIEW.value)
-
-        sections = _build_qa_sections_from_optimized_output(work_dir)
-        metrics = compute_qa_metrics(sections, validation_report)
-        result = evaluate_qa_gate(metrics, AcceptanceCriteria())
-        result.document_name = validation_report.get("document_name") or str(document_id)
-
-        qa_report_path = _resolve_qa_report_path(document_id, validation_path)
-        qa_report_path.parent.mkdir(parents=True, exist_ok=True)
-        save_qa_report(result, str(qa_report_path))
-
-        await _set_document_status(
-            db,
-            document_id,
-            PipelineStatus.QA_REVIEW.value,
-            qa_score=float(result.metrics.overall_confidence_score),
+        result = await _compute_and_persist_qa_report(
+            document_id=document_id,
+            db=db,
+            persisted_status=PipelineStatus.QA_REVIEW.value,
         )
 
         return QARescoreResponse(
@@ -2207,7 +2459,7 @@ async def publish_document(
     result = await db.execute(
         _text(
             """
-            SELECT title, system, status, publication_status
+            SELECT title, system, document_type, status, publication_status
             FROM documents
             WHERE id = :doc_id
             """
@@ -2261,6 +2513,7 @@ async def publish_document(
             document_id=str(document_id),
             document_title=str(row["title"] or document_id),
             system=row["system"],
+            document_type=row["document_type"],
             work_dir=work_dir,
         )
 
@@ -2414,6 +2667,47 @@ async def get_document_artifact(
             )
             if not artifact_path.exists():
                 if not allow_legacy_qa_fallback:
+                    if document_status in {
+                        PipelineStatus.OPTIMIZATION_COMPLETE.value,
+                        PipelineStatus.QA_REVIEW.value,
+                        PipelineStatus.QA_PASSED.value,
+                    }:
+                        target_status = (
+                            PipelineStatus.QA_REVIEW.value
+                            if document_status == PipelineStatus.OPTIMIZATION_COMPLETE.value
+                            else document_status
+                        )
+                        try:
+                            await _compute_and_persist_qa_report(
+                                document_id=document_id,
+                                db=db,
+                                persisted_status=target_status,
+                            )
+                            artifact_path = get_artifacts_path(
+                                str(document_id),
+                                artifact_type.value,
+                                allow_legacy_qa_fallback=False,
+                            )
+                        except HTTPException as exc:
+                            logger.warning(
+                                "Unable to auto-generate QA report for %s during artifact fetch: %s",
+                                document_id,
+                                exc.detail,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Unexpected failure auto-generating QA report for %s: %s",
+                                document_id,
+                                exc,
+                            )
+
+                    if artifact_path.exists():
+                        return FileResponse(
+                            path=str(artifact_path),
+                            filename=artifact_path.name,
+                            media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream",
+                        )
+
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Post-optimization QA report not found; run QA rescore on the optimized output first",

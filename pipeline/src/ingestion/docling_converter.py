@@ -18,6 +18,7 @@ import requests
 import argparse
 import io
 import re
+import os
 import base64
 import tempfile
 import torch
@@ -449,6 +450,7 @@ def export_page_markdown_map(
         from docling.document_converter import PdfFormatOption
         from docling.datamodel.base_models import InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
     except ImportError:
         logger.warning("Local Docling package unavailable; cannot export page-scoped markdown")
         return {}
@@ -469,6 +471,34 @@ def export_page_markdown_map(
     pipeline_options.generate_page_images = False
     pipeline_options.do_picture_description = False
     pipeline_options.enable_remote_services = False
+    # Root-cause fix: explicitly request GPU acceleration for local Docling
+    # conversion so per-page extraction does not silently run CPU-only.
+    # Falls back to AUTO if explicit CUDA enum resolution is unavailable.
+    accelerator_device = None
+    preferred_device = str(os.getenv("DOCLING_ACCELERATOR_DEVICE", "cuda")).strip().lower()
+    if preferred_device == "cpu":
+        accelerator_device = getattr(AcceleratorDevice, "CPU", None)
+    elif preferred_device == "mps":
+        accelerator_device = getattr(AcceleratorDevice, "MPS", None)
+    elif preferred_device == "auto":
+        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
+    else:
+        accelerator_device = getattr(AcceleratorDevice, "CUDA", None)
+
+    if accelerator_device is None:
+        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
+
+    if accelerator_device is not None:
+        pipeline_options.accelerator_options = AcceleratorOptions(device=accelerator_device)
+
+    # If OCR options expose a `use_gpu` switch, align it with accelerator choice.
+    ocr_options = getattr(pipeline_options, "ocr_options", None)
+    if ocr_options is not None and hasattr(ocr_options, "use_gpu"):
+        setattr(
+            ocr_options,
+            "use_gpu",
+            accelerator_device == getattr(AcceleratorDevice, "CUDA", None),
+        )
     if hasattr(pipeline_options, "min_picture_page_surface_ratio"):
         pipeline_options.min_picture_page_surface_ratio = 0
 

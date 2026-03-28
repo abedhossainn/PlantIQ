@@ -29,6 +29,19 @@ class UserInfo(BaseModel):
     role: str
     department: Optional[str]
     scope: List[str]
+    last_login: Optional[datetime]
+
+
+class UpdateProfileRequest(BaseModel):
+    """Request body for PATCH /api/v1/auth/me."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    department: Optional[str] = Field(None, max_length=255)
+
+
+class ChangePasswordRequest(BaseModel):
+    """Request body for POST /api/v1/auth/me/change-password."""
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
 
 
 class RefreshTokenRequest(BaseModel):

@@ -11,7 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Upload, FileText, CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, Terminal } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
+import { getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
 
 // Backend pipeline stages mapped to UI display
 type Stage = {
@@ -158,6 +158,22 @@ function IngestionLogEntry({ line }: { line: PipelineLogLine }) {
 
 type StageStatus = "pending" | "active" | "complete" | "error";
 
+function isReviewReadyStatus(status: PipelineStatus): boolean {
+  return [
+    "validation-complete",
+    "in-review",
+    "review-complete",
+    "approved-for-optimization",
+    "optimizing",
+    "optimization-complete",
+    "qa-review",
+    "qa-passed",
+    "final-approved",
+    "approved",
+    "rejected",
+  ].includes(status);
+}
+
 export default function UploadPage() {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -170,6 +186,7 @@ export default function UploadPage() {
 
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
   const [progress, setProgress] = useState(0);
@@ -181,12 +198,78 @@ export default function UploadPage() {
   const [logScrolledUp, setLogScrolledUp] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const sawTerminalEventRef = useRef(false);
+  const pollingCancelledRef = useRef(false);
   const terminalRef = useRef<HTMLDivElement>(null);
+
+  function isIngestionProcessingStatus(status: PipelineStatus): boolean {
+    return status === "uploading" || status === "extracting" || status === "vlm-validating";
+  }
+
+  async function wait(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function monitorPipelineUntilTerminal(documentId: string): Promise<void> {
+    setUploadWarning("Live progress stream disconnected. Monitoring pipeline status in the background...");
+
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      if (pollingCancelledRef.current) {
+        return;
+      }
+
+      try {
+        const latest = await getPipelineStatus(documentId);
+        setPipelineStatus(latest.status);
+        setProgress(latest.progress);
+        setCurrentStage(toUIStage(latest.current_stage ?? latest.status));
+        setStatusMessage(latest.message ?? "Pipeline is still processing...");
+
+        if (latest.status === "failed") {
+          setUploadWarning(null);
+          setUploadError(latest.error || "Pipeline failed before completion.");
+          setDone(false);
+          setUploading(false);
+          return;
+        }
+
+        if (isReviewReadyStatus(latest.status)) {
+          setUploadWarning(null);
+          setDone(true);
+          setUploading(false);
+          setStageStatuses(() => {
+            const allComplete: Record<string, StageStatus> = {};
+            PIPELINE_STAGES.forEach((s) => { allComplete[s.id] = "complete"; });
+            return allComplete;
+          });
+          return;
+        }
+
+        if (!isIngestionProcessingStatus(latest.status)) {
+          setUploadWarning(null);
+          setUploadError(`Unexpected pipeline status: ${latest.status}`);
+          setDone(false);
+          setUploading(false);
+          return;
+        }
+      } catch {
+        // keep polling transient failures
+      }
+
+      await wait(3000);
+    }
+
+    setUploading(false);
+    setDone(false);
+    setUploadWarning(null);
+    setUploadError("Lost connection to live progress updates and status polling timed out. Please check the document list and retry if needed.");
+  }
 
   // Abort any in-flight SSE stream on unmount.
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      pollingCancelledRef.current = true;
     };
   }, []);
 
@@ -268,6 +351,7 @@ export default function UploadPage() {
         break;
 
       case 'complete':
+        sawTerminalEventRef.current = true;
         setProgress(100);
         setStatusMessage(event.message);
         setDone(true);
@@ -283,6 +367,7 @@ export default function UploadPage() {
         break;
 
       case 'error':
+        sawTerminalEventRef.current = true;
         setUploadError(`Pipeline error: ${event.error}`);
         setPipelineStatus('failed');
         setUploading(false);
@@ -305,7 +390,10 @@ export default function UploadPage() {
 
     setUploading(true);
     setUploadError(null);
+    setUploadWarning(null);
     setDone(false);
+    pollingCancelledRef.current = false;
+    sawTerminalEventRef.current = false;
 
     // Initialize stage statuses
     const init: Record<string, StageStatus> = {};
@@ -362,25 +450,11 @@ export default function UploadPage() {
         }
       } finally {
         abortControllerRef.current = null;
-        // Guard: if the stream closed without emitting a terminal event and the
-        // UI is still in the loading state, resolve it gracefully so the page
-        // does not hang forever.
-        setUploading((prev) => {
-          if (prev && !abortController.signal.aborted) {
-            // Stream ended with no explicit complete/error — treat as complete
-            // because the backend closes the SSE connection after the last event.
-            setDone(true);
-            setStageStatuses(() => {
-              const allComplete: Record<string, StageStatus> = {};
-              PIPELINE_STAGES.forEach((s) => { allComplete[s.id] = 'complete'; });
-              return allComplete;
-            });
-            setProgress(100);
-            setStatusMessage('Processing complete.');
-            return false; // clear uploading
-          }
-          return prev;
-        });
+        // Guard: if SSE disconnects without terminal complete/error event,
+        // do NOT mark upload as complete. Switch to status polling until terminal.
+        if (!abortController.signal.aborted && !sawTerminalEventRef.current) {
+          await monitorPipelineUntilTerminal(response.document_id);
+        }
       }
 
     } catch (err) {
@@ -398,6 +472,7 @@ export default function UploadPage() {
     setDocType("");
     setUploading(false);
     setUploadError(null);
+    setUploadWarning(null);
     setDocumentId(null);
     setPipelineStatus(null);
     setProgress(0);
@@ -412,6 +487,7 @@ export default function UploadPage() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    pollingCancelledRef.current = true;
   }
 
   const canSubmit = selectedFile && title.trim() && system && docType && !uploading;
@@ -512,14 +588,15 @@ export default function UploadPage() {
                           <SelectValue placeholder="Select system" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="LNG Processing">LNG Processing</SelectItem>
-                          <SelectItem value="Liquefaction Train">Liquefaction Train</SelectItem>
-                          <SelectItem value="Safety Systems">Safety Systems</SelectItem>
-                          <SelectItem value="Compression System">Compression System</SelectItem>
-                          <SelectItem value="Heat Transfer">Heat Transfer</SelectItem>
+                          <SelectItem value="Power Block">Power Block</SelectItem>
+                          <SelectItem value="Pre Treatment">Pre Treatment</SelectItem>
+                          <SelectItem value="Liquefaction">Liquefaction</SelectItem>
+                          <SelectItem value="OSBL (Outside Battery Limits)">OSBL (Outside Battery Limits)</SelectItem>
+                          <SelectItem value="Maintenance">Maintenance</SelectItem>
                           <SelectItem value="Instrumentation">Instrumentation</SelectItem>
+                          <SelectItem value="DCS (Distributed Control System)">DCS (Distributed Control System)</SelectItem>
                           <SelectItem value="Electrical">Electrical</SelectItem>
-                          <SelectItem value="General">General</SelectItem>
+                          <SelectItem value="Mechanical">Mechanical</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -712,6 +789,20 @@ export default function UploadPage() {
                 </div>{/* end right col */}
 
               </div>
+            )}
+
+            {uploadWarning && uploading && (
+              <Card className="overflow-hidden border-border mt-4">
+                <div className="px-6 py-4 bg-amber-400/5 border border-amber-400/20 rounded-md">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-amber-400">Connection interrupted</p>
+                      <p className="text-sm text-muted-foreground mt-1">{uploadWarning}</p>
+                    </div>
+                  </div>
+                </div>
+              </Card>
             )}
 
             {/* Error / Success cards — full width below side-by-side */}

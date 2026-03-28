@@ -5,9 +5,11 @@ from typing import Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
-import uuid
 import hashlib
 import logging
+import os
+import secrets
+import uuid
 
 from ..models.database import Base
 from ..core.jwt import jwt_manager
@@ -23,6 +25,34 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+_PBKDF2_ITERATIONS = 600_000
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password using PBKDF2-SHA256 with a random salt.
+
+    Format: ``pbkdf2:sha256:<hex-salt>:<hex-digest>``
+    OWASP recommends 600 000 iterations for PBKDF2-SHA256 (2023).
+    """
+    salt = os.urandom(16).hex()
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERATIONS)
+    return f"pbkdf2:sha256:{salt}:{dk.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored PBKDF2-SHA256 hash.
+
+    Uses constant-time comparison to prevent timing attacks.
+    Returns False on any parse or verification failure.
+    """
+    try:
+        _, algo, salt, dk_hex = stored_hash.split(":", 3)
+        dk = hashlib.pbkdf2_hmac(algo, password.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERATIONS)
+        return secrets.compare_digest(dk.hex(), dk_hex)
+    except Exception:
+        return False
+
+
 # Import User model (define inline for now, will be moved to models later)
 class User(Base):
     """User database model."""
@@ -35,6 +65,7 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(50), nullable=False)
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
@@ -60,7 +91,6 @@ class AuthService:
     # Scope mapping based on role
     ROLE_SCOPES = {
         "admin": ["chat.read", "docs.review", "docs.upload", "admin.manage"],
-        "reviewer": ["chat.read", "docs.review", "docs.upload"],
         "user": ["chat.read"],
     }
     
@@ -160,10 +190,7 @@ class AuthService:
         """
         if username == "admin":
             return "admin"
-        elif username == "reviewer":
-            return "reviewer"
-        else:
-            return "user"
+        return "user"
     
     @staticmethod
     async def _create_refresh_token(user_id: uuid.UUID, db: AsyncSession) -> str:
@@ -291,3 +318,84 @@ class AuthService:
             select(User).where(User.id == user_id)
         )
         return result.scalar_one_or_none()
+
+    @staticmethod
+    async def update_user_profile(
+        user_id: uuid.UUID,
+        update_data: dict,
+        db: AsyncSession,
+    ) -> Optional[User]:
+        """Update allowed profile fields for the authenticated user.
+
+        Args:
+            user_id: UUID of the user to update.
+            update_data: Mapping of field names to new values (only fields
+                that were explicitly sent in the request body).
+            db: Database session.
+
+        Returns:
+            Updated User object, or None if the user does not exist.
+        """
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return None
+
+        if "full_name" in update_data:
+            user.full_name = update_data["full_name"]
+        if "department" in update_data:
+            user.department = update_data["department"]
+        user.updated_at = _utcnow_naive()
+
+        await db.commit()
+        await db.refresh(user)
+        return user
+
+    @staticmethod
+    async def change_user_password(
+        user_id: uuid.UUID,
+        current_password: str,
+        new_password: str,
+        db: AsyncSession,
+    ) -> bool:
+        """Change the user's password after verifying the current one.
+
+        Validation strategy:
+        - If a local ``password_hash`` is stored, verify against it.
+        - Otherwise validate via LDAP (works with both mock and real LDAP).
+
+        On success the new password is hashed with PBKDF2-SHA256 and stored.
+
+        Args:
+            user_id: UUID of the user changing their password.
+            current_password: The user's current password for verification.
+            new_password: The new password to store.
+            db: Database session.
+
+        Returns:
+            True if the password was updated, False if current_password is wrong
+            or the user does not exist.
+        """
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return False
+
+        # Validate current password
+        if user.password_hash:
+            if not _verify_password(current_password, user.password_hash):
+                logger.warning("change_user_password: stored-hash verification failed for user %s", user_id)
+                return False
+        else:
+            # Fall back to LDAP validation
+            ldap_user = await ldap_client.authenticate(user.username, current_password)
+            if not ldap_user:
+                logger.warning("change_user_password: LDAP verification failed for user %s", user_id)
+                return False
+
+        user.password_hash = _hash_password(new_password)
+        user.updated_at = _utcnow_naive()
+        await db.commit()
+
+        logger.info("Password changed successfully for user %s", user_id)
+        return True

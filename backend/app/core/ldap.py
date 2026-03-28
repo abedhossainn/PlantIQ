@@ -103,7 +103,6 @@ class LDAPClient:
         
         Mock users:
         - admin / admin123
-        - reviewer / review123
         - user / user123
         """
         mock_users = {
@@ -112,12 +111,6 @@ class LDAPClient:
                 "email": "admin@plantig.local",
                 "full_name": "System Administrator",
                 "department": "IT",
-            },
-            "reviewer": {
-                "password": "review123",
-                "email": "reviewer@plantig.local",
-                "full_name": "Jane Reviewer",
-                "department": "Engineering",
             },
             "user": {
                 "password": "user123",

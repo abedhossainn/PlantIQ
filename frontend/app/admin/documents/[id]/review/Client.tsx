@@ -200,6 +200,50 @@ export default function ReviewClient({ docId }: { docId: string }) {
     );
   }
 
+  if (["uploading", "extracting", "vlm-validating"].includes(doc.status)) {
+    const statusLabel =
+      doc.status === "uploading"
+        ? "Uploading"
+        : doc.status === "extracting"
+        ? "Extracting"
+        : "Validating";
+
+    return (
+      <AppLayout>
+        <div className="flex-1 flex flex-col h-full min-h-0">
+          <div className="border-b border-border px-6 py-5 bg-card/50">
+            <Button variant="ghost" size="sm" className="gap-1.5 mb-3 -ml-2" onClick={() => router.push("/admin/documents")}>
+              <ArrowLeft className="h-4 w-4" />
+              Document Pipeline
+            </Button>
+            <h1 className="text-2xl font-bold tracking-tight">Processing in Progress</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">{doc.title}</p>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="max-w-md text-center space-y-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 mx-auto">
+                <RefreshCw className="h-6 w-6 text-primary animate-spin" />
+              </div>
+              <div>
+                <p className="font-semibold text-foreground">{statusLabel} document content</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Page review data is generated only after validation completes. Please wait until the document reaches
+                  <strong className="text-foreground/80"> Validation Complete</strong> status.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 pt-2">
+                <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents") }>
+                  <ArrowLeft className="h-4 w-4" />
+                  Back to Documents
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
   // ---------- empty state (no pages generated yet) ----------
 
   if (pages.length === 0) {

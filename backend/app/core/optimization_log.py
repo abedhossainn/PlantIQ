@@ -158,6 +158,14 @@ class OptimizationLogManager:
         except ValueError:
             pass
 
+    @classmethod
+    def clear_document(cls, document_id: str) -> None:
+        """Remove all in-memory log state for a document."""
+        cls._buffers.pop(document_id, None)
+        cls._queues.pop(document_id, None)
+        cls._done.pop(document_id, None)
+        cls._done_status.pop(document_id, None)
+
 
 class OptimizationLogHandler(logging.Handler):
     """Logging handler that captures records from the thread-pool worker.

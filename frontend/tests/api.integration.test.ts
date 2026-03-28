@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { consumeStreamingResponse, streamChatQuery, submitChatQuery } from '../lib/api/chat';
 import type { Citation as ApiCitation } from '../lib/api/chat';
+import { getActiveConversation, getConversations, updateConversationPin, updateConversationScope, updateConversationTitle } from '../lib/api/conversations';
 import { fastapiFetch, from, getFastApiBaseUrl, postgrestFetch } from '../lib/api/client';
+import { deleteDocument } from '../lib/api/documents';
 import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus } from '../lib/document-status';
 import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
 import { getDocumentOptimizedChunks, updateOptimizedChunk } from '../lib/api/optimized-review';
@@ -158,6 +160,301 @@ describe('frontend hybrid API integration contracts', () => {
     });
   });
 
+  it('submits scoped chat payload with workspace and document-type preferences', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        message_id: 'msg-2',
+        conversation_id: 'conv-2',
+        content: 'Scoped answer',
+        citations: [],
+        timestamp: '2026-03-10T00:00:00Z',
+      })
+    );
+
+    await submitChatQuery({
+      query: 'How do I start liquefaction?',
+      workspace: 'Liquefaction',
+      document_type_filters: ['Procedure'],
+      preferred_document_types: ['Procedure'],
+      include_shared_documents: true,
+    });
+
+    const [, options] = fetchMock.mock.calls[0];
+    expect(JSON.parse(options.body as string)).toEqual({
+      query: 'How do I start liquefaction?',
+      workspace: 'Liquefaction',
+      document_type_filters: ['Procedure'],
+      preferred_document_types: ['Procedure'],
+      include_shared_documents: true,
+      stream: false,
+    });
+  });
+
+  it('hydrates persisted conversation scope metadata from conversation summaries', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-1',
+          user_id: 'user-1',
+          title: 'Scoped conversation',
+          workspace: 'Mechanical',
+          document_type_filters: ['Maintenance Manual'],
+          preferred_document_types: ['Maintenance Manual'],
+          include_shared_documents: false,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T01:00:00Z',
+          message_count: 2,
+          last_message_at: '2026-03-27T01:00:00Z',
+          last_message_preview: 'Use the mechanical maintenance checklist.',
+        },
+      ])
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'msg-1',
+          conversation_id: 'conv-1',
+          role: 'assistant',
+          content: 'Use the mechanical maintenance checklist.',
+          citations: [],
+          timestamp: '2026-03-27T01:00:00Z',
+        },
+      ])
+    );
+
+    const activeConversation = await getActiveConversation();
+
+    expect(activeConversation?.conversation.workspace).toBe('Mechanical');
+    expect(activeConversation?.conversation.documentTypeFilters).toEqual(['Maintenance Manual']);
+    expect(activeConversation?.conversation.preferredDocumentTypes).toEqual(['Maintenance Manual']);
+    expect(activeConversation?.conversation.includeSharedDocuments).toBe(false);
+    expect(activeConversation?.messages).toHaveLength(1);
+  });
+
+  it('maps conversation summaries into history-ready conversation metadata', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-1',
+          user_id: 'user-1',
+          title: 'What maintenance checklist applies?',
+          workspace: 'Mechanical',
+          document_type_filters: ['Maintenance Manual'],
+          preferred_document_types: ['Maintenance Manual'],
+          include_shared_documents: false,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T01:00:00Z',
+          message_count: 4,
+          last_message_at: '2026-03-27T01:05:00Z',
+          last_message_preview: 'Use the mechanical maintenance checklist before startup.',
+        },
+      ])
+    );
+
+    const conversations = await getConversations({ limit: 10 });
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].title).toBe('What maintenance checklist applies?');
+    expect(conversations[0].workspace).toBe('Mechanical');
+    expect(conversations[0].isPinned).toBe(false);
+    expect(conversations[0].messageCount).toBe(4);
+    expect(conversations[0].lastMessagePreview).toBe('Use the mechanical maintenance checklist before startup.');
+    expect(conversations[0].includeSharedDocuments).toBe(false);
+  });
+
+  it('maps pinned conversation metadata from conversation summaries', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-pin',
+          user_id: 'user-1',
+          title: 'Pinned runbook',
+          is_pinned: true,
+          workspace: 'Liquefaction',
+          document_type_filters: ['Procedure'],
+          preferred_document_types: ['Procedure'],
+          include_shared_documents: true,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T01:00:00Z',
+          message_count: 1,
+          last_message_at: '2026-03-27T01:00:00Z',
+          last_message_preview: 'Pinned checklist.',
+        },
+      ])
+    );
+
+    const conversations = await getConversations({ limit: 10 });
+
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0].isPinned).toBe(true);
+  });
+
+  it('applies search filter when fetching conversations', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    await getConversations({ search: 'startup' });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      'http://localhost:3001/conversation_summaries?select=*&order=is_pinned.desc%2Cupdated_at.desc&title=like.*startup*'
+    );
+  });
+
+  it('applies workspace filter when fetching conversations', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+
+    await getConversations({ workspace: 'Liquefaction', limit: 10, offset: 5 });
+
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      'http://localhost:3001/conversation_summaries?select=*&order=is_pinned.desc%2Cupdated_at.desc&workspace=eq.Liquefaction&limit=10&offset=5'
+    );
+  });
+
+  it('updates conversation title through PostgREST and returns refreshed conversation payload', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-1',
+          user_id: 'user-1',
+          title: 'Updated title',
+          workspace: 'Liquefaction',
+          document_type_filters: ['Procedure'],
+          preferred_document_types: ['Procedure'],
+          include_shared_documents: true,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T01:00:00Z',
+          message_count: 1,
+          last_message_at: '2026-03-27T01:00:00Z',
+          last_message_preview: 'Checklist loaded.',
+        },
+      ])
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'msg-1',
+          conversation_id: 'conv-1',
+          role: 'assistant',
+          content: 'Checklist loaded.',
+          citations: [],
+          timestamp: '2026-03-27T01:00:00Z',
+        },
+      ])
+    );
+
+    const updatedConversation = await updateConversationTitle('conv-1', 'Updated title');
+
+    const [patchUrl, patchOptions] = fetchMock.mock.calls[0];
+    expect(patchUrl).toBe('http://localhost:3001/conversations?id=eq.conv-1');
+    expect(patchOptions.method).toBe('PATCH');
+    expect(JSON.parse(patchOptions.body as string)).toEqual({ title: 'Updated title' });
+
+    expect(updatedConversation.title).toBe('Updated title');
+    expect(updatedConversation.messages).toHaveLength(1);
+  });
+
+  it('updates conversation scope through PostgREST and returns refreshed conversation payload', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-2',
+          user_id: 'user-1',
+          title: 'Scope test',
+          workspace: 'Mechanical',
+          document_type_filters: ['Maintenance Manual'],
+          preferred_document_types: ['Maintenance Manual'],
+          include_shared_documents: false,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T02:00:00Z',
+          message_count: 2,
+          last_message_at: '2026-03-27T02:00:00Z',
+          last_message_preview: 'Updated scope saved.',
+        },
+      ])
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'msg-2',
+          conversation_id: 'conv-2',
+          role: 'assistant',
+          content: 'Updated scope saved.',
+          citations: [],
+          timestamp: '2026-03-27T02:00:00Z',
+        },
+      ])
+    );
+
+    const updatedConversation = await updateConversationScope('conv-2', {
+      workspace: 'Mechanical',
+      documentTypeFilters: ['Maintenance Manual'],
+      preferredDocumentTypes: ['Maintenance Manual'],
+      includeSharedDocuments: false,
+    });
+
+    const [patchUrl, patchOptions] = fetchMock.mock.calls[0];
+    expect(patchUrl).toBe('http://localhost:3001/conversations?id=eq.conv-2');
+    expect(patchOptions.method).toBe('PATCH');
+    expect(JSON.parse(patchOptions.body as string)).toEqual({
+      workspace: 'Mechanical',
+      document_type_filters: ['Maintenance Manual'],
+      preferred_document_types: ['Maintenance Manual'],
+      include_shared_documents: false,
+    });
+
+    expect(updatedConversation.workspace).toBe('Mechanical');
+    expect(updatedConversation.preferredDocumentTypes).toEqual(['Maintenance Manual']);
+    expect(updatedConversation.includeSharedDocuments).toBe(false);
+  });
+
+  it('updates conversation pin state through PostgREST and returns refreshed conversation payload', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'conv-pin-1',
+          user_id: 'user-1',
+          title: 'Pinned title',
+          is_pinned: true,
+          workspace: 'Liquefaction',
+          document_type_filters: ['Procedure'],
+          preferred_document_types: ['Procedure'],
+          include_shared_documents: true,
+          created_at: '2026-03-27T00:00:00Z',
+          updated_at: '2026-03-27T02:00:00Z',
+          message_count: 2,
+          last_message_at: '2026-03-27T02:00:00Z',
+          last_message_preview: 'Pinned scope saved.',
+        },
+      ])
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'msg-pin-1',
+          conversation_id: 'conv-pin-1',
+          role: 'assistant',
+          content: 'Pinned scope saved.',
+          citations: [],
+          timestamp: '2026-03-27T02:00:00Z',
+        },
+      ])
+    );
+
+    const updatedConversation = await updateConversationPin('conv-pin-1', true);
+
+    const [patchUrl, patchOptions] = fetchMock.mock.calls[0];
+    expect(patchUrl).toBe('http://localhost:3001/conversations?id=eq.conv-pin-1');
+    expect(patchOptions.method).toBe('PATCH');
+    expect(JSON.parse(patchOptions.body as string)).toEqual({ is_pinned: true });
+
+    expect(updatedConversation.isPinned).toBe(true);
+    expect(updatedConversation.messages).toHaveLength(1);
+  });
+
   it('consumes chat SSE token events and accumulates content', async () => {
     fetchMock.mockResolvedValueOnce(
       sseResponse([
@@ -185,6 +482,9 @@ describe('frontend hybrid API integration contracts', () => {
       document_title: 'LNG Manual',
       section_heading: 'Safety',
       page_number: 42,
+      workspace: 'Liquefaction',
+      system: 'Liquefaction',
+      document_type: 'Procedure',
       excerpt: 'Keep away from open flames.',
       relevance_score: 0.95,
     };
@@ -208,6 +508,8 @@ describe('frontend hybrid API integration contracts', () => {
     expect(receivedCitations).toHaveLength(1);
     expect(receivedCitations[0].document_title).toBe('LNG Manual');
     expect(receivedCitations[0].page_number).toBe(42);
+    expect(receivedCitations[0].workspace).toBe('Liquefaction');
+    expect(receivedCitations[0].document_type).toBe('Procedure');
   });
 
   it('terminates stream cleanly on complete event', async () => {
@@ -428,6 +730,27 @@ describe('frontend hybrid API integration contracts', () => {
 
     const [url] = fetchMock.mock.calls[0];
     expect(url).toBe('http://localhost:8000/api/v1/documents/doc-123/status');
+  });
+
+  it('deletes documents through the FastAPI cleanup endpoint with auth', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        document_id: 'doc-delete-1',
+        qdrant_chunks_deleted: true,
+        deleted_paths: ['/tmp/doc-delete-1.pdf', '/tmp/doc-delete-1'],
+        message: 'Document deleted successfully',
+      })
+    );
+
+    const result = await deleteDocument('doc-delete-1');
+
+    expect(result.document_id).toBe('doc-delete-1');
+    expect(result.qdrant_chunks_deleted).toBe(true);
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-delete-1');
+    expect(options.method).toBe('DELETE');
+    expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
   });
 
   it('supports direct PostgREST fetch prefer headers', async () => {

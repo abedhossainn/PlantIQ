@@ -23,12 +23,12 @@ router = APIRouter(prefix="/ws", tags=["WebSocket"])
 async def check_document_access(document_id: str, user_id: uuid.UUID, user_role: str) -> bool:
     """
     Check if user has access to document.
-    
+
     Args:
         document_id: Document UUID
         user_id: User UUID from JWT
-        user_role: User role from JWT (admin/reviewer/user)
-        
+        user_role: User role from JWT (admin/user)
+
     Returns:
         True if user has access, False otherwise
     """
@@ -37,7 +37,6 @@ async def check_document_access(document_id: str, user_id: uuid.UUID, user_role:
             # Set role context for RLS
             role_map = {
                 "admin": "plantig_admin",
-                "reviewer": "plantig_reviewer",
                 "user": "plantig_user",
             }
             db_role = role_map.get(user_role, "plantig_user")
@@ -94,7 +93,7 @@ async def pipeline_status_websocket(
     
     URL: ws://backend:8000/ws/pipeline/{document_id}?token=<jwt>
     
-    SECURITY: Verifies user has access to document (uploader, reviewer, or admin).
+    SECURITY: Admin-only channel for pipeline orchestration updates.
     
     Messages from server:
     - progress: {"type": "progress", "document_id": "...", "stage": "...", "progress": 45, "message": "..."}
@@ -112,7 +111,11 @@ async def pipeline_status_websocket(
         return
     
     user_id, user_role = auth_result
-    
+
+    if user_role != "admin":
+        await websocket.close(code=403, reason="Forbidden: Pipeline updates require admin access")
+        return
+
     # SECURITY FIX: Check document access authorization
     has_access = await check_document_access(document_id, user_id, user_role)
     if not has_access:

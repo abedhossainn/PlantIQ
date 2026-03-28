@@ -96,6 +96,15 @@ class DocumentPublishResponse(BaseModel):
     message: str
 
 
+class DocumentDeleteResponse(BaseModel):
+    """Response payload for permanently deleting a document and its artifacts."""
+
+    document_id: UUID4
+    qdrant_chunks_deleted: bool
+    deleted_paths: List[str] = Field(default_factory=list)
+    message: str
+
+
 class ReviewChecklistItemResponse(BaseModel):
     """Single checklist item state for review."""
     item: str

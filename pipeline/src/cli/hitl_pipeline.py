@@ -49,7 +49,6 @@ from ..utils.table_figure_handler import (
     generate_table_figure_report
 )
 from ..utils.vlm_options import get_text_model_id, get_vision_model_id
-from ..ingestion.docling_converter import export_page_markdown_map
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -458,6 +457,17 @@ class HITLPipeline:
         manifest = update_manifest_timestamp(manifest, "validation", reviewer)
         save_manifest(manifest, str(manifest_path))
         return validation_report, manifest
+
+    def _build_validation_page_markdown_map(self, pdf_path: str) -> Optional[Dict[int, str]]:
+        """Return page markdown overrides for validation when a cheaper source exists.
+
+        The primary ingestion path intentionally avoids rebuilding the document page by
+        page with a second Docling conversion pass. Validation can derive page-aligned
+        review slices from the authoritative full-document markdown, which removes the
+        duplicate conversion/image-description loop that was saturating CPU.
+        """
+        del pdf_path
+        return None
     
     def run_full_pipeline(
         self,
@@ -483,12 +493,13 @@ class HITLPipeline:
         _emit_event("stage_start", "extraction", "Stage 0: PDF → Markdown Extraction", 5,
                     step="Stage 0: PDF → Markdown Extraction")
         markdown_path = self._ensure_docling_markdown(pdf_path, markdown_path)
-        _emit_event("progress", "extraction", "PDF extracted. Loading per-page layout map...", 14)
-        page_markdown_map = export_page_markdown_map(
-            pdf_path,
-            image_mode=DOCLING_IMAGE_MODE,
+        _emit_event(
+            "progress",
+            "extraction",
+            "PDF extracted. Reusing canonical markdown for page-aligned validation slices.",
+            18,
         )
-        _emit_event("progress", "extraction", "Per-page layout map loaded.", 18)
+        page_markdown_map = self._build_validation_page_markdown_map(pdf_path)
         
         doc_name = Path(pdf_path).stem
         results = {"document": doc_name, "stages": {}}

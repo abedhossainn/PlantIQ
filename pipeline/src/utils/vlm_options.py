@@ -15,7 +15,7 @@ import os
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROOT_ENV_PATH = REPO_ROOT / ".env"
-DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B-Instruct"
+DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B"
 DEFAULT_VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
 
 
@@ -31,7 +31,13 @@ def resolve_model_reference(value: str) -> str:
     if not value:
         return value
 
-    expanded = Path(value).expanduser()
+    normalized_value = value.strip()
+    if normalized_value.lower() == "qwen3:4b":
+        # Common Ollama tag in local setups; map to the HF text model repo used
+        # by the transformers-based optimization reformatter.
+        return "Qwen/Qwen3-4B"
+
+    expanded = Path(normalized_value).expanduser()
     if not expanded.is_absolute():
         repo_relative_candidate = (REPO_ROOT / expanded).resolve(strict=False)
         if repo_relative_candidate.exists():

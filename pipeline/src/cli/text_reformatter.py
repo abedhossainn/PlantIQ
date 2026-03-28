@@ -320,6 +320,7 @@ def _generate_segment_response(
         messages,
         tokenize=True,
         add_generation_prompt=True,
+        enable_thinking=False,
         return_tensors="pt",
         return_dict=True,
     ).to(model.device)

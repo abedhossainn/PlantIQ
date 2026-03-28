@@ -13,6 +13,11 @@ export interface ConversationSummary {
   id: string;
   user_id: string;
   title: string | null;
+  is_pinned: boolean | null;
+  workspace: string | null;
+  document_type_filters: string[] | null;
+  preferred_document_types: string[] | null;
+  include_shared_documents: boolean | null;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -40,6 +45,14 @@ function toConversation(summary: ConversationSummary, messages: ChatMessage[] = 
     id: summary.id,
     userId: summary.user_id,
     title: summary.title || 'New Conversation',
+    isPinned: summary.is_pinned ?? false,
+    messageCount: summary.message_count,
+    lastMessageAt: summary.last_message_at,
+    lastMessagePreview: summary.last_message_preview,
+    workspace: summary.workspace || undefined,
+    documentTypeFilters: summary.document_type_filters || undefined,
+    preferredDocumentTypes: summary.preferred_document_types || undefined,
+    includeSharedDocuments: summary.include_shared_documents ?? undefined,
     messages: messages,
     createdAt: summary.created_at,
     updatedAt: summary.updated_at,
@@ -65,10 +78,21 @@ function toChatMessage(dbMessage: DbChatMessage): ChatMessage {
 export async function getConversations(filters?: {
   limit?: number;
   offset?: number;
+  search?: string;
+  workspace?: string;
 }): Promise<Conversation[]> {
   const query = from<ConversationSummary[]>('conversation_summaries')
     .select('*')
+    .order('is_pinned', 'desc')
     .order('updated_at', 'desc');
+
+  if (filters?.search?.trim()) {
+    query.like('title', filters.search.trim());
+  }
+
+  if (filters?.workspace?.trim()) {
+    query.eq('workspace', filters.workspace.trim());
+  }
   
   if (filters?.limit) {
     query.limit(filters.limit);
@@ -79,7 +103,7 @@ export async function getConversations(filters?: {
   }
   
   const summaries = await query.execute();
-  return summaries.map(s => toConversation(s, []));
+  return summaries.map((s) => toConversation(s, []));
 }
 
 /**
@@ -197,6 +221,52 @@ export async function updateConversationTitle(
     }
   );
   
+  return getConversationById(id);
+}
+
+/**
+ * Update persisted conversation scope metadata.
+ */
+export async function updateConversationScope(
+  id: string,
+  scope: {
+    workspace?: string;
+    documentTypeFilters?: string[];
+    preferredDocumentTypes?: string[];
+    includeSharedDocuments?: boolean;
+  }
+): Promise<Conversation> {
+  await postgrestFetch<void>(
+    `/conversations?id=eq.${id}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({
+        workspace: scope.workspace,
+        document_type_filters: scope.documentTypeFilters,
+        preferred_document_types: scope.preferredDocumentTypes,
+        include_shared_documents: scope.includeSharedDocuments,
+      }),
+    }
+  );
+
+  return getConversationById(id);
+}
+
+/**
+ * Update conversation pin state.
+ */
+export async function updateConversationPin(
+  id: string,
+  isPinned: boolean
+): Promise<Conversation> {
+  await postgrestFetch<void>(
+    `/conversations?id=eq.${id}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ is_pinned: isPinned }),
+    }
+  );
+
   return getConversationById(id);
 }
 

@@ -26,7 +26,9 @@ COPY backend/app /workspace/backend/app
 COPY pipeline /workspace/pipeline
 
 # Install Python dependencies for both backend and pipeline
-RUN pip install --no-cache-dir -e /workspace/backend \
+# Include backend dev extras so pytest and related tooling are available
+# in the development container used for local test execution.
+RUN pip install --no-cache-dir -e '/workspace/backend[dev]' \
     && pip install --no-cache-dir -e /workspace/pipeline
 
 WORKDIR /workspace/backend

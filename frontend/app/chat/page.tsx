@@ -5,23 +5,59 @@ import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Send, Bookmark, FileText, MessageSquare, RotateCcw, X, BookmarkCheck, ExternalLink } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Send, Bookmark, FileText, MessageSquare, RotateCcw, X, BookmarkCheck, ExternalLink, Trash2, Clock3, Pencil, Check, Pin, PinOff, LogOut, ChevronDown } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useRouter } from "next/navigation";
 import {
   getActiveConversation,
-  createConversation,
-  createMessage,
-  getConversationMessages,
+  getConversationById,
+  getConversations,
+  updateConversationPin,
+  updateConversationTitle,
+  updateConversationScope,
   createBookmark,
   deleteBookmark,
+  deleteConversation as removeConversation,
   isMessageBookmarked,
 } from "@/lib/api";
 import { streamChatQuery, getLlmStatus } from "@/lib/api/chat";
 import type { Citation as ApiCitation, LlmStatus } from "@/lib/api/chat";
-import type { ChatMessage, Citation, Bookmark as BookmarkType } from "@/types";
+import type { ChatMessage, Citation, Conversation } from "@/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+interface ChatDiscoveryPreferences {
+  conversationSearch: string;
+  conversationWorkspaceFilter: string;
+  showPinnedOnly: boolean;
+}
+
+const DEFAULT_CONVERSATION_WORKSPACE_FILTER = "all";
+
+const WORKSPACE_OPTIONS = [
+  "Power Block",
+  "Pre Treatment",
+  "Liquefaction",
+  "OSBL (Outside Battery Limits)",
+  "Maintenance",
+  "Instrumentation",
+  "DCS (Distributed Control System)",
+  "Electrical",
+  "Mechanical",
+];
+
+const CHAT_DOCUMENT_TYPE_OPTIONS = [
+  "Operating Manual",
+  "Maintenance Manual",
+  "Troubleshooting Guide",
+  "Technical Manual",
+  "Technical Standard",
+  "P&ID Diagram",
+  "Procedure",
+  "Other",
+];
 
 // Strip inline citation references appended by the LLM, e.g. [Doc Title, Page 21]
 function stripInlineCitations(content: string): string {
@@ -92,19 +128,247 @@ function SourceDrawer({ cite, onClose }: { cite: Citation; onClose: () => void }
 }
 
 export default function ChatPage() {
-  const { user } = useAuth();
-  const router = useRouter();
+  const { user, isAdmin, logout } = useAuth();
+  const hasHydratedDiscoveryPreferences = useRef(false);
   
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [editingConversationId, setEditingConversationId] = useState<string | null>(null);
+  const [editingConversationTitle, setEditingConversationTitle] = useState<string>("");
+  const [conversationSearch, setConversationSearch] = useState<string>("");
+  const [conversationWorkspaceFilter, setConversationWorkspaceFilter] = useState<string>(DEFAULT_CONVERSATION_WORKSPACE_FILTER);
+  const [showPinnedOnly, setShowPinnedOnly] = useState<boolean>(false);
   const [query, setQuery] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeCite, setActiveCite] = useState<Citation | null>(null);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
+    const [expandedCites, setExpandedCites] = useState<Set<string>>(new Set());
+
+    const toggleCites = (msgId: string) =>
+      setExpandedCites((prev) => {
+        const next = new Set(prev);
+        next.has(msgId) ? next.delete(msgId) : next.add(msgId);
+        return next;
+      });
   const [isLoading, setIsLoading] = useState(true);
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const [showColdStartNotice, setShowColdStartNotice] = useState(false);
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string>("Liquefaction");
+  const [selectedDocumentType, setSelectedDocumentType] = useState<string>("all");
+  const [includeSharedDocuments, setIncludeSharedDocuments] = useState<boolean>(true);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const activeConversationSummary = conversations.find((conversation) => conversation.id === conversationId);
+
+  function getChatDiscoveryPreferencesKey(userId: string): string {
+    return `chat_discovery_preferences:${userId}`;
+  }
+
+  function getInitials(name: string): string {
+    return name
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase();
+  }
+
+  const handleLogout = () => {
+    logout();
+    router.replace("/login");
+  };
+
+  async function resolveSavedMessageIds(nextMessages: ChatMessage[]) {
+    const bookmarked = new Set<string>();
+    for (const msg of nextMessages) {
+      if (msg.role === 'assistant' && await isMessageBookmarked(msg.id)) {
+        bookmarked.add(msg.id);
+      }
+    }
+    setSavedIds(bookmarked);
+  }
+
+  async function loadConversationIndex(preferredConversationId?: string | null) {
+    const list = await getConversations({ limit: 50 });
+    setConversations(list);
+
+    const targetId = preferredConversationId || conversationId;
+    if (!list.length || !targetId) {
+      return list;
+    }
+
+    const exists = list.some((conversation) => conversation.id === targetId);
+    if (!exists) {
+      setConversationId(null);
+      setMessages([]);
+    }
+
+    return list;
+  }
+
+  async function loadConversation(conversation: Conversation) {
+    const fullConversation = await getConversationById(conversation.id);
+    setConversationId(fullConversation.id);
+    applyConversationScope(fullConversation);
+    setMessages(fullConversation.messages);
+    await resolveSavedMessageIds(fullConversation.messages);
+  }
+
+  function formatConversationTimestamp(value?: string | null): string {
+    if (!value) return "No messages yet";
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "Recently updated";
+    }
+
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function getConversationDisplayTitle(conversation: Conversation): string {
+    const title = conversation.title?.trim();
+    if (title && title !== "New Conversation") {
+      return title;
+    }
+
+    const preview = conversation.lastMessagePreview?.trim();
+    if (preview) {
+      return preview.length > 64 ? `${preview.slice(0, 61).trimEnd()}...` : preview;
+    }
+
+    return "New Conversation";
+  }
+
+  function startConversationTitleEdit(conversation: Conversation) {
+    setEditingConversationId(conversation.id);
+    setEditingConversationTitle(getConversationDisplayTitle(conversation));
+  }
+
+  function cancelConversationTitleEdit() {
+    setEditingConversationId(null);
+    setEditingConversationTitle("");
+  }
+
+  async function saveConversationTitle(conversationIdToUpdate: string) {
+    const nextTitle = editingConversationTitle.trim();
+    if (!nextTitle) {
+      cancelConversationTitleEdit();
+      return;
+    }
+
+    try {
+      await updateConversationTitle(conversationIdToUpdate, nextTitle);
+      await loadConversationIndex(conversationIdToUpdate);
+      if (conversationId === conversationIdToUpdate) {
+        const refreshedConversation = await getConversationById(conversationIdToUpdate);
+        setMessages(refreshedConversation.messages);
+      }
+    } catch (err) {
+      console.error('Failed to update conversation title:', err);
+    } finally {
+      cancelConversationTitleEdit();
+    }
+  }
+
+  function applyConversationScope(scope: {
+    workspace?: string;
+    preferredDocumentTypes?: string[];
+    documentTypeFilters?: string[];
+    includeSharedDocuments?: boolean;
+  }) {
+    if (scope.workspace) {
+      setSelectedWorkspace(scope.workspace);
+    }
+
+    const preferredDocumentType = scope.preferredDocumentTypes?.[0] || scope.documentTypeFilters?.[0];
+    setSelectedDocumentType(preferredDocumentType || "all");
+
+    if (typeof scope.includeSharedDocuments === "boolean") {
+      setIncludeSharedDocuments(scope.includeSharedDocuments);
+    }
+  }
+
+  const selectedScopeDocumentTypes = selectedDocumentType !== "all" ? [selectedDocumentType] : undefined;
+  const scopeIsDirty = Boolean(
+    activeConversationSummary && (
+      (activeConversationSummary.workspace || "") !== selectedWorkspace ||
+      (activeConversationSummary.includeSharedDocuments ?? true) !== includeSharedDocuments ||
+      (activeConversationSummary.preferredDocumentTypes?.[0] || activeConversationSummary.documentTypeFilters?.[0] || "all") !== selectedDocumentType
+    )
+  );
+
+  async function persistConversationScope() {
+    if (!conversationId) {
+      return;
+    }
+
+    try {
+      const updatedConversation = await updateConversationScope(conversationId, {
+        workspace: selectedWorkspace,
+        documentTypeFilters: selectedScopeDocumentTypes,
+        preferredDocumentTypes: selectedScopeDocumentTypes,
+        includeSharedDocuments,
+      });
+
+      applyConversationScope(updatedConversation);
+      await loadConversationIndex(updatedConversation.id);
+    } catch (err) {
+      console.error('Failed to persist conversation scope:', err);
+    }
+  }
+
+  async function handleToggleConversationPin(conversation: Conversation) {
+    try {
+      await updateConversationPin(conversation.id, !conversation.isPinned);
+      await loadConversationIndex(conversation.id);
+    } catch (err) {
+      console.error('Failed to update conversation pin state:', err);
+    }
+  }
+
+  function resetConversationDiscoveryFilters() {
+    setConversationSearch("");
+    setConversationWorkspaceFilter(DEFAULT_CONVERSATION_WORKSPACE_FILTER);
+    setShowPinnedOnly(false);
+  }
+
+  const pinnedConversationCount = conversations.filter((conversation) => conversation.isPinned).length;
+  const hasActiveConversationDiscoveryFilters =
+    Boolean(conversationSearch.trim()) ||
+    conversationWorkspaceFilter !== DEFAULT_CONVERSATION_WORKSPACE_FILTER ||
+    showPinnedOnly;
+
+  const filteredConversations = conversations.filter((conversation) => {
+    if (showPinnedOnly && !conversation.isPinned) {
+      return false;
+    }
+
+    const workspaceMatch =
+      conversationWorkspaceFilter === "all" || conversation.workspace === conversationWorkspaceFilter;
+
+    const searchTerm = conversationSearch.trim().toLowerCase();
+    if (!searchTerm) {
+      return workspaceMatch;
+    }
+
+    const title = getConversationDisplayTitle(conversation).toLowerCase();
+    const preview = (conversation.lastMessagePreview || "").toLowerCase();
+    return workspaceMatch && (title.includes(searchTerm) || preview.includes(searchTerm));
+  }).sort((a, b) => {
+    const pinPriority = Number(Boolean(b.isPinned)) - Number(Boolean(a.isPinned));
+    if (pinPriority !== 0) {
+      return pinPriority;
+    }
+
+    const aTime = new Date(a.updatedAt).getTime();
+    const bTime = new Date(b.updatedAt).getTime();
+    return bTime - aTime;
+  });
 
   // Poll LLM status every 10 seconds
   useEffect(() => {
@@ -118,6 +382,78 @@ export default function ChatPage() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
+  // Close profile menu when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-profile-menu]")) {
+        setShowProfileMenu(false);
+      }
+    }
+    if (showProfileMenu) {
+      document.addEventListener("click", handleClickOutside);
+      return () => document.removeEventListener("click", handleClickOutside);
+    }
+  }, [showProfileMenu]);
+
+  // Hydrate persisted discovery preferences per authenticated user.
+  useEffect(() => {
+    hasHydratedDiscoveryPreferences.current = false;
+
+    if (!user || typeof globalThis === "undefined" || !("localStorage" in globalThis)) {
+      return;
+    }
+
+    const storageKey = getChatDiscoveryPreferencesKey(user.id);
+    const rawPreferences = globalThis.localStorage.getItem(storageKey);
+
+    if (rawPreferences) {
+      try {
+        const parsed = JSON.parse(rawPreferences) as Partial<ChatDiscoveryPreferences>;
+
+        if (typeof parsed.conversationSearch === "string") {
+          setConversationSearch(parsed.conversationSearch);
+        }
+
+        if (
+          typeof parsed.conversationWorkspaceFilter === "string" &&
+          (parsed.conversationWorkspaceFilter === "all" || WORKSPACE_OPTIONS.includes(parsed.conversationWorkspaceFilter))
+        ) {
+          setConversationWorkspaceFilter(parsed.conversationWorkspaceFilter);
+        }
+
+        if (typeof parsed.showPinnedOnly === "boolean") {
+          setShowPinnedOnly(parsed.showPinnedOnly);
+        }
+      } catch (err) {
+        console.error("Failed to parse chat discovery preferences:", err);
+      }
+    }
+
+    hasHydratedDiscoveryPreferences.current = true;
+  }, [user]);
+
+  // Persist discovery preferences whenever controls change.
+  useEffect(() => {
+    if (
+      !user ||
+      !hasHydratedDiscoveryPreferences.current ||
+      typeof globalThis === "undefined" ||
+      !("localStorage" in globalThis)
+    ) {
+      return;
+    }
+
+    const storageKey = getChatDiscoveryPreferencesKey(user.id);
+    const preferences: ChatDiscoveryPreferences = {
+      conversationSearch,
+      conversationWorkspaceFilter,
+      showPinnedOnly,
+    };
+
+    globalThis.localStorage.setItem(storageKey, JSON.stringify(preferences));
+  }, [conversationSearch, conversationWorkspaceFilter, showPinnedOnly, user]);
+
   // Load active conversation and saved bookmarks on mount
   useEffect(() => {
     async function loadData() {
@@ -128,23 +464,12 @@ export default function ChatPage() {
       
       setIsLoading(true);
       try {
+        const list = await loadConversationIndex();
+
         // Try to load active conversation
         const result = await getActiveConversation();
-        if (result) {
-          setConversationId(result.conversation.id);
-          
-          // Use messages from result
-          const msgs = result.messages;
-          setMessages(msgs);
-          
-          // Load bookmarked message IDs
-          const bookmarked = new Set<string>();
-          for (const msg of msgs) {
-            if (msg.role === 'assistant' && await isMessageBookmarked(msg.id)) {
-              bookmarked.add(msg.id);
-            }
-          }
-          setSavedIds(bookmarked);
+        if (result && list.some((conversation) => conversation.id === result.conversation.id)) {
+          await loadConversation(result.conversation);
         }
       } catch (err) {
         console.error('Failed to load conversation:', err);
@@ -165,6 +490,41 @@ export default function ChatPage() {
     setQuery("");
     setActiveCite(null);
     setConversationId(null);
+    setSavedIds(new Set());
+    setSelectedWorkspace("Liquefaction");
+    setSelectedDocumentType("all");
+    setIncludeSharedDocuments(true);
+  }
+
+  async function handleSelectConversation(conversation: Conversation) {
+    setActiveCite(null);
+    setQuery("");
+    await loadConversation(conversation);
+  }
+
+  async function handleDeleteConversation(conversationIdToDelete: string) {
+    try {
+      await removeConversation(conversationIdToDelete);
+
+      const isActiveConversation = conversationId === conversationIdToDelete;
+      const updatedConversations = await loadConversationIndex(
+        isActiveConversation ? null : conversationId
+      );
+
+      if (isActiveConversation) {
+        const nextConversation = updatedConversations.find(
+          (conversation) => conversation.id !== conversationIdToDelete
+        );
+
+        if (nextConversation) {
+          await loadConversation(nextConversation);
+        } else {
+          newChat();
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete conversation:', err);
+    }
   }
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -176,18 +536,7 @@ export default function ChatPage() {
       setShowColdStartNotice(true);
     }
 
-    // Create conversation if it doesn't exist
     let currentConvId = conversationId;
-    if (!currentConvId) {
-      try {
-        const newConv = await createConversation();
-        currentConvId = newConv.id;
-        setConversationId(currentConvId);
-      } catch (err) {
-        console.error('Failed to create conversation:', err);
-        return;
-      }
-    }
 
     // Add user message to UI
     const userMsg: ChatMessage = {
@@ -195,19 +544,9 @@ export default function ChatPage() {
       role: "user",
       content: query.trim(),
       timestamp: new Date().toISOString(),
+      workspace: selectedWorkspace,
     };
     setMessages((prev) => [...prev, userMsg]);
-    
-    // Save user message to database
-    try {
-      await createMessage({
-        conversationId: currentConvId,
-        role: 'user',
-        content: userMsg.content,
-      });
-    } catch (err) {
-      console.error('Failed to save user message:', err);
-    }
 
     const queryText = query.trim();
     setQuery("");
@@ -220,6 +559,7 @@ export default function ChatPage() {
       role: "assistant",
       content: "",
       timestamp: new Date().toISOString(),
+      workspace: selectedWorkspace,
       citations: [],
     };
     setMessages((prev) => [...prev, assistantMsg]);
@@ -227,12 +567,37 @@ export default function ChatPage() {
     try {
       let fullContent = "";
       const pendingCitations: Citation[] = [];
+      let activeAssistantMessageId = assistantMsgId;
+      let resolvedConversationId = currentConvId;
       
       // Stream typed events from RAG endpoint.
       for await (const event of streamChatQuery({
         query: queryText,
-        conversation_id: currentConvId,
+        conversation_id: currentConvId || undefined,
+        workspace: selectedWorkspace,
+        document_type_filters:
+          selectedDocumentType !== "all" ? [selectedDocumentType] : undefined,
+        preferred_document_types:
+          selectedDocumentType !== "all" ? [selectedDocumentType] : undefined,
+        include_shared_documents: includeSharedDocuments,
       })) {
+        if (event.conversation_id) {
+          resolvedConversationId = event.conversation_id;
+          setConversationId(event.conversation_id);
+        }
+
+        if (event.message_id && event.message_id !== activeAssistantMessageId) {
+          const previousAssistantId = activeAssistantMessageId;
+          activeAssistantMessageId = event.message_id;
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === previousAssistantId
+                ? { ...msg, id: event.message_id }
+                : msg
+            )
+          );
+        }
+
         if (event.type === 'token') {
           // Dismiss cold-start notice on first token
           setShowColdStartNotice(false);
@@ -240,7 +605,7 @@ export default function ChatPage() {
           // Update message with accumulated content incrementally.
           setMessages((prev) =>
             prev.map((msg) =>
-              msg.id === assistantMsgId
+              msg.id === activeAssistantMessageId
                 ? { ...msg, content: fullContent }
                 : msg
             )
@@ -254,6 +619,9 @@ export default function ChatPage() {
             documentTitle: raw.document_title,
             sectionHeading: raw.section_heading ?? '',
             pageNumber: raw.page_number ?? 0,
+            workspace: raw.workspace,
+            system: raw.system,
+            documentType: raw.document_type,
             excerpt: raw.excerpt,
             relevanceScore: raw.relevance_score,
           });
@@ -262,7 +630,7 @@ export default function ChatPage() {
           if (pendingCitations.length > 0) {
             setMessages((prev) =>
               prev.map((msg) =>
-                msg.id === assistantMsgId
+                msg.id === activeAssistantMessageId
                   ? { ...msg, citations: pendingCitations }
                   : msg
               )
@@ -279,31 +647,24 @@ export default function ChatPage() {
       if (pendingCitations.length > 0) {
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === assistantMsgId && (!msg.citations || msg.citations.length === 0)
+            msg.id === activeAssistantMessageId && (!msg.citations || msg.citations.length === 0)
               ? { ...msg, citations: pendingCitations }
               : msg
           )
         );
       }
-      
-      // Save assistant message to database
-      try {
-        const savedMsg = await createMessage({
-          conversationId: currentConvId,
-          role: 'assistant',
-          content: fullContent,
-        });
-        
-        // Update message ID with the one from database
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMsgId
-              ? { ...msg, id: savedMsg.id }
-              : msg
-          )
-        );
-      } catch (err) {
-        console.error('Failed to save assistant message:', err);
+
+      if (resolvedConversationId) {
+        try {
+          const refreshedConversation = await getConversationById(resolvedConversationId);
+          setConversationId(refreshedConversation.id);
+          applyConversationScope(refreshedConversation);
+          setMessages(refreshedConversation.messages);
+          await resolveSavedMessageIds(refreshedConversation.messages);
+          await loadConversationIndex(refreshedConversation.id);
+        } catch (err) {
+          console.error('Failed to refresh conversation after streaming:', err);
+        }
       }
       
     } catch (err) {
@@ -374,14 +735,223 @@ export default function ChatPage() {
     );
   }
 
+  // Conversation sidebar content — shared between the AppLayout sidebarContent slot (user role)
+  // and the inline aside panel (admin role).
+  const conversationSidebarContent = (
+    <>
+      <div className="px-3 py-3 border-b border-border space-y-2">
+        <input
+          value={conversationSearch}
+          onChange={(event) => setConversationSearch(event.target.value)}
+          placeholder="Search conversations"
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs"
+        />
+        <div className="flex items-center gap-2">
+          <Select value={conversationWorkspaceFilter} onValueChange={setConversationWorkspaceFilter}>
+            <SelectTrigger className="h-8 text-xs flex-1">
+              <SelectValue placeholder="All workspaces" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={DEFAULT_CONVERSATION_WORKSPACE_FILTER}>All workspaces</SelectItem>
+              {WORKSPACE_OPTIONS.map((workspace) => (
+                <SelectItem key={workspace} value={workspace}>{workspace}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            variant={showPinnedOnly ? "default" : "outline"}
+            size="sm"
+            className="h-8 px-2 text-xs"
+            onClick={() => setShowPinnedOnly((prev) => !prev)}
+          >
+            <Pin className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 text-xs"
+            disabled={!hasActiveConversationDiscoveryFilters}
+            onClick={resetConversationDiscoveryFilters}
+          >
+            Reset
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-primary/30 text-primary">
+            <Pin className="h-3 w-3 mr-1" /> {pinnedConversationCount} pinned
+          </Badge>
+          {showPinnedOnly && (
+            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Pinned only</Badge>
+          )}
+          {conversationWorkspaceFilter !== DEFAULT_CONVERSATION_WORKSPACE_FILTER && (
+            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{conversationWorkspaceFilter}</Badge>
+          )}
+          {Boolean(conversationSearch.trim()) && (
+            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Search: {conversationSearch.trim()}</Badge>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {filteredConversations.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
+            No conversations match your filter.
+          </div>
+        ) : (
+          filteredConversations.map((conversation) => {
+            const isActive = conversation.id === conversationId;
+            const isEditing = editingConversationId === conversation.id;
+            return (
+              <div
+                key={conversation.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => handleSelectConversation(conversation)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void handleSelectConversation(conversation);
+                  }
+                }}
+                className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                  isActive
+                    ? "border-primary bg-primary/5"
+                    : "border-border bg-background hover:border-primary/40 hover:bg-primary/5"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        value={editingConversationTitle}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => setEditingConversationTitle(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            void saveConversationTitle(conversation.id);
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelConversationTitleEdit();
+                          }
+                        }}
+                        className="w-full rounded border border-border bg-background px-2 py-1 text-sm"
+                      />
+                    ) : (
+                      <p className="text-sm font-medium text-foreground line-clamp-2">
+                        {getConversationDisplayTitle(conversation)}
+                      </p>
+                    )}
+                    <div className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+                      <Clock3 className="h-3 w-3" />
+                      <span>{formatConversationTimestamp(conversation.lastMessageAt || conversation.updatedAt)}</span>
+                    </div>
+                  </div>
+                  {isEditing ? (
+                    <button
+                      type="button"
+                      aria-label="Save conversation title"
+                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void saveConversationTitle(conversation.id);
+                      }}
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={conversation.isPinned ? "Unpin conversation" : "Pin conversation"}
+                      className={`rounded p-1 hover:bg-primary/10 ${conversation.isPinned ? "text-primary" : "text-muted-foreground hover:text-primary"}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleToggleConversationPin(conversation);
+                      }}
+                    >
+                      {conversation.isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                    </button>
+                  )}
+                  {!isEditing && (
+                    <button
+                      type="button"
+                      aria-label="Rename conversation"
+                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startConversationTitleEdit(conversation);
+                      }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Delete conversation"
+                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void handleDeleteConversation(conversation.id);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {conversation.isPinned && (
+                    <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-primary/40 text-primary">
+                      Pinned
+                    </Badge>
+                  )}
+                  {conversation.workspace && (
+                    <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                      {conversation.workspace}
+                    </Badge>
+                  )}
+                  {(conversation.preferredDocumentTypes?.[0] || conversation.documentTypeFilters?.[0]) && (
+                    <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                      {conversation.preferredDocumentTypes?.[0] || conversation.documentTypeFilters?.[0]}
+                    </Badge>
+                  )}
+                </div>
+
+                {conversation.lastMessagePreview && (
+                  <p className="mt-2 text-xs text-muted-foreground line-clamp-2">
+                    {conversation.lastMessagePreview}
+                  </p>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </>
+  );
+
   return (
-    <AppLayout>
-      <div className="flex-1 flex flex-col h-full min-h-0">
+    <AppLayout sidebarContent={!isAdmin ? conversationSidebarContent : undefined}>
+      <div className="flex-1 flex h-full min-h-0 overflow-hidden">
+        {isAdmin && (
+          <aside className="w-80 shrink-0 border-r border-border bg-card/30 hidden lg:flex lg:flex-col">
+            {conversationSidebarContent}
+          </aside>
+        )}
+
+        <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
         {/* Chat header */}
         <div className="border-b border-border px-6 py-3 flex items-center justify-between bg-card/40">
           <div className="flex items-center gap-2">
             <MessageSquare className="h-5 w-5 text-primary" />
             <span className="font-semibold text-sm">PlantIQ Assistant</span>
+            {activeConversationSummary && (
+              <Badge variant="outline" className="text-xs border-primary/30 text-primary">
+                {getConversationDisplayTitle(activeConversationSummary)}
+              </Badge>
+            )}
             {llmStatus === null ? (
               <Badge variant="outline" className="text-xs text-muted-foreground border-muted-foreground/30">
                 LLM Offline
@@ -400,17 +970,240 @@ export default function ChatPage() {
               </Badge>
             )}
           </div>
-          {messages.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs"
-              onClick={newChat}
+          <div className="flex items-center gap-2">
+            {messages.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={newChat}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                New Chat
+              </Button>
+            )}
+            {/* User profile dropdown menu */}
+            <div className="relative" data-profile-menu>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-2 h-9"
+                onClick={() => setShowProfileMenu(!showProfileMenu)}
+              >
+                <Avatar className="h-6 w-6 border border-primary/30">
+                  <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">
+                    {user ? getInitials(user.fullName) : "?"}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="text-xs font-medium hidden sm:inline max-w-[100px] truncate">
+                  {user?.fullName}
+                </span>
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </Button>
+              {showProfileMenu && (
+                <div className="absolute right-0 mt-2 w-48 rounded-lg border border-border bg-card shadow-lg z-50 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-border bg-muted/40">
+                    <p className="text-xs font-semibold text-foreground">{user?.fullName}</p>
+                    <p className="text-xs text-muted-foreground">{user?.email}</p>
+                  </div>
+                  <button
+                    className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-muted/50 transition-colors flex items-center gap-2 text-foreground"
+                    onClick={() => {
+                      router.push("/profile");
+                      setShowProfileMenu(false);
+                    }}
+                  >
+                    👤 View Profile
+                  </button>
+                  <button
+                    className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-destructive/10 transition-colors flex items-center gap-2 text-destructive border-t border-border"
+                    onClick={handleLogout}
+                  >
+                    <LogOut className="h-3 w-3" />
+                    Sign Out
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-b border-border px-6 py-3 bg-card/10 lg:hidden">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                value={conversationSearch}
+                onChange={(event) => setConversationSearch(event.target.value)}
+                placeholder="Search conversations"
+                className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs"
+              />
+              <Button variant="outline" size="sm" className="h-9" onClick={newChat}>
+                New
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={conversationWorkspaceFilter} onValueChange={setConversationWorkspaceFilter}>
+                <SelectTrigger className="h-9 w-40">
+                  <SelectValue placeholder="Workspace" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DEFAULT_CONVERSATION_WORKSPACE_FILTER}>All workspaces</SelectItem>
+                  {WORKSPACE_OPTIONS.map((workspace) => (
+                    <SelectItem key={workspace} value={workspace}>{workspace}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant={showPinnedOnly ? "default" : "outline"}
+                size="sm"
+                className="h-9 px-2"
+                onClick={() => setShowPinnedOnly((prev) => !prev)}
+                aria-label="Toggle pinned conversations"
+              >
+                <Pin className="h-3.5 w-3.5" />
+              </Button>
+              {activeConversationSummary && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-2"
+                  onClick={() => {
+                    void handleToggleConversationPin(activeConversationSummary);
+                  }}
+                  aria-label={activeConversationSummary.isPinned ? "Unpin active conversation" : "Pin active conversation"}
+                >
+                  {activeConversationSummary.isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2"
+                disabled={!hasActiveConversationDiscoveryFilters}
+                onClick={resetConversationDiscoveryFilters}
+                aria-label="Reset conversation discovery filters"
+              >
+                Reset
+              </Button>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-primary/30 text-primary">
+                <Pin className="h-3 w-3 mr-1" /> {pinnedConversationCount} pinned
+              </Badge>
+              {showPinnedOnly && (
+                <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Pinned only</Badge>
+              )}
+              {conversationWorkspaceFilter !== DEFAULT_CONVERSATION_WORKSPACE_FILTER && (
+                <Badge variant="outline" className="h-5 px-1.5 text-[10px]">{conversationWorkspaceFilter}</Badge>
+              )}
+              {Boolean(conversationSearch.trim()) && (
+                <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Search: {conversationSearch.trim()}</Badge>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 mt-2">
+            <Select
+              value={conversationId || "new"}
+              onValueChange={(value) => {
+                if (value === "new") {
+                  newChat();
+                  return;
+                }
+
+                const targetConversation = conversations.find((conversation) => conversation.id === value);
+                if (targetConversation) {
+                  void handleSelectConversation(targetConversation);
+                }
+              }}
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              New Chat
-            </Button>
-          )}
+              <SelectTrigger className="h-9 flex-1">
+                <SelectValue placeholder="Select conversation" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="new">New Conversation</SelectItem>
+                {filteredConversations.map((conversation) => (
+                  <SelectItem key={conversation.id} value={conversation.id}>
+                    {conversation.isPinned ? "📌 " : ""}{getConversationDisplayTitle(conversation)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div className="border-b border-border px-6 py-3 bg-card/20">
+          <div className="max-w-3xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-2">
+            <div>
+              <p className="text-[11px] text-muted-foreground mb-1">Workspace (default scope)</p>
+              <Select value={selectedWorkspace} onValueChange={setSelectedWorkspace}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="Select workspace" />
+                </SelectTrigger>
+                <SelectContent>
+                  {WORKSPACE_OPTIONS.map((workspace) => (
+                    <SelectItem key={workspace} value={workspace}>{workspace}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <p className="text-[11px] text-muted-foreground mb-1">Document type (subfilter)</p>
+              <Select value={selectedDocumentType} onValueChange={setSelectedDocumentType}>
+                <SelectTrigger className="h-9">
+                  <SelectValue placeholder="All document types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All document types</SelectItem>
+                  {CHAT_DOCUMENT_TYPE_OPTIONS.map((docType) => (
+                    <SelectItem key={docType} value={docType}>{docType}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <p className="text-[11px] text-muted-foreground mb-1">Shared docs</p>
+              <Button
+                type="button"
+                variant={includeSharedDocuments ? "default" : "outline"}
+                size="sm"
+                className="h-9 w-full"
+                onClick={() => setIncludeSharedDocuments((prev) => !prev)}
+              >
+                {includeSharedDocuments ? "Included" : "Excluded"}
+              </Button>
+            </div>
+          </div>
+          <div className="max-w-3xl mx-auto mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span className="font-medium">Conversation scope:</span>
+            <Badge variant="outline" className="text-[11px] px-2 py-0 h-5">
+              {selectedWorkspace}
+            </Badge>
+            {selectedDocumentType !== "all" && (
+              <Badge variant="outline" className="text-[11px] px-2 py-0 h-5">
+                {selectedDocumentType}
+              </Badge>
+            )}
+            {conversationId && (
+              <Button
+                type="button"
+                variant={scopeIsDirty ? "default" : "outline"}
+                size="sm"
+                className="h-6 text-[11px] px-2 py-0"
+                disabled={!scopeIsDirty}
+                onClick={() => {
+                  void persistConversationScope();
+                }}
+              >
+                Save scope
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
@@ -484,27 +1277,49 @@ export default function ChatPage() {
 
                     {/* Citations — clickable (US-2.3) */}
                     {message.citations && message.citations.length > 0 && (
-                      <div className="space-y-2 w-full">
-                        <p className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">Sources:</p>
-                        {message.citations.map((cite: Citation) => (
-                          <button
-                            key={cite.id}
-                            className="w-full text-left rounded-lg bg-card border border-border hover:border-primary/50 hover:bg-primary/5 p-3 text-xs transition-all"
-                            style={{ borderLeft: "3px solid rgba(245,158,11,0.7)" }}
-                            onClick={() => setActiveCite(cite)}
-                          >
-                            <div className="flex items-start gap-2 mb-1">
-                              <FileText className="h-3 w-3 text-primary shrink-0 mt-0.5" />
-                              <span className="font-semibold text-foreground flex-1">{cite.documentTitle}</span>
-                              <Badge variant="outline" className="ml-auto text-xs shrink-0 px-1.5 py-0 text-primary border-primary/30">
-                                p.{cite.pageNumber}
-                              </Badge>
-                            </div>
-                            <p className="text-muted-foreground pl-5 mb-1">{cite.sectionHeading}</p>
-                            <p className="text-muted-foreground/75 italic pl-5 line-clamp-2">&quot;{cite.excerpt}&quot;</p>
-                            <p className="text-primary/70 text-xs pl-5 mt-1.5">Click to view source →</p>
-                          </button>
-                        ))}
+                      <div className="w-full">
+                        <button
+                          onClick={() => toggleCites(message.id)}
+                          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <ChevronDown
+                            className={`h-3 w-3 transition-transform duration-150 ${expandedCites.has(message.id) ? "rotate-180" : ""}`}
+                          />
+                          <span>{message.citations.length} source{message.citations.length !== 1 ? "s" : ""}</span>
+                        </button>
+                        {expandedCites.has(message.id) && (
+                          <div className="flex flex-col gap-1 mt-1.5">
+                            {message.citations.map((cite: Citation) => (
+                              <button
+                                key={cite.id}
+                                className="w-full text-left rounded border border-border hover:border-primary/50 hover:bg-primary/5 px-2.5 py-1.5 text-xs transition-all"
+                                style={{ borderLeft: "3px solid rgba(245,158,11,0.7)" }}
+                                onClick={() => setActiveCite(cite)}
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <FileText className="h-3 w-3 text-primary shrink-0" />
+                                  <span className="font-medium text-foreground flex-1 truncate">{cite.documentTitle}</span>
+                                  {cite.workspace && (
+                                    <span className="text-[10px] text-muted-foreground border border-border rounded px-1 py-0.5 shrink-0 leading-none">
+                                      {cite.workspace}
+                                    </span>
+                                  )}
+                                  {cite.documentType && (
+                                    <span className="text-[10px] text-muted-foreground border border-border rounded px-1 py-0.5 shrink-0 leading-none">
+                                      {cite.documentType}
+                                    </span>
+                                  )}
+                                  <Badge variant="outline" className="text-[10px] shrink-0 px-1 py-0 h-4 text-primary border-primary/30 leading-none">
+                                    p.{cite.pageNumber}
+                                  </Badge>
+                                </div>
+                                {cite.sectionHeading && (
+                                  <p className="text-[11px] text-muted-foreground/70 pl-[18px] mt-0.5 truncate">{cite.sectionHeading}</p>
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -580,6 +1395,7 @@ export default function ChatPage() {
               Responses generated from approved facility documents only · Press Enter to send
             </p>
           </form>
+        </div>
         </div>
       </div>
 

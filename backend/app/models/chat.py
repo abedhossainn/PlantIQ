@@ -13,6 +13,9 @@ class Citation(BaseModel):
     document_title: str
     section_heading: Optional[str] = None
     page_number: Optional[int] = None
+    workspace: Optional[str] = None
+    system: Optional[str] = None
+    document_type: Optional[str] = None
     excerpt: str = Field(..., max_length=500)
     relevance_score: float = Field(..., ge=0.0, le=1.0)
 
@@ -21,8 +24,12 @@ class ChatQueryRequest(BaseModel):
     """Request body for chat query."""
     query: str = Field(..., min_length=1, max_length=2000)
     conversation_id: Optional[UUID4] = None
+    workspace: Optional[str] = Field(default=None, max_length=120)
     document_filters: Optional[List[UUID4]] = None  # Filter by specific documents
     system_filters: Optional[List[str]] = None  # Filter by system type
+    document_type_filters: Optional[List[str]] = None  # Hard filter by document types
+    preferred_document_types: Optional[List[str]] = None  # Soft weighting preference
+    include_shared_documents: Optional[bool] = None
     stream: bool = Field(default=False)
 
 

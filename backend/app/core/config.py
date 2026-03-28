@@ -73,6 +73,10 @@ class Settings(BaseSettings):
         default=7200,  # 2 hours
         validation_alias="PIPELINE_TIMEOUT_SECONDS"
     )
+    PIPELINE_STALLED_GRACE_SECONDS: int = Field(
+        default=300,
+        validation_alias="PIPELINE_STALLED_GRACE_SECONDS",
+    )
     
     # File Storage
     UPLOAD_DIR: str = Field(default=str(REPO_ROOT / "data" / "raw"), validation_alias="UPLOAD_DIR")
@@ -147,6 +151,20 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = Field(default=5, validation_alias="RAG_TOP_K")
     RAG_SCORE_THRESHOLD: float = Field(default=0.7, validation_alias="RAG_SCORE_THRESHOLD")
     RAG_MAX_CONTEXT_LENGTH: int = Field(default=8000, validation_alias="RAG_MAX_CONTEXT_LENGTH")
+
+    # Chat workspace and retrieval policy
+    CHAT_INCLUDE_SHARED_DEFAULT: bool = Field(default=True, validation_alias="CHAT_INCLUDE_SHARED_DEFAULT")
+    CHAT_ALLOW_WORKSPACE_FALLBACK_TO_SHARED: bool = Field(
+        default=True,
+        validation_alias="CHAT_ALLOW_WORKSPACE_FALLBACK_TO_SHARED",
+    )
+    CHAT_CANONICAL_WORKSPACES: str = Field(
+        default=(
+            "Power Block,Pre Treatment,Liquefaction,OSBL (Outside Battery Limits),"
+            "Maintenance,Instrumentation,DCS (Distributed Control System),Electrical,Mechanical"
+        ),
+        validation_alias="CHAT_CANONICAL_WORKSPACES",
+    )
     
     # WebSocket
     WS_HEARTBEAT_INTERVAL: int = Field(default=30, validation_alias="WS_HEARTBEAT_INTERVAL")
@@ -202,6 +220,12 @@ settings = Settings()
 def get_settings() -> Settings:
     """Get application settings."""
     return settings
+
+
+def get_canonical_workspaces() -> list[str]:
+    """Return configured canonical workspace names in declaration order."""
+    raw_value = settings.CHAT_CANONICAL_WORKSPACES
+    return [item.strip() for item in raw_value.split(",") if item and item.strip()]
 
 
 def get_upload_path(filename: str) -> Path:

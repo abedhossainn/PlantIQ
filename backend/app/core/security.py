@@ -14,6 +14,8 @@ AUTH_DISABLED_USER_ID = uuid.UUID(
     os.getenv("AUTH_DISABLED_USER_ID", "00000000-0000-0000-0000-000000000001")
 )
 AUTH_DISABLED_USER_ROLE = os.getenv("AUTH_DISABLED_USER_ROLE", "admin")
+if AUTH_DISABLED_USER_ROLE not in {"admin", "user"}:
+    AUTH_DISABLED_USER_ROLE = "user"
 
 security = HTTPBearer(auto_error=False)
 
@@ -25,11 +27,15 @@ def _get_jwt_manager():
 
 
 def _get_auth_disabled_payload() -> dict:
+    scope = ["chat.read"]
+    if AUTH_DISABLED_USER_ROLE == "admin":
+        scope.extend(["docs.review", "docs.upload", "admin.manage"])
+
     return {
         "sub": str(AUTH_DISABLED_USER_ID),
         "role": AUTH_DISABLED_USER_ROLE,
         "email": "auth-disabled@plantiq.local",
-        "scope": ["chat.read", "docs.review", "docs.upload", "admin.manage"],
+        "scope": scope,
     }
 
 
@@ -203,44 +209,6 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         )
 
 
-def require_reviewer_or_admin(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
-    """
-    Require reviewer or admin role.
-    
-    Usage:
-        @app.get("/review")
-        async def review_endpoint(role: str = Depends(require_reviewer_or_admin)):
-            ...
-    """
-    if AUTH_DISABLED:
-        return AUTH_DISABLED_USER_ROLE
-
-    try:
-        if credentials is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not authenticated",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        token = credentials.credentials
-        payload = _get_jwt_manager().verify_token(token)
-        role = payload["role"]
-        
-        if role not in ["reviewer", "admin"]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Reviewer or admin access required",
-            )
-        
-        return role
-    except InvalidTokenError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication credentials: {str(e)}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-
 async def get_token_payload(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> dict:
@@ -300,6 +268,8 @@ async def verify_ws_token(token: Optional[str]) -> Optional[tuple[uuid.UUID, str
         payload = _get_jwt_manager().verify_token(token)
         user_id = uuid.UUID(payload.get("sub"))
         role = payload.get("role", "user")
+        if role not in {"admin", "user"}:
+            role = "user"
         return (user_id, role)
     except (InvalidTokenError, ValueError):
         return None

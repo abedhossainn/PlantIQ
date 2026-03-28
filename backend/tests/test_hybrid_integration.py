@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -83,14 +84,43 @@ class FakeAsyncSession:
                 return FakeResult((conversation["id"],))
             return FakeResult(None)
 
+        if "select workspace, document_type_filters, preferred_document_types, include_shared_documents" in sql:
+            conversation = self.conversations.get(str(params["conv_id"]))
+            if not conversation or conversation["user_id"] != str(params["user_id"]):
+                return FakeResult(None)
+            return FakeResult(
+                {
+                    "workspace": conversation.get("workspace"),
+                    "document_type_filters": conversation.get("document_type_filters"),
+                    "preferred_document_types": conversation.get("preferred_document_types"),
+                    "include_shared_documents": conversation.get("include_shared_documents"),
+                }
+            )
+
         if "insert into conversations" in sql:
             self.conversations[str(params["id"])] = {
                 "id": str(params["id"]),
                 "user_id": str(params["user_id"]),
                 "title": params["title"],
+                "workspace": params.get("workspace"),
+                "document_type_filters": params.get("document_type_filters"),
+                "preferred_document_types": params.get("preferred_document_types"),
+                "include_shared_documents": params.get("include_shared_documents"),
                 "created_at": datetime.now(timezone.utc),
                 "updated_at": datetime.now(timezone.utc),
             }
+            return FakeResult(None)
+
+        if "update conversations" in sql:
+            conversation = self.conversations.get(str(params["conv_id"]))
+            if not conversation or conversation["user_id"] != str(params["user_id"]):
+                return FakeResult(None)
+
+            conversation["workspace"] = params.get("workspace")
+            conversation["document_type_filters"] = params.get("document_type_filters")
+            conversation["preferred_document_types"] = params.get("preferred_document_types")
+            conversation["include_shared_documents"] = params.get("include_shared_documents")
+            conversation["updated_at"] = datetime.now(timezone.utc)
             return FakeResult(None)
 
         if "insert into chat_messages" in sql:
@@ -137,8 +167,17 @@ class FakeAsyncSession:
 
             if "status = 'extracting'" in sql:
                 document["status"] = "extracting"
+            elif "status = 'failed'" in sql:
+                document["status"] = "failed"
+                if "notes" in params:
+                    document["notes"] = params["notes"]
             else:
-                document["status"] = params.get("status") or params.get("new_status")
+                document["status"] = (
+                    params.get("status")
+                    or params.get("new_status")
+                    or params.get("failed_status")
+                    or document.get("status")
+                )
                 if "notes" in params:
                     document["notes"] = params["notes"]
                 if "qa_score" in params:
@@ -186,7 +225,11 @@ class FakeAsyncSession:
             document["updated_at"] = datetime.now(timezone.utc)
             return FakeResult(None)
 
-        if "select title, system, status, publication_status" in sql:
+        if "delete from documents where id = :doc_id" in sql:
+            self.documents.pop(str(params["doc_id"]), None)
+            return FakeResult(None)
+
+        if "select title, system, document_type, status, publication_status" in sql:
             document = self.documents.get(str(params["doc_id"]))
             if not document:
                 return FakeResult(None)
@@ -194,8 +237,21 @@ class FakeAsyncSession:
                 {
                     "title": document.get("title"),
                     "system": document.get("system"),
+                    "document_type": document.get("document_type"),
                     "status": document["status"],
                     "publication_status": document.get("publication_status"),
+                }
+            )
+
+        if "select title, file_path, status" in sql:
+            document = self.documents.get(str(params["doc_id"]))
+            if not document:
+                return FakeResult(None)
+            return FakeResult(
+                {
+                    "title": document.get("title"),
+                    "file_path": document.get("file_path"),
+                    "status": document.get("status"),
                 }
             )
 
@@ -397,6 +453,470 @@ def test_chat_query_returns_citations_and_persists_messages(client: TestClient, 
     assert [message["role"] for message in fake_db.chat_messages] == ["user", "assistant"]
 
 
+def test_chat_query_applies_workspace_and_document_type_filters(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**kwargs):
+        captured.update(kwargs)
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Liquefaction startup checklist.",
+                document_id=uuid.uuid4(),
+                document_title="Liquefaction SOP",
+                metadata={"page_number": 4, "document_type": "Procedure"},
+                score=0.9,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Use the liquefaction startup checklist and verify pre-treatment readiness."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "How do I start up liquefaction after pre-treatment checks?",
+            "workspace": "Liquefaction",
+            "document_type_filters": ["Procedure"],
+            "preferred_document_types": ["Procedure"],
+            "include_shared_documents": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["workspace_filter"] == "Liquefaction"
+    assert captured["document_type_filter"] == ["Procedure"]
+    assert captured["include_shared_documents"] is True
+
+
+def test_chat_query_document_type_preference_reorders_contexts(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    async def fake_embed_query(_query: str):
+        return [0.4, 0.5, 0.6]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="General operating note from manual.",
+                document_id=uuid.uuid4(),
+                document_title="Operations Manual",
+                metadata={"page_number": 10, "document_type": "Operating Manual"},
+                score=0.90,
+            ),
+            RAGContext(
+                chunk_id="chunk-2",
+                content="Procedure-specific startup sequence.",
+                document_id=uuid.uuid4(),
+                document_title="Startup Procedure",
+                metadata={"page_number": 11, "document_type": "Procedure"},
+                score=0.86,
+            ),
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Follow the startup procedure for deterministic sequencing."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "Give me startup sequencing guidance",
+            "preferred_document_types": ["Procedure"],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["citations"][0]["document_title"] == "Startup Procedure"
+
+
+def test_chat_query_normalizes_workspace_alias_before_search(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**kwargs):
+        captured.update(kwargs)
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="DCS alarm response playbook.",
+                document_id=uuid.uuid4(),
+                document_title="DCS Playbook",
+                metadata={"page_number": 2, "document_type": "Procedure"},
+                score=0.93,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Follow the DCS playbook alarm response checklist."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "How should I handle this DCS alarm?",
+            "workspace": "dcs",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["workspace_filter"] == "DCS (Distributed Control System)"
+
+
+def test_chat_query_persists_conversation_scope_metadata_on_create(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Liquefaction startup checklist.",
+                document_id=uuid.uuid4(),
+                document_title="Liquefaction SOP",
+                metadata={"page_number": 4, "document_type": "Procedure"},
+                score=0.9,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Use the liquefaction startup checklist."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "How do I start liquefaction?",
+            "workspace": "Liquefaction",
+            "document_type_filters": ["Procedure"],
+            "preferred_document_types": ["Procedure"],
+            "include_shared_documents": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(fake_db.conversations) == 1
+    saved_conversation = next(iter(fake_db.conversations.values()))
+    assert saved_conversation["workspace"] == "Liquefaction"
+    assert saved_conversation["document_type_filters"] == ["Procedure"]
+    assert saved_conversation["preferred_document_types"] == ["Procedure"]
+    assert saved_conversation["include_shared_documents"] is False
+    assert saved_conversation["title"] == "How do I start liquefaction?"
+
+
+def test_chat_query_truncates_generated_conversation_title_on_create(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Long-query guidance.",
+                document_id=uuid.uuid4(),
+                document_title="Long Query Guide",
+                metadata={"page_number": 1, "document_type": "Procedure"},
+                score=0.92,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Use the long-query guidance."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    long_query = (
+        "What is the detailed liquefaction startup sequence after pre-treatment is complete "
+        "and before refrigerant circulation begins under cold weather conditions?"
+    )
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={"query": long_query},
+    )
+
+    assert response.status_code == 200
+    saved_conversation = next(iter(fake_db.conversations.values()))
+    assert len(saved_conversation["title"]) <= 80
+    assert saved_conversation["title"].endswith("...")
+
+
+def test_chat_query_updates_existing_conversation_scope_metadata(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conversation_id = str(uuid.uuid4())
+    original_updated_at = datetime.now(timezone.utc)
+    fake_db.conversations[conversation_id] = {
+        "id": conversation_id,
+        "user_id": str(TEST_USER_ID),
+        "title": "Existing Conversation",
+        "workspace": "Power Block",
+        "document_type_filters": ["Operating Manual"],
+        "preferred_document_types": ["Operating Manual"],
+        "include_shared_documents": True,
+        "created_at": original_updated_at,
+        "updated_at": original_updated_at,
+    }
+
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Mechanical maintenance checklist.",
+                document_id=uuid.uuid4(),
+                document_title="Mechanical Maintenance Guide",
+                metadata={"page_number": 8, "document_type": "Maintenance Manual"},
+                score=0.91,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Use the mechanical maintenance checklist."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "conversation_id": conversation_id,
+            "query": "What maintenance checklist applies?",
+            "workspace": "Mechanical",
+            "document_type_filters": ["Maintenance Manual"],
+            "preferred_document_types": ["Maintenance Manual"],
+            "include_shared_documents": False,
+        },
+    )
+
+    assert response.status_code == 200
+    updated_conversation = fake_db.conversations[conversation_id]
+    assert updated_conversation["workspace"] == "Mechanical"
+    assert updated_conversation["document_type_filters"] == ["Maintenance Manual"]
+    assert updated_conversation["preferred_document_types"] == ["Maintenance Manual"]
+    assert updated_conversation["include_shared_documents"] is False
+    assert updated_conversation["updated_at"] >= original_updated_at
+
+
+def test_chat_query_uses_persisted_scope_when_request_scope_fields_omitted(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    conversation_id = str(uuid.uuid4())
+    fake_db.conversations[conversation_id] = {
+        "id": conversation_id,
+        "user_id": str(TEST_USER_ID),
+        "title": "Persisted Scope Conversation",
+        "workspace": "Liquefaction",
+        "document_type_filters": ["Procedure"],
+        "preferred_document_types": ["Procedure"],
+        "include_shared_documents": False,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+    captured: dict[str, Any] = {}
+
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**kwargs):
+        captured.update(kwargs)
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Persisted scope retrieval result.",
+                document_id=uuid.uuid4(),
+                document_title="Scope Guide",
+                metadata={"page_number": 5, "document_type": "Procedure"},
+                score=0.9,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Using persisted scope defaults for this conversation."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "conversation_id": conversation_id,
+            "query": "Continue this scoped conversation",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["workspace_filter"] == "Liquefaction"
+    assert captured["document_type_filter"] == ["Procedure"]
+    assert captured["include_shared_documents"] is False
+
+
+def test_chat_query_uses_config_default_for_include_shared_when_omitted(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**kwargs):
+        captured.update(kwargs)
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Shared safety bulletin for startup checks.",
+                document_id=uuid.uuid4(),
+                document_title="Shared Safety Bulletin",
+                metadata={"page_number": 1, "document_type": "Procedure", "workspace": "shared"},
+                score=0.88,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Use the shared safety bulletin checklist."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+    monkeypatch.setattr(chat_service_module.settings, "CHAT_INCLUDE_SHARED_DEFAULT", False)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "What shared safety checks apply?",
+            "workspace": "Liquefaction",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["include_shared_documents"] is False
+
+
+def test_chat_query_returns_503_when_llm_generation_unavailable(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2, 0.3]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="Procedure excerpt",
+                document_id=uuid.uuid4(),
+                document_title="Startup Procedure",
+                metadata={"page_number": 1, "document_type": "Procedure"},
+                score=0.91,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        raise chat_service_module.LLMConfigurationError(
+            "Configured Ollama model is not installed. Configured: 'Qwen/Qwen3-4B'."
+        )
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.LLMService, "generate", fake_generate)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={"query": "How do I start the train?"},
+    )
+
+    assert response.status_code == 503
+    assert "Chat generation unavailable" in response.json()["detail"]
+
+
+def test_chat_query_retries_same_scope_with_relaxed_threshold_when_initial_search_is_empty(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    search_calls: list[dict[str, Any]] = []
+
+    async def fake_embed_query(_query: str):
+        return [0.11, 0.22, 0.33]
+
+    async def fake_search_similar(**kwargs):
+        search_calls.append(dict(kwargs))
+        if len(search_calls) == 1:
+            return []
+        return [
+            RAGContext(
+                chunk_id="chunk-figure-1",
+                content="Figure 1 shows the process flow for the startup sequence.",
+                document_id=uuid.uuid4(),
+                document_title="Power Block Technical Standard",
+                metadata={"page_number": 3, "document_type": "Technical Standard"},
+                score=0.57,
+            )
+        ]
+
+    async def fake_generate(**_kwargs):
+        return "Figure 1 shows the process flow for startup sequencing and control boundaries."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
+    monkeypatch.setattr(chat_service_module.settings, "RAG_SCORE_THRESHOLD", 0.7)
+    monkeypatch.setattr(chat_service_module.settings, "CHAT_ALLOW_WORKSPACE_FALLBACK_TO_SHARED", False)
+
+    response = client.post(
+        "/api/v1/chat/query",
+        json={
+            "query": "can you explain figure 1?",
+            "workspace": "Power Block",
+            "document_type_filters": ["Technical Standard"],
+            "include_shared_documents": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Figure 1" in payload["content"]
+    assert payload["citations"][0]["document_title"] == "Power Block Technical Standard"
+    assert len(search_calls) == 2
+    assert search_calls[0]["score_threshold"] == pytest.approx(0.7)
+    assert search_calls[1]["score_threshold"] == pytest.approx(0.45)
+    assert search_calls[0]["workspace_filter"] == "Power Block"
+    assert search_calls[1]["workspace_filter"] == "Power Block"
+    assert search_calls[0]["include_shared_documents"] is False
+    assert search_calls[1]["include_shared_documents"] is False
+
+
 def test_chat_stream_emits_sse_tokens_and_done_marker(client: TestClient, fake_db: FakeAsyncSession, monkeypatch: pytest.MonkeyPatch):
     async def fake_embed_query(_query: str):
         return [0.1, 0.2]
@@ -460,6 +980,63 @@ def test_chat_stream_emits_sse_tokens_and_done_marker(client: TestClient, fake_d
         "done": True,
     }]
     assert fake_db.chat_messages[-1]["content"] == "Hello operator"
+
+
+def test_chat_stream_falls_back_to_non_stream_generation_when_stream_is_empty(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_embed_query(_query: str):
+        return [0.1, 0.2]
+
+    async def fake_search_similar(**_kwargs):
+        return [
+            RAGContext(
+                chunk_id="chunk-1",
+                content="LNG is cryogenic.",
+                document_id=uuid.uuid4(),
+                document_title="Operations Guide",
+                metadata={"page_number": 3},
+                score=0.91,
+            )
+        ]
+
+    async def fake_generate_stream(**_kwargs):
+        if False:  # pragma: no cover
+            yield ""
+
+    async def fake_generate(**_kwargs):
+        return "The boiling point of methane is -259.6°F."
+
+    monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
+    monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
+    monkeypatch.setattr(chat_service_module.LLMService, "generate_stream", fake_generate_stream)
+    monkeypatch.setattr(chat_service_module.LLMService, "generate", fake_generate)
+
+    with client.stream("POST", "/api/v1/chat/stream", json={"query": "What is methane boiling point?"}) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+
+    raw_events = [chunk for chunk in body.split("\n\n") if chunk.strip()]
+    parsed_events = []
+    for raw_event in raw_events:
+        event_name = None
+        payload = None
+        for line in raw_event.splitlines():
+            if line.startswith("event: "):
+                event_name = line[7:]
+            elif line.startswith("data: "):
+                payload = json.loads(line[6:])
+        if event_name and payload:
+            parsed_events.append((event_name, payload))
+
+    token_events = [payload for event_name, payload in parsed_events if event_name == "token"]
+    assert token_events
+    assert token_events[-1]["token"] == "The boiling point of methane is -259.6°F."
+    assert fake_db.chat_messages[-1]["content"] == "The boiling point of methane is -259.6°F."
+    assert parsed_events[-1][0] == "complete"
 
 
 def test_chat_stream_emits_structured_error_event_on_generation_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -702,6 +1279,73 @@ def test_get_document_status_maps_progress_and_stage(client: TestClient, fake_db
     payload = response.json()
     assert payload["progress"] == 60
     assert payload["current_stage"] == "validation"
+
+
+def test_get_document_status_marks_stale_ingestion_without_live_process_as_failed(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    document_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    stale_updated_at = now.replace(year=max(2000, now.year - 1))
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "extracting",
+        "created_at": stale_updated_at,
+        "updated_at": stale_updated_at,
+        "notes": None,
+    }
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_STALLED_GRACE_SECONDS", 1)
+    monkeypatch.setattr(PipelineService, "_job_ids_by_document", {})
+    monkeypatch.setattr(PipelineService, "_active_processes", {})
+
+    response = client.get(f"/api/v1/documents/{document_id}/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "failed"
+    assert "stopped unexpectedly" in payload["error"]
+    assert fake_db.documents[document_id]["status"] == "failed"
+    assert "stopped unexpectedly" in str(fake_db.documents[document_id]["notes"])
+
+
+def test_list_documents_marks_stale_ingestion_without_live_process_as_failed(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stale_document_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    stale_updated_at = now.replace(year=max(2000, now.year - 1))
+    fake_db.documents[stale_document_id] = {
+        "id": stale_document_id,
+        "title": "Stale Upload",
+        "version": "1.0",
+        "system": "Power Block",
+        "document_type": "Technical Standard",
+        "status": "extracting",
+        "file_path": "/tmp/stale.pdf",
+        "uploaded_by": str(TEST_USER_ID),
+        "notes": None,
+        "uploaded_at": stale_updated_at,
+        "created_at": stale_updated_at,
+        "updated_at": stale_updated_at,
+    }
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_STALLED_GRACE_SECONDS", 1)
+    monkeypatch.setattr(PipelineService, "_job_ids_by_document", {})
+    monkeypatch.setattr(PipelineService, "_active_processes", {})
+
+    response = client.get("/api/v1/documents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    stale_row = next(item for item in payload if item["id"] == stale_document_id)
+    assert stale_row["status"] == "failed"
+    assert "stopped unexpectedly" in stale_row["notes"]
+    assert fake_db.documents[stale_document_id]["status"] == "failed"
 
 
 def test_document_pages_endpoint_generates_page_review_units_from_validation(
@@ -2281,9 +2925,107 @@ def test_status_and_list_documents_include_publication_fields(
     assert list_payload[0]["qdrantCollection"] == "plantig_documents"
 
 
+def test_delete_document_removes_db_vector_and_storage_artifacts(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    pdf_path = tmp_path / f"{document_id}_manual.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 delete test")
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    (work_dir / "sample_document_validation.json").write_text("{}", encoding="utf-8")
+
+    flat_manifest = tmp_path / "sample_document_manifest.json"
+    flat_manifest.write_text(
+        json.dumps({"document_name": "sample_document", "pdf_path": str(pdf_path)}),
+        encoding="utf-8",
+    )
+    flat_validation = tmp_path / "sample_document_validation.json"
+    flat_validation.write_text("{}", encoding="utf-8")
+    flat_review_dir = tmp_path / "sample_document_review"
+    flat_review_dir.mkdir()
+
+    legacy_dir = tmp_path / "legacy_artifacts" / document_id
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "qa_report.json").write_text("{}", encoding="utf-8")
+
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Cleanup Doc",
+        "status": "final-approved",
+        "file_path": str(pdf_path),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+    }
+
+    deleted_document_ids: list[str] = []
+
+    async def fake_delete_document_chunks(doc_id: str):
+        deleted_document_ids.append(doc_id)
+        return True
+
+    PipelineService._event_history[document_id] = [{"event": "complete"}]
+    PipelineService._job_ids_by_document[document_id] = "job-delete-1"
+    pipeline_api.OptimizationLogManager.start(document_id)
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {"timestamp": "2026-03-27T00:00:00Z", "level": "INFO", "message": "cleanup"},
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_api.settings, "ARTIFACTS_DIR", str(tmp_path / "legacy_artifacts"))
+    monkeypatch.setattr(pipeline_api.QdrantService, "delete_document_chunks", fake_delete_document_chunks)
+
+    response = client.delete(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["document_id"] == document_id
+    assert payload["qdrant_chunks_deleted"] is True
+    assert deleted_document_ids == [document_id]
+    assert document_id not in fake_db.documents
+    assert pdf_path.exists() is False
+    assert work_dir.exists() is False
+    assert flat_manifest.exists() is False
+    assert flat_validation.exists() is False
+    assert flat_review_dir.exists() is False
+    assert legacy_dir.exists() is False
+    assert document_id not in PipelineService._event_history
+    assert document_id not in PipelineService._job_ids_by_document
+    assert document_id not in pipeline_api.OptimizationLogManager._buffers
+
+
+@pytest.mark.parametrize("active_status", ["uploading", "extracting", "vlm-validating", "approved-for-optimization", "optimizing"])
+def test_delete_document_blocks_active_pipeline_statuses(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    active_status: str,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Active Doc",
+        "status": active_status,
+        "file_path": "/tmp/active.pdf",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+    }
+
+    response = client.delete(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 409
+    assert "still running" in response.json()["detail"]
+
+
 def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytest.MonkeyPatch):
     async def fake_verify_ws_token(token: str | None):
-        return (TEST_USER_ID, "reviewer") if token == "valid-token" else None
+        return (TEST_USER_ID, "admin") if token == "valid-token" else None
 
     async def fake_check_document_access(_document_id: str, _user_id, _user_role: str) -> bool:
         return True
@@ -2299,9 +3041,23 @@ def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytes
             assert websocket.receive_json() == {"type": "pong"}
 
 
+def test_pipeline_websocket_rejects_non_admin_users(monkeypatch: pytest.MonkeyPatch):
+    async def fake_verify_ws_token(token: str | None):
+        return (TEST_USER_ID, "user") if token == "valid-token" else None
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+
+    with TestClient(app) as test_client:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token"):
+                pass
+
+        assert exc_info.value.code == 403
+
+
 def test_chat_websocket_returns_not_implemented_for_query(monkeypatch: pytest.MonkeyPatch):
     async def fake_verify_ws_token(token: str | None):
-        return (TEST_USER_ID, "reviewer") if token == "valid-token" else None
+        return (TEST_USER_ID, "user") if token == "valid-token" else None
 
     async def fake_check_conversation_access(_conversation_id: str, _user_id) -> bool:
         return True
@@ -2671,6 +3427,51 @@ def test_qa_report_artifact_route_blocks_legacy_pre_review_fallback_after_optimi
 
     assert response.status_code == 409
     assert "Post-optimization QA report not found" in response.json()["detail"]
+
+
+def test_qa_report_artifact_route_auto_generates_report_when_missing_and_optimized_output_exists(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """Artifact download should lazily generate *_qa_report.json for post-optimization docs."""
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimization-complete",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(work_dir / "sample_document_validation.json", {
+        "document_name": "sample_document",
+        "overall_confidence": 0.96,
+        "page_validations": [{"page_number": 1, "issues": []}],
+    })
+    _write_json(work_dir / "sample_document_rag_optimized.json", {
+        "document_name": "sample_document",
+        "chunks": [
+            {
+                "heading": "What is LNG?",
+                "content": "## What is LNG?\n\n[Source: sample_document, Page 1]\n\nLNG is a cryogenic fuel.",
+            }
+        ],
+    })
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+
+    response = client.get(f"/api/v1/documents/{document_id}/artifacts/qa_report")
+
+    assert response.status_code == 200
+    report_payload = json.loads(response.content.decode("utf-8"))
+    assert report_payload["document_name"] == "sample_document"
+    assert "overall_confidence_score" in report_payload["metrics"]
+    assert fake_db.documents[document_id]["status"] == "qa-review"
+    assert (work_dir / "sample_document_qa_report.json").exists() is True
 
 
 def test_execute_optimization_stage_marks_document_failed_when_completed_artifacts_are_incomplete(

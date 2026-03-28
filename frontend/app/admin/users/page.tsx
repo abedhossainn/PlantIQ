@@ -7,12 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Users, UserPlus, Mail, Building2, Clock, ShieldCheck, User2, Eye } from "lucide-react";
+import { Users, UserPlus, Mail, Building2, Clock, ShieldCheck, User2 } from "lucide-react";
 import { mockUsers as fixtureUsers } from "@/lib/fixtures";
 import { RoleBadge } from "@/components/shared/RoleBadge";
 import type { User } from "@/types";
 
-type Role = "admin" | "reviewer" | "user";
+type Role = "admin" | "user";
 
 export default function UsersPage() {
   const [userList, setUserList] = useState<User[]>(fixtureUsers);
@@ -39,7 +39,6 @@ export default function UsersPage() {
   }, []);
 
   const admins = userList.filter((u) => u.role === "admin");
-  const reviewers = userList.filter((u) => u.role === "reviewer");
   const users = userList.filter((u) => u.role === "user");
 
   const totalActive = userList.filter((u) => u.status === "active").length;
@@ -97,10 +96,9 @@ export default function UsersPage() {
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-5xl mx-auto space-y-6">
             {/* Role distribution stats */}
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               {[
                 { label: "Admins", count: admins.length, color: "text-primary", bg: "bg-primary/10 border-primary/30", icon: <ShieldCheck className="h-5 w-5 text-primary" /> },
-                { label: "Reviewers", count: reviewers.length, color: "text-blue-400", bg: "bg-blue-400/10 border-blue-400/30", icon: <Eye className="h-5 w-5 text-blue-400" /> },
                 { label: "Users", count: users.length, color: "text-zinc-300", bg: "bg-zinc-400/10 border-zinc-400/30", icon: <User2 className="h-5 w-5 text-zinc-400" /> },
                 { label: "Active", count: totalActive, color: "text-green-400", bg: "bg-green-400/10 border-green-400/30", icon: <Users className="h-5 w-5 text-green-400" /> },
               ].map(({ label, count, color, bg, icon }) => (
@@ -174,9 +172,6 @@ export default function UsersPage() {
                           <SelectContent>
                             <SelectItem value="admin">
                               <span className="text-primary font-medium">Admin</span>
-                            </SelectItem>
-                            <SelectItem value="reviewer">
-                              <span className="text-blue-400 font-medium">Reviewer</span>
                             </SelectItem>
                             <SelectItem value="user">
                               <span className="text-zinc-300 font-medium">User</span>

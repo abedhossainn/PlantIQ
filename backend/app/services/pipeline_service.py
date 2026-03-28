@@ -143,6 +143,51 @@ class PipelineService:
         PipelineStatus.REJECTED.value: "rejected",
         PipelineStatus.FAILED.value: "failed",
     }
+
+    _active_ingestion_statuses = {
+        PipelineStatus.UPLOADING.value,
+        PipelineStatus.EXTRACTING.value,
+        PipelineStatus.VLM_VALIDATING.value,
+    }
+
+    @classmethod
+    def _document_has_live_process(cls, document_id: str) -> bool:
+        job_id = cls._job_ids_by_document.get(document_id)
+        if not job_id:
+            return False
+
+        process = cls._active_processes.get(job_id)
+        return process is not None and process.returncode is None
+
+    @classmethod
+    def _is_stale_ingestion_status(
+        cls,
+        *,
+        document_id: str,
+        status_value: str,
+        updated_at: Optional[datetime],
+    ) -> bool:
+        if status_value not in cls._active_ingestion_statuses:
+            return False
+
+        if cls._document_has_live_process(document_id):
+            return False
+
+        if updated_at is None:
+            return False
+
+        normalized_updated_at = updated_at
+        if isinstance(normalized_updated_at, str):
+            try:
+                normalized_updated_at = datetime.fromisoformat(normalized_updated_at)
+            except ValueError:
+                return False
+
+        if normalized_updated_at.tzinfo is None:
+            normalized_updated_at = normalized_updated_at.replace(tzinfo=timezone.utc)
+
+        age_seconds = (datetime.now(timezone.utc) - normalized_updated_at).total_seconds()
+        return age_seconds >= settings.PIPELINE_STALLED_GRACE_SECONDS
     
     @classmethod
     async def trigger_pipeline(
@@ -533,6 +578,52 @@ class PipelineService:
             qdrant_collection,
         ) = row
 
+        if cls._is_stale_ingestion_status(
+            document_id=document_id,
+            status_value=status,
+            updated_at=updated_at,
+        ):
+            from sqlalchemy import text
+
+            stale_error = (
+                "Ingestion appears to have stopped unexpectedly because no active "
+                "pipeline process is running. Please reprocess this document."
+            )
+
+            await db.execute(
+                text(
+                    """
+                    UPDATE documents
+                    SET status = :failed_status,
+                        notes = :notes,
+                        updated_at = NOW()
+                    WHERE id = :doc_id
+                    """
+                ),
+                {
+                    "doc_id": document_id,
+                    "failed_status": PipelineStatus.FAILED.value,
+                    "notes": stale_error,
+                },
+            )
+            await db.commit()
+
+            status = PipelineStatus.FAILED.value
+            notes = stale_error
+            updated_at = datetime.now(timezone.utc)
+
+            cls._publish_event(
+                document_id,
+                IngestionErrorEvent(
+                    document_id=document_id,
+                    job_id=cls._job_ids_by_document.get(document_id),
+                    stage="monitoring",
+                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                    message="Document ingestion stalled.",
+                    error=stale_error,
+                ),
+            )
+
         if status in {
             PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
             PipelineStatus.OPTIMIZING.value,
@@ -582,13 +673,6 @@ class PipelineService:
                         },
                     )
                     await db.commit()
-        
-        # Check if pipeline is active
-        is_active = status in [
-            PipelineStatus.UPLOADING.value,
-            PipelineStatus.EXTRACTING.value,
-            PipelineStatus.VLM_VALIDATING.value,
-        ]
         
         progress = cls._status_progress_map.get(status, 0)
         stage = cls._status_stage_map.get(status)
@@ -654,7 +738,15 @@ class PipelineService:
 
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=14.0)
+                except asyncio.TimeoutError:
+                    yield {
+                        "event": "ping",
+                        "document_id": document_id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    continue
                 yield event
                 if event.get("event") in {"complete", "error"}:
                     return

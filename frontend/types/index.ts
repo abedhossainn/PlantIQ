@@ -8,7 +8,7 @@ export interface User {
   username: string;
   email: string;
   fullName: string;
-  role: "admin" | "reviewer" | "user";
+  role: "admin" | "user";
   lastLogin: string | null;
   status: "active" | "disabled";
   department: string;
@@ -56,6 +56,9 @@ export interface Citation {
   documentTitle: string;
   sectionHeading: string;
   pageNumber: number;
+  workspace?: string;
+  system?: string;
+  documentType?: string;
   excerpt: string;
   relevanceScore: number;
 }
@@ -65,6 +68,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  workspace?: string;
   citations?: Citation[];
 }
 
@@ -72,6 +76,14 @@ export interface Conversation {
   id: string;
   userId: string;
   title: string;
+  isPinned?: boolean;
+  messageCount?: number;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  workspace?: string;
+  documentTypeFilters?: string[];
+  preferredDocumentTypes?: string[];
+  includeSharedDocuments?: boolean;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;

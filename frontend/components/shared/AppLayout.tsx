@@ -12,24 +12,30 @@ import {
   FileText,
   Upload,
   MessageSquare,
-  Bookmark,
   Users,
   LogOut,
   CheckCircle2,
-  AlertCircle,
-  BarChart3,
+  UserCircle,
 } from "lucide-react";
 
 interface AppLayoutProps {
   children: React.ReactNode;
+  /** Optional sidebar content rendered below the logo for non-admin users (e.g. conversation list). When provided the standard nav items are hidden. */
+  sidebarContent?: React.ReactNode;
 }
 
-export function AppLayout({ children }: AppLayoutProps) {
+export function AppLayout({ children, sidebarContent }: AppLayoutProps) {
   const { user, logout, isAuthenticated } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
   const viewParam = searchParams?.get("view") ?? "";
+
+  useEffect(() => {
+    if (!isAuthenticated && pathname !== "/login") {
+      router.replace("/login");
+    }
+  }, [isAuthenticated, pathname, router]);
 
   // RBAC route guard — prevent 'user' role from accessing admin pages (US-3.2)
   useEffect(() => {
@@ -52,11 +58,11 @@ export function AppLayout({ children }: AppLayoutProps) {
     return null;
   }
 
-  const isAdmin = user.role === "admin" || user.role === "reviewer";
+  const isAdmin = user.role === "admin";
 
   const handleLogout = () => {
     logout();
-    router.push("/login");
+    router.replace("/login");
   };
 
   const getInitials = (name: string) => {
@@ -76,22 +82,22 @@ export function AppLayout({ children }: AppLayoutProps) {
       active: pathname === "/admin/documents" && viewParam === "",
     },
     {
+      label: "Pending Documents",
+      icon: CheckCircle2,
+      href: "/admin/documents?view=pending-documents",
+      active: pathname === "/admin/documents" && viewParam === "pending-documents",
+    },
+    {
       label: "Upload Document",
       icon: Upload,
       href: "/admin/documents/upload",
       active: pathname === "/admin/documents/upload",
     },
     {
-      label: "Review Queue",
-      icon: CheckCircle2,
-      href: "/admin/documents?view=review-queue",
-      active: pathname === "/admin/documents" && viewParam === "review-queue",
-    },
-    {
-      label: "QA Gates",
-      icon: BarChart3,
-      href: "/admin/documents?view=qa-gates",
-      active: pathname === "/admin/documents" && viewParam === "qa-gates",
+      label: "Chat",
+      icon: MessageSquare,
+      href: "/chat",
+      active: pathname === "/chat",
     },
     {
       label: "Users",
@@ -107,12 +113,6 @@ export function AppLayout({ children }: AppLayoutProps) {
       icon: MessageSquare,
       href: "/chat",
       active: pathname === "/chat",
-    },
-    {
-      label: "Saved Answers",
-      icon: Bookmark,
-      href: "/chat/bookmarks",
-      active: pathname === "/chat/bookmarks",
     },
   ];
 
@@ -143,52 +143,68 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 p-4 space-y-2">
-          {navItems.map((item) => (
-            <Button
-              key={item.href + item.label}
-              variant={item.active ? "default" : "ghost"}
-              className={`w-full justify-start ${
-                item.active
-                  ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              }`}
-              onClick={() => router.push(item.href)}
-            >
-              <item.icon className="mr-2 h-4 w-4" />
-              {item.label}
-            </Button>
-          ))}
-        </nav>
+        {/* Sidebar main content:
+            - When sidebarContent is provided (user-role chat view): render it directly, taking up all remaining space.
+            - Otherwise: render the standard role-based navigation. */}
+        {sidebarContent ? (
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {sidebarContent}
+          </div>
+        ) : (
+          <nav className="flex-1 p-4 space-y-2">
+            {navItems.map((item) => (
+              <Button
+                key={item.href + item.label}
+                variant={item.active ? "default" : "ghost"}
+                className={`w-full justify-start ${
+                  item.active
+                    ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                }`}
+                onClick={() => router.push(item.href)}
+              >
+                <item.icon className="mr-2 h-4 w-4" />
+                {item.label}
+              </Button>
+            ))}
+          </nav>
+        )}
 
         <Separator className="bg-sidebar-border" />
 
-        {/* User Profile */}
-        <div className="p-4 pb-8">
-          <div className="flex items-center gap-3 mb-3">
-            <Avatar className="h-10 w-10 border-2 border-primary">
-              <AvatarFallback className="bg-primary text-primary-foreground text-sm font-medium">
-                {getInitials(user.fullName)}
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-sidebar-foreground truncate">
-                {user.fullName}
-              </p>
-              <RoleBadge role={user.role} className="text-xs" />
-            </div>
+        {/* User Profile — only shown for admin role; user role has profile in header */}
+        {isAdmin && (
+          <div className="p-4 pb-8">
+            <button
+              type="button"
+              className="w-full flex items-center gap-3 mb-3 rounded-lg p-2 -mx-2 hover:bg-sidebar-accent transition-colors text-left"
+              onClick={() => router.push("/profile")}
+              aria-label="View your profile"
+            >
+              <Avatar className="h-10 w-10 border-2 border-primary shrink-0">
+                <AvatarFallback className="bg-primary text-primary-foreground text-sm font-medium">
+                  {getInitials(user.fullName)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-sidebar-foreground truncate">
+                  {user.fullName}
+                </p>
+                <RoleBadge role={user.role} className="text-xs" />
+              </div>
+              <UserCircle className="h-4 w-4 text-sidebar-foreground/50 shrink-0" />
+            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent"
+              onClick={handleLogout}
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Sign Out
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-sidebar-foreground hover:bg-sidebar-accent"
-            onClick={handleLogout}
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            Sign Out
-          </Button>
-        </div>
+        )}
       </div>
 
       {/* Main Content */}

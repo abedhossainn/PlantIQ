@@ -30,7 +30,7 @@ interface BackendUserInfo {
   username: string;
   email: string;
   full_name: string;
-  role: "admin" | "reviewer" | "user";
+  role: "admin" | "user";
   department?: string | null;
   scope: string[];
 }
@@ -54,7 +54,6 @@ interface AuthContextType {
   logout: () => void;
   isAuthenticated: boolean;
   isAdmin: boolean;
-  isReviewer: boolean;
   isUser: boolean;
 }
 
@@ -66,28 +65,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Load user from localStorage on mount
   useEffect(() => {
+    const storedUser = localStorage.getItem(AUTH_STORAGE_KEY) ?? localStorage.getItem("mockUser");
+    const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
+
     if (AUTH_DISABLED) {
-      const authenticatedUser = {
-        ...AUTH_DISABLED_USER,
-        lastLogin: new Date().toISOString(),
-      };
-      setUser(authenticatedUser);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
-      localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
-      // Store the dev JWT so PostgREST can identify the user via plantig_uid().
-      // NEXT_PUBLIC_DEV_JWT is a pre-signed HS256 token for the auth-disabled admin,
-      // verified by PostgREST using PGRST_JWT_SECRET.
-      if (process.env.NEXT_PUBLIC_DEV_JWT) {
-        localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+          if (!storedToken && process.env.NEXT_PUBLIC_DEV_JWT) {
+            localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
+          }
+        } catch (e) {
+          console.error("Failed to parse stored user", e);
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          localStorage.removeItem("mockUser");
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+        }
       } else {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        localStorage.removeItem("mockUser");
         localStorage.removeItem(TOKEN_STORAGE_KEY);
       }
+
       setIsLoading(false);
       return;
     }
-
-    const storedUser = localStorage.getItem(AUTH_STORAGE_KEY) ?? localStorage.getItem("mockUser");
-    const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
 
     if (storedUser && storedToken) {
       try {
@@ -109,9 +111,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     if (AUTH_DISABLED) {
+      // In dev mode, allow role selection by username: "user" → user role, "admin" → admin role
+      const inputUsername = username || AUTH_DISABLED_USER.username;
+      const inputRole: "admin" | "user" = (
+        inputUsername.toLowerCase() === "user" ||
+        inputUsername.toLowerCase() === "user@plantiq.local"
+      ) ? "user" : "admin";
+
       const authenticatedUser = {
         ...AUTH_DISABLED_USER,
-        username: username || AUTH_DISABLED_USER.username,
+        username: inputUsername,
+        role: inputRole,
         lastLogin: new Date().toISOString(),
       };
       setUser(authenticatedUser);
@@ -176,18 +186,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
-    if (AUTH_DISABLED) {
-      const authenticatedUser = {
-        ...AUTH_DISABLED_USER,
-        lastLogin: new Date().toISOString(),
-      };
-      setUser(authenticatedUser);
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authenticatedUser));
-      localStorage.setItem("mockUser", JSON.stringify(authenticatedUser));
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
-      return;
-    }
-
     setUser(null);
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem("mockUser");
@@ -200,7 +198,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     logout,
     isAuthenticated: !!user,
     isAdmin: user?.role === "admin",
-    isReviewer: user?.role === "reviewer",
     isUser: user?.role === "user",
   };
 

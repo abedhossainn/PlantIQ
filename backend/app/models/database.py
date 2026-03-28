@@ -67,7 +67,6 @@ async def _db_session(
                 # Map JWT role to PostgreSQL role
                 role_map = {
                     "admin": "plantig_admin",
-                    "reviewer": "plantig_reviewer",
                     "user": "plantig_user",
                 }
                 db_role = role_map.get(role, "plantig_user")

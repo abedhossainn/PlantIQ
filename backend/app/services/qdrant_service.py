@@ -63,6 +63,9 @@ class QdrantService:
         score_threshold: Optional[float] = None,
         document_filter: Optional[List[str]] = None,
         system_filter: Optional[List[str]] = None,
+        document_type_filter: Optional[List[str]] = None,
+        workspace_filter: Optional[str] = None,
+        include_shared_documents: bool = True,
     ) -> List[RAGContext]:
         """
         Search for similar document chunks.
@@ -73,6 +76,9 @@ class QdrantService:
             score_threshold: Minimum similarity score
             document_filter: Filter by document IDs
             system_filter: Filter by system types
+            document_type_filter: Filter by document types
+            workspace_filter: Default workspace scope (usually system/area)
+            include_shared_documents: Whether to include globally shared docs
             
         Returns:
             List of retrieved contexts with metadata
@@ -86,6 +92,23 @@ class QdrantService:
         
         # Build filter conditions
         filter_conditions = []
+        workspace_conditions = []
+
+        def _clean_values(values: Optional[List[str]]) -> List[str]:
+            return [value.strip() for value in (values or []) if value and value.strip()]
+
+        def _workspace_aliases(value: str) -> List[str]:
+            trimmed = value.strip()
+            if not trimmed:
+                return []
+            variants = {
+                trimmed,
+                trimmed.lower(),
+                trimmed.upper(),
+                trimmed.title(),
+            }
+            return [variant for variant in variants if variant]
+
         if document_filter:
             filter_conditions.append(
                 models.FieldCondition(
@@ -100,11 +123,51 @@ class QdrantService:
                     match=models.MatchAny(any=system_filter)
                 )
             )
+        if document_type_filter:
+            normalized_document_types = _clean_values(document_type_filter)
+            if normalized_document_types:
+                filter_conditions.append(
+                    models.FieldCondition(
+                        key="document_type",
+                        match=models.MatchAny(any=normalized_document_types)
+                    )
+                )
+
+        if workspace_filter and workspace_filter.strip():
+            workspace_aliases = _workspace_aliases(workspace_filter)
+            if workspace_aliases:
+                workspace_conditions.extend(
+                    [
+                        models.FieldCondition(
+                            key="workspace",
+                            match=models.MatchAny(any=workspace_aliases)
+                        ),
+                        models.FieldCondition(
+                            key="system",
+                            match=models.MatchAny(any=workspace_aliases)
+                        ),
+                    ]
+                )
+
+            if include_shared_documents:
+                workspace_conditions.extend(
+                    [
+                        models.FieldCondition(
+                            key="is_shared",
+                            match=models.MatchValue(value=True)
+                        ),
+                        models.FieldCondition(
+                            key="workspace",
+                            match=models.MatchAny(any=["shared", "global", "cross-functional"])
+                        ),
+                    ]
+                )
         
         query_filter = None
-        if filter_conditions:
+        if filter_conditions or workspace_conditions:
             query_filter = models.Filter(
-                must=filter_conditions
+                must=filter_conditions or None,
+                should=workspace_conditions or None,
             )
         
         try:

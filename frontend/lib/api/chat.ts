@@ -22,6 +22,9 @@ export interface Citation {
   document_title: string;
   section_heading?: string;
   page_number?: number;
+  workspace?: string;
+  system?: string;
+  document_type?: string;
   excerpt: string;
   relevance_score: number;
 }
@@ -29,8 +32,12 @@ export interface Citation {
 export interface ChatQueryRequest {
   query: string;
   conversation_id?: string;
+  workspace?: string;
   document_filters?: string[];
   system_filters?: string[];
+  document_type_filters?: string[];
+  preferred_document_types?: string[];
+  include_shared_documents?: boolean;
   stream?: boolean;
 }
 

@@ -201,7 +201,9 @@ export class PostgRESTQuery<T> {
   }
   
   order(column: string, direction: 'asc' | 'desc' = 'asc'): this {
-    this.params.order = `${column}.${direction}`;
+    this.params.order = this.params.order
+      ? `${this.params.order},${column}.${direction}`
+      : `${column}.${direction}`;
     return this;
   }
   

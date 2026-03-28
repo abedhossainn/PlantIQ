@@ -33,6 +33,7 @@ services:
       - LLM_PORT=11434
       - LLM_TIMEOUT=120
       - LLM_BACKEND=ollama
+      - TEXT_MODEL_ID=${TEXT_MODEL_ID:-qwen3:4b}
       - LLM_UNLOAD_AFTER_REQUEST=${LLM_UNLOAD_AFTER_REQUEST:-false}
       - LLM_DEMAND_HEARTBEAT_FILE=${LLM_DEMAND_HEARTBEAT_FILE:-/workspace/data/artifacts/runtime/llm_last_used}
       - LLM_STARTUP_WAIT_SECONDS=${LLM_STARTUP_WAIT_SECONDS:-45}
@@ -163,6 +164,19 @@ services:
       # NVIDIA_DRIVER_CAPABILITIES declares needed driver subsystems.
       - NVIDIA_VISIBLE_DEVICES=${DOCLING_GPU_DEVICE_ID:-1}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Docling runtime tuning: force the single visible accelerator, limit model
+      # fan-out, and use moderate batch sizes that fit comfortably on a 24 GB GPU
+      # without driving avoidable CPU churn or duplicate model residency.
+      - DOCLING_DEVICE=${DOCLING_DEVICE:-cuda:0}
+      - DOCLING_NUM_THREADS=${DOCLING_NUM_THREADS:-4}
+      - DOCLING_PERF_PAGE_BATCH_SIZE=${DOCLING_PERF_PAGE_BATCH_SIZE:-8}
+      - DOCLING_PERF_ELEMENTS_BATCH_SIZE=${DOCLING_PERF_ELEMENTS_BATCH_SIZE:-16}
+      - DOCLING_SERVE_ENG_LOC_NUM_WORKERS=${DOCLING_SERVE_ENG_LOC_NUM_WORKERS:-1}
+      - DOCLING_SERVE_ENG_LOC_SHARE_MODELS=${DOCLING_SERVE_ENG_LOC_SHARE_MODELS:-true}
+      - DOCLING_SERVE_OPTIONS_CACHE_SIZE=${DOCLING_SERVE_OPTIONS_CACHE_SIZE:-1}
+      - DOCLING_SERVE_OCR_BATCH_SIZE=${DOCLING_SERVE_OCR_BATCH_SIZE:-16}
+      - DOCLING_SERVE_LAYOUT_BATCH_SIZE=${DOCLING_SERVE_LAYOUT_BATCH_SIZE:-16}
+      - DOCLING_SERVE_TABLE_BATCH_SIZE=${DOCLING_SERVE_TABLE_BATCH_SIZE:-4}
     volumes:
       - docling_models:/opt/app-root/src/.cache/docling/models
       - ${HOME:-/home/cpdcs}/.cache/huggingface:/opt/app-root/src/.cache/huggingface

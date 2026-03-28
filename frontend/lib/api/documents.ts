@@ -4,8 +4,15 @@
  */
 
 import { fastapiFetch, getFastApiBaseUrl } from './client';
-import type { Document, DocumentPagesResponse } from '@/types';
-import { isQAQueueStatus, isReviewQueueStatus } from '@/lib/document-status';
+import type { Document, DocumentPagesResponse } from '../../types';
+import { isQAQueueStatus, isReviewQueueStatus } from '../document-status';
+
+export interface DocumentDeleteResponse {
+  document_id: string;
+  qdrant_chunks_deleted: boolean;
+  deleted_paths: string[];
+  message: string;
+}
 
 
 /**
@@ -89,6 +96,22 @@ export async function getQAGateDocuments(): Promise<Document[]> {
 }
 
 /**
+ * Get only final-approved documents.
+ */
+export async function getFinalApprovedDocuments(): Promise<Document[]> {
+  const all = await getDocuments();
+  return all.filter((d) => d.status === "final-approved");
+}
+
+/**
+ * Get all pending documents (every status except final-approved).
+ */
+export async function getPendingDocuments(): Promise<Document[]> {
+  const all = await getDocuments();
+  return all.filter((d) => d.status !== "final-approved");
+}
+
+/**
  * Get single document by ID — looks it up from the full list.
  */
 export async function getDocumentById(id: string): Promise<Document> {
@@ -104,6 +127,15 @@ export async function getDocumentById(id: string): Promise<Document> {
  */
 export async function getDocumentPages(documentId: string): Promise<DocumentPagesResponse> {
   return fastapiFetch<DocumentPagesResponse>(`/api/v1/documents/${documentId}/pages`);
+}
+
+/**
+ * Permanently delete a document and all associated backend artifacts.
+ */
+export async function deleteDocument(documentId: string): Promise<DocumentDeleteResponse> {
+  return fastapiFetch<DocumentDeleteResponse>(`/api/v1/documents/${documentId}`, {
+    method: 'DELETE',
+  });
 }
 
 /**

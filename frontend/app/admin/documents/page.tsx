@@ -9,10 +9,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Card } from "@/components/ui/card";
 import {
   Upload, FileText, CheckCircle2, XCircle, Clock, Loader2, AlertCircle,
-  ChevronRight, FileClock, BarChart3, ShieldCheck
+  ChevronRight, FileClock, BarChart3, ShieldCheck, Trash2
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getDocuments, getReviewQueueDocuments, getQAGateDocuments } from "@/lib/api";
+import { ApiError, deleteDocument, getFinalApprovedDocuments, getPendingDocuments } from "@/lib/api";
 import type { Document } from "@/types";
 import { isQAQueueStatus } from "@/lib/document-status";
 
@@ -119,6 +119,7 @@ function DocumentsContent() {
   const [docs, setDocs] = useState<Document[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null);
 
   // Fetch documents based on view
   useEffect(() => {
@@ -127,12 +128,10 @@ function DocumentsContent() {
       setError(null);
       try {
         let documents: Document[];
-        if (view === "review-queue") {
-          documents = await getReviewQueueDocuments();
-        } else if (view === "qa-gates") {
-          documents = await getQAGateDocuments();
+        if (view === "pending-documents") {
+          documents = await getPendingDocuments();
         } else {
-          documents = await getDocuments();
+          documents = await getFinalApprovedDocuments();
         }
         setDocs(documents);
       } catch (err) {
@@ -148,21 +147,43 @@ function DocumentsContent() {
 
   // Page title/description based on view
   const pageTitle =
-    view === "review-queue" ? "Review Queue"
-    : view === "qa-gates" ? "QA Gates"
-    : "Document Pipeline";
+    view === "pending-documents" ? "Pending Documents" : "Final Approved Documents";
 
   const pageDesc =
-    view === "review-queue"
-      ? "Documents awaiting or currently under engineering review"
-      : view === "qa-gates"
-      ? "Documents ready for quality gate assessment"
-      : "VLM validation → engineering review → QA gates → RAG approval";
+    view === "pending-documents"
+      ? "All documents not yet in final-approved status"
+      : "Only final-approved documents available for production use";
 
   function handleAction(doc: Document) {
     const cfg = STATUS_CONFIG[doc.status];
     if (cfg?.action) {
       router.push(`/admin/documents/${doc.id}/${cfg.action}`);
+    }
+  }
+
+  async function handleDelete(doc: Document) {
+    const confirmed = window.confirm(
+      `Delete "${doc.title}" permanently? This removes the document from the database, vector storage, and generated artifacts.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingDocId(doc.id);
+    setError(null);
+
+    try {
+      await deleteDocument(doc.id);
+      setDocs((currentDocs) => currentDocs.filter((currentDoc) => currentDoc.id !== doc.id));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError(`Cannot delete "${doc.title}" while processing is still running.`);
+      } else {
+        setError(err instanceof Error ? err.message : `Failed to delete "${doc.title}"`);
+      }
+    } finally {
+      setDeletingDocId(null);
     }
   }
 
@@ -266,8 +287,8 @@ function DocumentsContent() {
                     <TableHead className="font-semibold text-foreground">Status</TableHead>
                     <TableHead className="font-semibold text-foreground text-center">Pages</TableHead>
                     <TableHead className="font-semibold text-foreground">Progress / Score</TableHead>
-                    <TableHead className="font-semibold text-foreground">Uploaded</TableHead>
-                    <TableHead className="font-semibold text-foreground text-right">Action</TableHead>
+                    <TableHead className="font-semibold text-foreground">Uploaded Date</TableHead>
+                    <TableHead className="font-semibold text-foreground text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -336,27 +357,40 @@ function DocumentsContent() {
                         </TableCell>
 
                         <TableCell className="py-4">
-                          <div>
-                            <p className="text-xs font-medium">{doc.uploadedBy}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {new Date(doc.uploadedAt).toLocaleDateString()}
-                            </p>
-                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {new Date(doc.uploadedAt).toLocaleDateString()}
+                          </p>
                         </TableCell>
 
                         <TableCell className="py-4 text-right">
-                          {cfg.action ? (
+                          <div className="flex items-center justify-end gap-2">
+                            {cfg.action ? (
+                              <Button
+                                size="sm"
+                                className="gap-1.5 text-xs font-semibold h-8"
+                                onClick={() => handleAction(doc)}
+                              >
+                                {cfg.actionLabel}
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </Button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground px-1">{cfg.actionLabel}</span>
+                            )}
                             <Button
                               size="sm"
+                              variant="destructive"
                               className="gap-1.5 text-xs font-semibold h-8"
-                              onClick={() => handleAction(doc)}
+                              onClick={() => handleDelete(doc)}
+                              disabled={deletingDocId === doc.id}
                             >
-                              {cfg.actionLabel}
-                              <ChevronRight className="h-3.5 w-3.5" />
+                              {deletingDocId === doc.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-3.5 w-3.5" />
+                              )}
+                              Delete
                             </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground px-1">{cfg.actionLabel}</span>
-                          )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -367,13 +401,11 @@ function DocumentsContent() {
                 <div className="text-center py-16 text-muted-foreground">
                   <FileText className="h-12 w-12 mx-auto mb-3 opacity-30" />
                   <p className="text-sm">
-                    {view === "review-queue"
-                      ? "No documents currently in the review queue"
-                      : view === "qa-gates"
-                      ? "No documents ready for QA gate assessment"
-                      : "No documents in the pipeline yet"}
+                    {view === "pending-documents"
+                      ? "No pending documents at the moment"
+                      : "No final-approved documents yet"}
                   </p>
-                  {!view && (
+                  {view !== "pending-documents" && (
                     <Button className="mt-4 gap-2" onClick={() => router.push("/admin/documents/upload")}>
                       <Upload className="h-4 w-4" />
                       Upload First Document
