@@ -16,8 +16,8 @@
   - bounded error behavior under load
 
 ## Current Alpha Evidence State
-- Protocol and harness are defined.
-- Final controlled-load run report remains pending and will be attached as measured evidence in a subsequent update.
+- **No measured results exist at Alpha.** Test harness and protocol are defined but no controlled-load run has been executed.
+- This is a **Beta-targeted deliverable**. Results will be attached once the load run is completed in the next phase.
 
 ## Reviewer Access Note
-- This file documents the exact load-measurement method and acceptance framing in a tracked repository location for reviewer auditability.
+- This file documents the planned measurement method and acceptance framing only. Reviewers should not expect numeric results here at Alpha — see Section 12 of the checkpoint report for the formal deferral record.
