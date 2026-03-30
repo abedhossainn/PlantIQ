@@ -1,11 +1,18 @@
 /**
  * Base API Client for PostgREST and FastAPI
- * Handles JWT authentication, error handling, and request/response formatting
+ *
+ * Architecture:
+ * - Centralizes HTTP request handling for PostgREST and FastAPI.
+ * - Manages JWT token retrieval and Authorization header injection.
+ * - Normalizes API error handling via ApiError.
+ * - Supports both JSON and multipart FormData payloads.
  */
 
 const POSTGREST_URL = process.env.NEXT_PUBLIC_POSTGREST_URL || 'http://localhost:3001';
 
 export function getFastApiBaseUrl(): string {
+   // Resolve FastAPI server URL with fallback chain.
+   // Priority: tunneled URL > explicit env var > localhost dev default.
   return (
     process.env.NEXT_PUBLIC_API_URL ||
     process.env.NEXT_PUBLIC_FASTAPI_URL ||
@@ -13,7 +20,14 @@ export function getFastApiBaseUrl(): string {
   );
 }
 
+export function getFastApiWsBaseUrl(): string {
+   // Convert http(s) → ws(s) for WebSocket upgrade.
+   // Maintains hostname/port from getFastApiBaseUrl().
+  return getFastApiBaseUrl().replace(/^http/, 'ws');
+}
+
 export class ApiError extends Error {
+   // Custom error for API failures: captures status code + response body for client handlers.
   constructor(
     message: string,
     public status: number,
@@ -25,7 +39,9 @@ export class ApiError extends Error {
 }
 
 /**
- * Get JWT token from localStorage
+ * Retrieve JWT token from localStorage.
+ * Returns null if running in non-browser context (SSR) or localStorage unreachable.
+ * Token is attached to all subsequent API requests via Authorization header.
  */
 export function getAuthToken(): string | null {
   if (typeof globalThis === 'undefined' || !('localStorage' in globalThis)) {

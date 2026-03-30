@@ -2,6 +2,16 @@ import type { ValidationReport, ValidationIssue } from "@/types";
 
 /**
  * Mock VLM validation reports for document quality assessment
+ *
+ * Purpose:
+ * - Supplies deterministic validation artifacts for the validation UI.
+ * - Exercises severity sorting, category badges, and confidence summaries.
+ * - Simulates common extraction defects (table fidelity, missing text, image loss).
+ *
+ * Design intent:
+ * - Includes both low-risk and critical findings for triage workflows.
+ * - Embeds evidence image links and context text for detail drawers.
+ * - Mirrors backend artifact shape to simplify future swap to live data.
  */
 
 // Sample issues for doc-3 (Emergency Shutdown System P&ID)

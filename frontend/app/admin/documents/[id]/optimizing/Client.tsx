@@ -1,5 +1,56 @@
 "use client";
 
+/**
+ * Document Optimization Stage - LLM-Powered Enhancement Monitoring
+ * 
+ * Purpose:
+ * - Display real-time optimization progress via SSE streaming
+ * - Monitor LLM-powered enhancements (summary, synthetic QA pairs, augmentation)
+ * - Show terminal-style logs for debugging + audit trail
+ * - Allow retry/abort of stuck optimization processes
+ * 
+ * Pipeline Stage Context:
+ * - Input: Document in APPROVED_FOR_OPTIMIZATION status
+ * - Process: Backend spins up LLM task via vLLM (text pipeline)
+ * - Output: Document transitions to OPTIMIZATION_COMPLETE (ready for QA)
+ * - Optional: Can skip directly to QA if optimization disabled
+ * 
+ * Optimization Tasks (Configurable):
+ * - Generate optimized summary from extracted content
+ * - Create synthetic Q&A pairs for training/validation
+ * - Augment document with semantic tags/keywords
+ * - Validate consistency with source material
+ * 
+ * SSE Event Streaming:
+ * - streamOptimizationLogs() opens SSE connection to /documents/{id}/optimization/logs
+ * - Events: log (INFO|WARNING|ERROR), done (optimization-complete|failed), heartbeat
+ * - Browser reconnection and replay from buffer (SSE buffer on backend)
+ * - Terminal log display: scrollable, color-coded by level, timestamps included
+ * 
+ * Monitoring Features:
+ * - Real-time log streaming with auto-scroll
+ * - Elapsed time tracking + ETA estimation
+ * - Stage indicator showing current task (extraction → QA tagging, etc.)
+ * - Abort button to cancel running optimization
+ * - Retry button to restart failed optimizations
+ * 
+ * State Management:
+ * - status: Current OptimizationStatus (optimizing|optimization-complete|failed)
+ * - logs: Terminal log buffer (logLines with timestamp, level, message)
+ * - isStreaming: Active SSE connection indicator
+ * - startTime: For elapsed time calculation
+ * 
+ * Error Handling:
+ * - SSE connection errors: Show error state + retry
+ * - Timeout: After 30 mins without progress, suggest manual intervention
+ * - Failed status: Show error logs + provide clear next steps
+ * 
+ * Performance Considerations:
+ * - Terminal log buffer limited to prevent DOM bloat (auto-scroll with virtual list)
+ * - SSE events batched to reduce UI re-renders
+ * - AbortSignal cleanup on unmount prevents memory leaks
+ */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -17,6 +68,16 @@ import { Button } from "@/components/ui/button";
 import { fastapiFetch, getPipelineStatus, streamOptimizationLogs } from "@/lib/api";
 import { getOptimizationLifecycleLabel, isQAReadyStatus } from "@/lib/document-status";
 import type { DocumentStatus } from "@/types";
+
+// ---------------------------------------------------------------------------
+// Optimization Stage Runtime Notes
+// ---------------------------------------------------------------------------
+// - Optimization may be skipped by backend policy; always check terminal status.
+// - SSE stream can replay buffered logs when reconnecting after temporary disconnects.
+// - `done` events are terminal and should short-circuit additional stream handling.
+// - UI should remain responsive during long-running model operations.
+// - Elapsed timers are informational; backend state is authoritative.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Types

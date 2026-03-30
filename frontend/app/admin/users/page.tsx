@@ -1,5 +1,32 @@
 "use client";
 
+/**
+ * Users Administration Page
+ *
+ * Purpose:
+ * - Displays user directory with role and status controls for admins.
+ * - Supports local role/status overrides for prototype and demo workflows.
+ * - Provides quick team-level metrics (active users, role distribution).
+ *
+ * Data source model:
+ * - Starts from fixture data (`mockUsers`) for deterministic local behavior.
+ * - Applies runtime overrides from localStorage for persistence across refreshes.
+ * - Keeps view reactive without requiring live identity provider integration.
+ *
+ * Persistence strategy:
+ * - `plantiq-role-overrides`: record of userId -> role updates.
+ * - `plantiq-status-overrides`: record of userId -> active/disabled state.
+ * - On mount, merges override maps into fixture dataset.
+ *
+ * Security note:
+ * - This page is UI-only administration for prototype mode.
+ * - Authoritative access control must still be enforced server-side.
+ *
+ * Why localStorage here:
+ * - Enables role/status UI demonstrations without backend write endpoints.
+ * - Keeps changes stable during QA sessions and stakeholder demos.
+ */
+
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -15,8 +42,11 @@ import type { User } from "@/types";
 type Role = "admin" | "user";
 
 export default function UsersPage() {
+  // `userList` is the rendered source-of-truth after applying local overrides.
   const [userList, setUserList] = useState<User[]>(fixtureUsers);
+  // Tracks role edits so UI can surface unsaved/modified state if needed.
   const [changedRoles, setChangedRoles] = useState<Record<string, Role>>({});
+  // Tracks active/disabled toggles similarly to roles.
   const [toggledStatuses, setToggledStatuses] = useState<Record<string, "active" | "disabled">>({});
 
   // Load persisted role / status overrides from localStorage on mount
@@ -44,6 +74,7 @@ export default function UsersPage() {
   const totalActive = userList.filter((u) => u.status === "active").length;
 
   function changeRole(userId: string, newRole: Role) {
+    // Optimistically update UI before persistence for snappy interaction.
     setChangedRoles((prev) => ({ ...prev, [userId]: newRole }));
     setUserList((prev) =>
       prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
@@ -57,6 +88,8 @@ export default function UsersPage() {
   }
 
   function toggleStatus(userId: string) {
+    // Toggle account status in-memory and persist override locally.
+    // Backend integration can replace this path in production mode.
     setUserList((prev) =>
       prev.map((u) =>
         u.id === userId

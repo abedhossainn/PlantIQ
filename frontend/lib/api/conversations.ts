@@ -1,6 +1,49 @@
 /**
- * Conversations API - PostgREST integration
- * Handles chat conversations and messages
+/**
+ * Conversations API - PostgREST Integration Layer
+ * 
+ * Purpose:
+ * - Manage conversation lifecycle (create, read, update, delete)
+ * - Load message history per conversation
+ * - Handle conversation metadata (title, scope filters, pin status)
+ * - Sync bidirectionally with PostgREST backend
+ * 
+ * Data Sources:
+ * - conversation_summaries: SQL view on chats table
+ *   - Includes aggregates: message_count, last_message_at, last_message_preview
+ *   - Optimized for list view + discovery (search, workspace filter)
+ * - chat_messages: Raw message records with JSONB citations
+ * - chats: Conversation metadata (title, scope, pin status)
+ * 
+ * Type Conversion Map:
+ * - ConversationSummary → Conversation (toConversation helper)
+ *   - Flattens snake_case to camelCase for frontend
+ *   - Merges messages array (populated separately)
+ * - DbChatMessage → ChatMessage (toChatMessage helper)
+ *   - Converts JSONB citations field to typed array
+ *   - Maintains role, content, timestamp
+ * 
+ * API Functions:
+ * - getConversations(filters): List + search + scope filter (for discovery UI)
+ * - getConversationById(id): Load single conversation with all messages
+ * - createConversation(data): Create new conversation (auto-triggered on first message)
+ * - updateConversationTitle(id, title): Rename conversation
+ * - updateConversationScope(id, filters): Update workspace/doc-type filters
+ * - updateConversationPin(id, isPinned): Pin/unpin conversation
+ * - deleteConversation(id): Soft or hard delete per backend policy
+ * - saveMessage(conversationId, role, content, citations): Persist message with citations
+ * 
+ * Filtering Strategy:
+ * - workspace: Filter by workspace name (power block, instrumentation, etc.)
+ * - search: Full-text search on conversation title
+ * - Pagination: Offset/limit for list views (prevents loading all conversations)
+ * - Ordering: Pinned conversations first, then sorted by last_message_at
+ * 
+ * Optimization Notes:
+ * - Lazy load messages: Fetch conversation list without messages, then load messages on selection
+ * - Prevents N+1 problem (list 100 conversations + messages separately)
+ * - conversation_summaries view provides aggregates (message_count, last_message_preview)
+ * - Avoids full table scan on large message tables
  */
 
 import { postgrestFetch, from } from './client';

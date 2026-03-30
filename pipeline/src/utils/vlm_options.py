@@ -32,10 +32,18 @@ def resolve_model_reference(value: str) -> str:
         return value
 
     normalized_value = value.strip()
-    if normalized_value.lower() == "qwen3:4b":
-        # Common Ollama tag in local setups; map to the HF text model repo used
-        # by the transformers-based optimization reformatter.
-        return "Qwen/Qwen3-4B"
+
+    # Guard: Ollama tags (containing ':') are accepted by Ollama but rejected
+    # by transformers' from_pretrained with HFValidationError.  If the caller
+    # passes an Ollama tag here it means PIPELINE_TEXT_MODEL_ID is mis-set to
+    # an Ollama tag instead of a local model path or HF repo ID.  Fail fast
+    # with a clear message rather than propagating the invalid value.
+    if ":" in normalized_value and not normalized_value.startswith(("http://", "https://")):
+        raise ValueError(
+            f"resolve_model_reference received an Ollama tag ({normalized_value!r}). "
+            "The pipeline optimizer requires a local model path or HF repo ID. "
+            "Set PIPELINE_TEXT_MODEL_ID to the local model path, e.g. ./models/Qwen3.5-4B."
+        )
 
     expanded = Path(normalized_value).expanduser()
     if not expanded.is_absolute():
@@ -94,8 +102,20 @@ def _get_model_id_from_sources(*env_names: str, default: str) -> str:
 
 
 def get_text_model_id() -> str:
-    """Return the active text model identifier from the shared repo-root env contract."""
+    """Return the active text model identifier for the pipeline text reformatter.
+
+    Resolution order (first match wins):
+    1. PIPELINE_TEXT_MODEL_ID  – dedicated pipeline var; use a local model path
+       (e.g. ./models/Qwen3.5-4B) or an HF repo ID.
+    2. TEXT_MODEL_ID            – shared backend var; only valid here when set to
+       an HF repo ID or local path (NOT an Ollama tag).
+    3. Default                  – Qwen/Qwen3-4B.
+
+    TEXT_MODEL_ID is intentionally checked second so that Ollama deployments
+    can safely set it to an Ollama tag for chat without breaking the pipeline.
+    """
     return _get_model_id_from_sources(
+        "PIPELINE_TEXT_MODEL_ID",
         "TEXT_MODEL_ID",
         "VLLM_MODEL",
         "VLLM_MODEL_NAME",

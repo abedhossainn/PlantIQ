@@ -1,5 +1,54 @@
 "use client";
 
+/**
+ * RAG Chat Interface - Main User Interaction Layer
+ * 
+ * Architecture:
+ * - Displays conversations with message history and real-time streaming
+ * - Manages conversation selection, creation, renaming, pinning, deletion
+ * - Handles document scope filtering (workspace, document type) for RAG queries
+ * - Implements citation/source reference system with expandable drawer
+ * - Bidirectional conversation sync with PostgREST backend
+ * 
+ * Data Flow (Query → Generation):
+ * 1. User submits query with workspace/doc-type filters
+ * 2. streamChatQuery() opens SSE connection to FastAPI
+ * 3. Backend loads embeddings, searches similar documents, invokes LLM
+ * 4. Tokens streamed back via SSE as MessageSSEEvent
+ * 5. Citations emitted separately as CitationSSEEvent
+ * 6. UI accumulates tokens into message, renders citations as badges
+ * 7. Message + citations saved to PostgREST via conversation CRUD
+ * 
+ * Conversation Lifecycle:
+ * - Create: Auto-create on first message, or via UI button
+ * - Read: Load list from PostgREST, fetch single by ID
+ * - Update: Modify title, scope filters, pin status
+ * - Delete: Remove from PostgREST (soft or hard delete per backend)
+ * 
+ * Citation System:
+ * - Citations emitted during token streaming
+ * - Each citation: document_id, source, page_number, chunk_text
+ * - Rendered as click-able badges in message
+ * - Click opens SourceDrawer with full source preview + nav link
+ * 
+ * UI State Management:
+ * - activeConversationId: Current conversation being viewed/edited
+ * - conversations: List of all conversations (sorted by pin status + lastMessage)
+ * - messages: Array of ChatMessage objects (role, content, citations)
+ * - streamedMessage: Accumulates tokens during SSE streaming
+ * - isStreaming: Indicates active generation (disables send button)
+ * 
+ * Optimizations:
+ * - Discovery filters reduce API payload (search + workspace filter)
+ * - Message rendering uses react-markdown with syntax highlighting
+ * - Citation drawer lazy-renders source content (prevents excessive DOM)
+ * 
+ * Error Handling:
+ * - Network errors logged to console, shown in toast
+ * - SSE timeouts trigger polling fallback (if enabled)
+ * - Conversation load failures show empty state
+ */
+
 import { useState, useRef, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -27,6 +76,98 @@ import type { Citation as ApiCitation, LlmStatus } from "@/lib/api/chat";
 import type { ChatMessage, Citation, Conversation } from "@/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+// ---------------------------------------------------------------------------
+// Chat Page State Model (Developer Reference)
+// ---------------------------------------------------------------------------
+// Core identity state
+// - conversationId: active thread identifier.
+// - conversations: sidebar list model used for discovery and selection.
+// - messages: canonical timeline rendered in the main panel.
+//
+// Query + scope state
+// - query: raw text input from the compose box.
+// - selectedWorkspace: workspace scope forwarded to backend retrieval.
+// - selectedDocumentType: optional document-type narrowing.
+// - includeSharedDocuments: controls whether shared corpus participates in retrieval.
+//
+// Streaming state
+// - isStreaming: locks send controls and indicates active generation.
+// - llmStatus: backend warm/cold state for UX messaging.
+// - showColdStartNotice: informs operators when first token latency may be elevated.
+//
+// Conversation management state
+// - editingConversationId/title: optimistic rename controls.
+// - savedIds: bookmark cache for assistant messages.
+// - expandedCites: UI expansion model for per-message citation lists.
+//
+// Discovery preferences state
+// - conversationSearch: local keyword filtering for title/preview scans.
+// - conversationWorkspaceFilter: sidebar workspace partitioning.
+// - showPinnedOnly: focused work mode for priority threads.
+// - persisted by user ID to restore analyst context across sessions.
+//
+// Rendering strategy
+// - Markdown rendering is restricted to assistant content for readability.
+// - SourceDrawer is isolated to prevent citation detail bloat in the main timeline.
+// - bottomRef anchors automatic scroll behavior during streaming.
+//
+// Operational constraints
+// - Keep chat interactions responsive under long outputs.
+// - Avoid duplicate writes by deferring persistence to controlled handlers.
+// - Preserve deterministic ordering of conversation updates.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Chat Event Handling Playbook
+// ---------------------------------------------------------------------------
+// Conversation index loading:
+// - Load summaries first for fast sidebar paint.
+// - Load full conversation details lazily after selection.
+// - If selected conversation is missing, clear active selection safely.
+//
+// Conversation discovery behavior:
+// - Search filters should be non-destructive (view-level only).
+// - Pinned filter should narrow results but not mutate source list.
+// - Workspace filter should combine with search and pin constraints.
+//
+// Streaming query behavior:
+// - Add user message immediately for responsive UX.
+// - Start assistant placeholder state before first token arrives.
+// - Accumulate tokens into a single assistant message.
+// - Append citations as they arrive without blocking token flow.
+// - Finalize message on terminal event (`complete` or `error`).
+//
+// Bookmark synchronization:
+// - Bookmark state is derived from backend, cached in `savedIds`.
+// - Toggle actions should update UI optimistically where safe.
+// - On failure, restore previous bookmark state and notify user.
+//
+// Renaming/pinning strategy:
+// - Sidebar metadata updates should preserve current message timeline.
+// - Keep active conversation selected across metadata updates.
+// - Reflect backend response order after update for consistency.
+//
+// Scroll management:
+// - Auto-scroll to bottom when receiving stream tokens.
+// - Do not force-scroll when user is reviewing older messages (future enhancement).
+// - Keep bottomRef logic isolated to reduce accidental regressions.
+//
+// Error policy:
+// - User-facing failures should be concise and actionable.
+// - Developer diagnostics should remain in console for triage.
+// - Hard failures should never leave isStreaming=true.
+//
+// UX guardrails:
+// - Disable send while streaming to avoid interleaved generations.
+// - Preserve query draft when recoverable errors occur.
+// - Keep source drawer independent from compose state.
+//
+// Accessibility considerations:
+// - Ensure button labels remain descriptive for screen readers.
+// - Keyboard focus should remain stable during streaming updates.
+// - Color badges should not be the only channel for status communication.
+// ---------------------------------------------------------------------------
 
 interface ChatDiscoveryPreferences {
   conversationSearch: string;
@@ -129,6 +270,7 @@ function SourceDrawer({ cite, onClose }: { cite: Citation; onClose: () => void }
 
 export default function ChatPage() {
   const { user, isAdmin, logout } = useAuth();
+  const router = useRouter();
   const hasHydratedDiscoveryPreferences = useRef(false);
   
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -588,11 +730,12 @@ export default function ChatPage() {
 
         if (event.message_id && event.message_id !== activeAssistantMessageId) {
           const previousAssistantId = activeAssistantMessageId;
-          activeAssistantMessageId = event.message_id;
+          const nextAssistantMessageId = event.message_id;
+          activeAssistantMessageId = nextAssistantMessageId;
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === previousAssistantId
-                ? { ...msg, id: event.message_id }
+                ? { ...msg, id: nextAssistantMessageId }
                 : msg
             )
           );

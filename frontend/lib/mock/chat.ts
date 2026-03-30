@@ -2,9 +2,23 @@ import type { Conversation, ChatMessage, Citation } from "@/types";
 
 /**
  * Mock chat conversations and messages with citations for RAG responses
+ *
+ * Fixture goals:
+ * - Provide realistic multi-turn chat transcripts for UI and interaction testing.
+ * - Include citation-rich assistant responses to validate source rendering.
+ * - Exercise markdown rendering, timestamp formatting, and conversation grouping.
+ *
+ * Content profile:
+ * - Domain-specific LNG operations questions and procedure answers.
+ * - Citation payloads include source doc, section, page, excerpt, relevance score.
+ * - Mixes short and long-form assistant responses to stress layout behavior.
  */
 
 // Sample citations
+// Citation fixture guidance:
+// - Keep `relevanceScore` in [0,1] to mirror cosine-similarity-like semantics.
+// - Include page + section metadata so source drawers can render complete context.
+// - Keep excerpts concise enough for card previews but informative for validation.
 const citation1: Citation = {
   id: "cite-1",
   documentId: "doc-1",
@@ -61,6 +75,11 @@ const citation5: Citation = {
 };
 
 // Sample conversation 1
+// Conversation fixture guidance:
+// - Alternate user/assistant roles for realistic chat cadence.
+// - Include markdown in assistant responses to validate renderer behavior.
+// - Include at least one citation-backed assistant response per conversation.
+// - Keep timestamps monotonic for stable sorting in UI tests.
 const conversation1Messages: ChatMessage[] = [
   {
     id: "msg-1-1",

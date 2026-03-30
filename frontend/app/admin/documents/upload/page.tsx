@@ -1,5 +1,51 @@
 "use client";
 
+/**
+ * Document Upload & Ingestion Monitoring Interface
+ * 
+ * Purpose:
+ * - Accept PDF document uploads with metadata (title, version, system, notes)
+ * - Monitor real-time ingestion via SSE (Server-Sent Events)
+ * - Display pipeline stage progression with detailed sub-stage logs
+ * - Support artifact downloads upon completion
+ * - Persist upload metadata to localStorage for document detail pages
+ * 
+ * Ingestion Pipeline (Backend HITL):
+ * 1. Upload → File stored, extraction job enqueued
+ * 2. Extraction → Docling extracts text/tables/figures, generates embeddings
+ * 3. VLM Validation → Vision-language model validates extraction fidelity
+ * 4. Terminal → Ready for RAG retrieval or flagged for human review
+ * 
+ * Stage Mapping:
+ * - Backend emits granular stage strings (queued, extraction, docling, validation, etc.)
+ * - BACKEND_TO_UI_STAGE maps to simplified UI stages (uploading, extracting, vlm-validating, etc.)
+ * - Allows visual progress without exposing all internal sub-stages
+ * 
+ * SSE Event Streaming:
+ * - streamIngestionEvents() opens SSE connection to /documents/{id}/events
+ * - Backend emits: job.accepted, progress, stage.complete, complete, error
+ * - Parser (parseIngestionSSEBlock) converts to typed IngestionSSEEvent objects
+ * - Terminal events: complete (success) or error (failure)
+ * - Allows graceful abort on component unmount via AbortSignal
+ * 
+ * UI State:
+ * - currentStage: Mapped from backend stage string
+ * - progress: 0-100% completion across all stages
+ * - logs: Terminal-style output buffer for debugging + monitoring visibility
+ * - artifacts: Downloadable outputs per stage (manifests, QA reports, etc.)
+ * 
+ * Error Handling:
+ * - Upload errors: File size validation, extension check
+ * - Streaming errors: Connection failures, timeout recovery, SSE fallback
+ * - Terminal logs display raw error messages for troubleshooting
+ * - Retry logic: User can restart pipeline from terminal
+ * 
+ * Metadata Persistence:
+ * - Upload form data cached to localStorage[plantiq-upload-preview-{id}]
+ * - Document detail pages retrieve metadata without PostgREST query
+ * - Avoids N+1 problem when listing documents
+ */
+
 import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -12,6 +58,80 @@ import { Badge } from "@/components/ui/badge";
 import { Upload, FileText, CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, Terminal } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
+
+// ---------------------------------------------------------------------------
+// Upload Page Operational Reference
+// ---------------------------------------------------------------------------
+// Validation gates before upload:
+// - File extension must match ALLOWED_UPLOAD_EXTENSION.
+// - File size must not exceed MAX_UPLOAD_BYTES.
+// - Required metadata (title, system, type) should be present.
+//
+// Runtime state categories:
+// - Input state: selected file + metadata fields.
+// - Transfer state: upload in progress, progress, error.
+// - Pipeline state: current stage/status from SSE or polling.
+// - Terminal state: completion success/failure with navigation options.
+//
+// Streaming model:
+// - Primary: SSE via streamIngestionEvents for near-real-time progress.
+// - Fallback: getPipelineStatus polling for environments without SSE.
+// - Abort support: cancel stream on unmount/restart to avoid leaks.
+//
+// Log model:
+// - Structured log lines classify events into init/progress/stage-done/error.
+// - Stage labels normalize backend stage names to user-facing readability.
+// - Terminal-style pane provides operational observability for reviewers.
+//
+// Transition guard examples:
+// - Validation complete -> allow navigation to review flow.
+// - Error terminal -> present retry and diagnostics.
+// - In-progress -> disable duplicate submit actions.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Ingestion Troubleshooting Checklist (Developer/QA)
+// ---------------------------------------------------------------------------
+// Symptom: upload request fails immediately
+// - Verify selected file extension is .pdf.
+// - Verify selected file size is below MAX_UPLOAD_BYTES.
+// - Verify auth token exists and has not expired.
+// - Verify backend API base URL resolves correctly in client.ts.
+//
+// Symptom: upload succeeds but no stream events arrive
+// - Verify SSE endpoint `/api/v1/documents/{id}/events` is reachable.
+// - Verify proxy/tunnel configuration permits `text/event-stream`.
+// - Verify Authorization header is forwarded to SSE endpoint.
+// - Fall back to polling and compare status endpoint behavior.
+//
+// Symptom: stage appears stuck
+// - Inspect terminal logs for last emitted stage and message.
+// - Validate backend worker availability (LLM/VLM extraction dependencies).
+// - Confirm no hidden error event was emitted and filtered.
+// - Trigger manual refresh of getPipelineStatus for ground truth.
+//
+// Symptom: completion event never arrives
+// - Check if backend job completed but stream disconnected.
+// - Poll status endpoint to detect terminal status.
+// - Consider reconnect strategy from known document ID.
+// - Ensure AbortController was not triggered unexpectedly.
+//
+// Symptom: UI shows wrong stage label
+// - Confirm BACKEND_TO_UI_STAGE contains emitted backend stage key.
+// - Add mapping for new backend stages if pipeline evolved.
+// - Preserve fallback to raw stage for forward compatibility.
+//
+// Symptom: artifacts unavailable after terminal status
+// - Verify backend emitted stage.complete with artifact metadata.
+// - Verify artifact endpoint permissions and path normalization.
+// - Confirm terminal status allows artifact retrieval in backend policy.
+//
+// Regression checks after edits in this page:
+// - Upload happy path still reaches validation-complete.
+// - Error path still shows terminal log and retry controls.
+// - Navigation to review page still gated by review-ready statuses.
+// - Cancel/unmount no longer updates state after component disposal.
+// ---------------------------------------------------------------------------
 
 // Backend pipeline stages mapped to UI display
 type Stage = {
@@ -47,6 +167,9 @@ const BACKEND_TO_UI_STAGE: Record<string, string> = {
   startup: "uploading",
   monitoring: "vlm-validating",
 };
+
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const ALLOWED_UPLOAD_EXTENSION = ".pdf";
 
 /** Resolve a backend stage string to a UI PIPELINE_STAGES id, falling back to the raw value. */
 function toUIStage(backendStage: string): string {
@@ -297,14 +420,14 @@ export default function UploadPage() {
     }
 
     // Validate file type
-    if (f && !f.name.endsWith('.pdf')) {
+    if (f && !f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
       setUploadError("Only PDF files are supported");
       setSelectedFile(null);
       return;
     }
 
     // Validate file size (100MB max)
-    if (f && f.size > 100 * 1024 * 1024) {
+    if (f && f.size > MAX_UPLOAD_BYTES) {
       setUploadError("File size exceeds maximum of 100MB");
       setSelectedFile(null);
       return;
@@ -410,7 +533,9 @@ export default function UploadPage() {
         documentType: docType || undefined,
       });
 
-      console.log('Upload successful:', response);
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('Upload successful:', response);
+      }
 
       setDocumentId(response.document_id);
       setPipelineStatus(response.status);
@@ -549,7 +674,7 @@ export default function UploadPage() {
                   <input
                     ref={fileRef}
                     type="file"
-                    accept=".pdf,.docx,.md,.txt"
+                    accept={ALLOWED_UPLOAD_EXTENSION}
                     className="hidden"
                     onChange={handleFileChange}
                   />

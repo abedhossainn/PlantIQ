@@ -7,10 +7,11 @@ import logging
 import json
 import asyncio
 import uuid
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from typing import Optional
 from sqlalchemy import text
 
+from ..core.config import settings
 from ..core.websocket import get_connection_manager
 from ..core.security import verify_ws_token
 from ..models.database import AsyncSessionLocal
@@ -18,6 +19,14 @@ from ..models.database import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws", tags=["WebSocket"])
+
+
+async def _send_ws_error(websocket: WebSocket, error: str, *, operation: Optional[str] = None) -> None:
+    """Send a structured websocket error payload."""
+    payload = {"type": "error", "error": error}
+    if operation is not None:
+        payload["operation"] = operation
+    await websocket.send_json(payload)
 
 
 async def check_document_access(document_id: str, user_id: uuid.UUID, user_role: str) -> bool:
@@ -48,8 +57,8 @@ async def check_document_access(document_id: str, user_id: uuid.UUID, user_role:
                 {"doc_id": document_id}
             )
             return result.fetchone() is not None
-        except Exception as e:
-            logger.error(f"Error checking document access: {e}")
+        except Exception as exc:
+            logger.error("Error checking document access: %s", exc)
             return False
         finally:
             try:
@@ -77,8 +86,8 @@ async def check_conversation_access(conversation_id: str, user_id: uuid.UUID) ->
                 {"conv_id": conversation_id, "user_id": str(user_id)}
             )
             return result.fetchone() is not None
-        except Exception as e:
-            logger.error(f"Error checking conversation access: {e}")
+        except Exception as exc:
+            logger.error("Error checking conversation access: %s", exc)
             return False
 
 
@@ -141,7 +150,7 @@ async def pipeline_status_websocket(
                 # Wait for messages from client (with timeout for heartbeat)
                 data = await asyncio.wait_for(
                     websocket.receive_text(),
-                    timeout=30.0
+                    timeout=float(settings.WS_HEARTBEAT_INTERVAL),
                 )
                 
                 try:
@@ -152,16 +161,16 @@ async def pipeline_status_websocket(
                         await websocket.send_json({"type": "pong"})
                         
                 except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON from client: {data[:100]}")
+                    logger.warning("Invalid JSON from client: %s", data[:100])
                     
             except asyncio.TimeoutError:
                 # Send heartbeat
                 await websocket.send_json({"type": "heartbeat"})
                 
     except WebSocketDisconnect:
-        logger.info(f"Client disconnected from {channel}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.info("Client disconnected from %s", channel)
+    except Exception as exc:
+        logger.error("WebSocket error: %s", exc)
     finally:
         await manager.disconnect(websocket, channel)
 
@@ -223,7 +232,7 @@ async def chat_streaming_websocket(
                 # Wait for messages from client
                 data = await asyncio.wait_for(
                     websocket.receive_text(),
-                    timeout=30.0
+                    timeout=float(settings.WS_HEARTBEAT_INTERVAL),
                 )
                 
                 try:
@@ -234,28 +243,32 @@ async def chat_streaming_websocket(
                         await websocket.send_json({"type": "pong"})
                     
                     elif message_type == "query":
-                        # Handle query message
-                        # TODO: Process query through ChatService
-                        logger.info(f"Received query: {message.get('content')[:50]}...")
-                        await websocket.send_json({
-                            "type": "error",
-                            "error": "Query processing via WebSocket not yet implemented. Use POST /api/v1/chat/stream instead."
-                        })
+                        query_preview = str(message.get("content") or "")[:50]
+                        logger.info("Received unsupported websocket chat query: %s...", query_preview)
+                        await _send_ws_error(
+                            websocket,
+                            "Query processing via WebSocket is not yet implemented. Use POST /api/v1/chat/stream instead.",
+                            operation="query",
+                        )
                     
                     elif message_type == "cancel":
-                        # TODO: Implement generation cancellation
-                        logger.info("Cancel request received")
+                        logger.info("Received unsupported websocket cancel request for %s", conversation_id)
+                        await _send_ws_error(
+                            websocket,
+                            "Generation cancellation via WebSocket is not supported for this endpoint.",
+                            operation="cancel",
+                        )
                         
                 except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON from client: {data[:100]}")
+                    logger.warning("Invalid JSON from client: %s", data[:100])
                     
             except asyncio.TimeoutError:
                 # Send heartbeat
                 await websocket.send_json({"type": "heartbeat"})
                 
     except WebSocketDisconnect:
-        logger.info(f"Client disconnected from {channel}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.info("Client disconnected from %s", channel)
+    except Exception as exc:
+        logger.error("WebSocket error: %s", exc)
     finally:
         await manager.disconnect(websocket, channel)

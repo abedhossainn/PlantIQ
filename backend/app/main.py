@@ -1,4 +1,11 @@
-"""PlantIQ FastAPI Backend Application."""
+"""PlantIQ FastAPI Backend Application.
+
+Core responsibilities:
+- HTTP API endpoint definition and routing
+- Middleware setup (CORS, logging, request tracking)
+- Authentication gate configuration
+- Graceful shutdown (LLM model unload)
+"""
 import logging
 import os
 import time
@@ -13,6 +20,7 @@ from .api.chat import router as chat_router
 from .api.websocket import router as websocket_router
 from .services.llm_service import LLMService
 
+# Runtime configuration from environment
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 AUTH_DISABLED = os.getenv("AUTH_DISABLED", "true").lower() == "true"
 SLOW_REQUEST_THRESHOLD_MS = float(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500"))
@@ -27,10 +35,15 @@ def _csv_to_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+# Logging path granularity: certain paths are logged at QUIET level to reduce noise
+# (health checks, root endpoint), while sensitive API paths use DETAILED level.
 QUIET_LOG_PATHS = _csv_to_set(os.getenv("QUIET_LOG_PATHS", "/health,/"))
 DETAILED_LOG_PATH_PREFIXES = _csv_to_set(
     os.getenv("DETAILED_LOG_PATH_PREFIXES", "/api/v1/chat,/api/v1/pipeline,/api/v1/auth,/api/docs")
 )
+
+# Redaction: mask sensitive parameters in query strings before logging.
+# Prevents credential leakage in audit logs (tokens, API keys, passwords).
 SENSITIVE_QUERY_KEYS = {k.lower() for k in _csv_to_set(os.getenv(
     "SENSITIVE_QUERY_KEYS",
     "token,access_token,refresh_token,api_key,key,secret,password,authorization,jwt",

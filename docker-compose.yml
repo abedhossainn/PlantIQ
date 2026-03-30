@@ -11,6 +11,7 @@ services:
       context: .
       dockerfile: infra/docker/backend.Dockerfile
     container_name: plantiq-backend
+    runtime: nvidia
     ports:
       - "8001:8000"
     environment:
@@ -27,6 +28,7 @@ services:
       - HF_HOME=/root/.cache/huggingface
       - NVIDIA_VISIBLE_DEVICES=${DOCLING_GPU_DEVICE_ID:-1}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - DOCLING_ACCELERATOR_DEVICE=${DOCLING_ACCELERATOR_DEVICE:-cuda}
       - QDRANT_HOST=vector-db
       - QDRANT_PORT=6333
       - LLM_HOST=llm
@@ -34,6 +36,9 @@ services:
       - LLM_TIMEOUT=120
       - LLM_BACKEND=ollama
       - TEXT_MODEL_ID=${TEXT_MODEL_ID:-qwen3:4b}
+      # Pipeline optimizer model — must be a local path, NOT an Ollama tag.
+      # Separate from TEXT_MODEL_ID so chat (Ollama) and pipeline (transformers) can use different models.
+      - PIPELINE_TEXT_MODEL_ID=${PIPELINE_TEXT_MODEL_ID:-/workspace/models/Qwen3.5-4B}
       - LLM_UNLOAD_AFTER_REQUEST=${LLM_UNLOAD_AFTER_REQUEST:-false}
       - LLM_DEMAND_HEARTBEAT_FILE=${LLM_DEMAND_HEARTBEAT_FILE:-/workspace/data/artifacts/runtime/llm_last_used}
       - LLM_STARTUP_WAIT_SECONDS=${LLM_STARTUP_WAIT_SECONDS:-45}
@@ -46,6 +51,9 @@ services:
       - SENSITIVE_QUERY_KEYS=${SENSITIVE_QUERY_KEYS:-token,access_token,refresh_token,api_key,key,secret,password,authorization,jwt}
       - QUIET_LOG_PATHS=${QUIET_LOG_PATHS:-/health,/}
       - DETAILED_LOG_PATH_PREFIXES=${DETAILED_LOG_PATH_PREFIXES:-/api/v1/chat,/api/v1/pipeline,/api/docs}
+      # --- TUNNEL (reviewer access) — CORS allow-list includes public frontend origin ---
+      - CORS_ALLOW_ORIGINS=http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://10.1.10.181:3000,https://plantiq.sahossain.com,https://plantiqapi.sahossain.com
+      # --- DEV (local) — remove the CORS_ALLOW_ORIGINS line above to revert to hardcoded defaults ---
     volumes:
       - ./:/workspace
       - docling_models:/root/.cache/docling/models
@@ -81,8 +89,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
-      - NEXT_PUBLIC_FASTAPI_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
+      # --- TUNNEL (reviewer access) ---
+      - NEXT_PUBLIC_API_URL=https://plantiqapi.sahossain.com
+      - NEXT_PUBLIC_FASTAPI_URL=https://plantiqapi.sahossain.com
+      # --- DEV (local) — uncomment below, comment out the two lines above ---
+      #- NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
+      #- NEXT_PUBLIC_FASTAPI_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
       - NEXT_PUBLIC_POSTGREST_URL=${NEXT_PUBLIC_POSTGREST_URL:-http://localhost:3001}
       - NEXT_PUBLIC_DEV_JWT=${NEXT_PUBLIC_DEV_JWT:-eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwgInJvbGUiOiAicGxhbnRpZ19hZG1pbiIsICJhdWQiOiAicGxhbnRpZyIsICJpc3MiOiAicGxhbnRpZy1hdXRoIiwgImV4cCI6IDk5OTk5OTk5OTl9.IJXta4CJER43rcID5iGjjeUIEjdxqqsUhIgWc8_laU0}
       - NEXT_PUBLIC_APP_NAME=PlantIQ
@@ -232,6 +244,7 @@ services:
   llm:
     image: ollama/ollama:latest
     container_name: plantiq-llm
+    runtime: nvidia
     ports:
       - "${LLM_HOST_PORT:-11435}:11434"
     environment:

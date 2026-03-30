@@ -1,10 +1,47 @@
 "use client";
 
+/**
+ * Authentication Context for PlantIQ Frontend
+ * 
+ * Dual-Mode Authentication System:
+ * - Dev Mode (AUTH_DISABLED=false): OpenID/mock LDAP integration
+ *   - Credentials sent to FastAPI /auth/login (expects LDAP backend)
+ *   - Server returns JWT in LoginResponse.access_token
+ *   - Token attached to all subsequent API requests (Authorization: Bearer)
+ *   - /auth/me endpoint returns authenticated user profile
+ * 
+ * - Disabled Mode (AUTH_DISABLED=true): Mock auth for development
+ *   - No server validation (any password accepted)
+ *   - User role inferred from username (e.g., "user" → user role, "admin" → admin role)
+ *   - Dev JWT optionally injected from NEXT_PUBLIC_DEV_JWT env var
+ *   - Allows testing without LDAP server
+ * 
+ * JWT Token Lifecycle:
+ * 1. POST /auth/login {username, password} → receives access_token
+ * 2. Token stored in localStorage[TOKEN_STORAGE_KEY]
+ * 3. getAuthToken() imported from lib/api/client reads localStorage
+ * 4. All API calls attach: Authorization: Bearer <token>
+ * 5. Logout removes token from localStorage
+ * 
+ * User State Management:
+ * - AuthContext holds user profile (id, username, role, department, etc.)
+ * - toFrontendUser() converts backend BackendUserInfo → frontend User type
+ * - User persisted to localStorage[AUTH_STORAGE_KEY] + legacy "mockUser" key
+ * - Rehydrated from localStorage on app mount (useEffect in AuthProvider)
+ * 
+ * Security Considerations:
+ * - Token stored in localStorage (vulnerable to XSS; can be mitigated with CSP)
+ * - credentials: "include" allows HTTP-only cookie fallback (optional backend enhancement)
+ * - Token refresh not implemented (consider for production use)
+ * - Session expiry must be handled by backend (401 responses trigger token refresh in client.ts)
+ */
+
 import React, { createContext, useContext, useState, useCallback, useEffect } from "react";
 import type { User } from "@/types";
+import { getFastApiBaseUrl } from "@/lib/api/client";
 
 const AUTH_DISABLED = process.env.NEXT_PUBLIC_AUTH_DISABLED !== "false";
-const FASTAPI_URL = process.env.NEXT_PUBLIC_FASTAPI_URL || "http://localhost:8000";
+const FASTAPI_URL = getFastApiBaseUrl();
 const AUTH_STORAGE_KEY = "authUser";
 const TOKEN_STORAGE_KEY = "auth_token";
 

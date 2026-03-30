@@ -70,6 +70,15 @@ _CLEAR = object()
 
 router = APIRouter(prefix="/api/v1", tags=["Pipeline"], dependencies=[Depends(require_admin)])
 
+# ============================================================================
+# PIPELINE STATUS TRANSITION GUARDS
+# ============================================================================
+# These sets enforce state machine constraints: what operations are allowed
+# from each status, and when transitions are blocked. Guards prevent invalid
+# operations (e.g., can't delete during active ingestion, can't optimize twice).
+
+# Any status occurring AFTER optimization decision initiated (approve-for-optimization).
+# Used to gate operations that should only occur BEFORE optimization (e.g., can't re-review).
 _POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
     PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
     PipelineStatus.OPTIMIZING.value,
@@ -79,6 +88,9 @@ _POST_OPTIMIZATION_LIFECYCLE_STATUSES = {
     PipelineStatus.FINAL_APPROVED.value,
 }
 
+# Statuses where document deletion is BLOCKED.
+# Rationale: prevent data loss during active processing or expensive operations.
+# Once optimization/QA finishes, deletion is allowed (user can discard results).
 _DELETE_BLOCKED_STATUSES = {
     PipelineStatus.UPLOADING.value,
     PipelineStatus.EXTRACTING.value,
@@ -86,6 +98,75 @@ _DELETE_BLOCKED_STATUSES = {
     PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
     PipelineStatus.OPTIMIZING.value,
 }
+
+# Terminal states: no further status transitions allowed.
+# APPROVED_FOR_OPTIMIZATION -> OPTIMIZING -> OPTIMIZATION_COMPLETE path is distinct
+# from APPROVED path. FINALized statuses can't change (document is locked in).
+_FINALIZED_STATUSES = {
+    PipelineStatus.APPROVED.value,
+    PipelineStatus.FINAL_APPROVED.value,
+    PipelineStatus.REJECTED.value,
+}
+
+# Statuses where optimized RAG chunks are available for retrieval.
+# Chunks generated during OPTIMIZATION stage; available for download/inspection from
+# OPTIMIZATION_COMPLETE onward (enables QA team to review chunks before final approval).
+_OPTIMIZED_OUTPUT_AVAILABLE_STATUSES = {
+    PipelineStatus.OPTIMIZATION_COMPLETE.value,
+    PipelineStatus.QA_REVIEW.value,
+    PipelineStatus.QA_PASSED.value,
+    PipelineStatus.FINAL_APPROVED.value,
+}
+
+# Statuses where optimized chunks can be edited (patched) by QA team.
+# Wider window (OPTIMIZATION_COMPLETE + QA_REVIEW) allows in-progress refinement.
+# Once QA_PASSED, chunks are ready for final approval (no more edits).
+_OPTIMIZED_OUTPUT_EDITABLE_STATUSES = {
+    PipelineStatus.OPTIMIZATION_COMPLETE.value,
+    PipelineStatus.QA_REVIEW.value,
+}
+
+# Statuses that BLOCK the transition to APPROVED_FOR_OPTIMIZATION.
+# Once optimization has started, can't restart it. Guards against re-triggering
+# and data inconsistency (e.g., reviewer makes changes, then optimization overwrites them).
+_APPROVE_FOR_OPTIMIZATION_BLOCKED_STATUSES = {
+    PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+    PipelineStatus.OPTIMIZING.value,
+    PipelineStatus.OPTIMIZATION_COMPLETE.value,
+    PipelineStatus.QA_REVIEW.value,
+    PipelineStatus.QA_PASSED.value,
+    PipelineStatus.FINAL_APPROVED.value,
+    PipelineStatus.APPROVED.value,
+    PipelineStatus.REJECTED.value,
+}
+
+# Statuses from which APPROVED_FOR_OPTIMIZATION is ALLOWED.
+# Reviewer must finish with the document (REVIEW_COMPLETE) before optimization can proceed.
+# Also allows retry from FAILED (reviewer can re-approve after fixing the failure).
+_APPROVE_FOR_OPTIMIZATION_ALLOWED_STATUSES = {
+    PipelineStatus.VALIDATION_COMPLETE.value,
+    PipelineStatus.IN_REVIEW.value,
+    PipelineStatus.REVIEW_COMPLETE.value,
+    PipelineStatus.FAILED.value,
+}
+
+# Statuses eligible for QA rescoring and report auto-generation.
+# QA gates and metrics can be re-run at any point from OPTIMIZATION_COMPLETE onward,
+# allowing refinement of chunk quality assessments before final approval decision.
+_QA_RESCORE_ALLOWED_STATUSES = {
+    PipelineStatus.OPTIMIZATION_COMPLETE.value,
+    PipelineStatus.QA_REVIEW.value,
+    PipelineStatus.QA_PASSED.value,
+}
+
+# Status set aliased for clarity: same as QA_RESCORE_ALLOWED (auto-gen QA reports when rescoring).
+_QA_REPORT_AUTOGEN_ELIGIBLE_STATUSES = _QA_RESCORE_ALLOWED_STATUSES
+
+# ============================================================================
+# ARTIFACT FILE NAMING CONVENTIONS
+# ============================================================================
+# Pipeline produces artifacts with standardized suffixes for identification.
+# Single-file artifacts use these suffixes; multidirectional artifacts use directories.
 
 _FLAT_ARTIFACT_SUFFIXES = [
     "_validation.json",
@@ -101,6 +182,19 @@ _FLAT_ARTIFACT_SUFFIXES = [
 ]
 
 _FLAT_ARTIFACT_DIRECTORIES = ["_review"]
+
+_LIST_DOCUMENTS_SQL = """
+    SELECT
+        id, title, version, system, document_type,
+        status, file_path, uploaded_by, notes,
+        uploaded_at, updated_at,
+        total_pages, total_sections, review_progress, qa_score,
+        approved_by, approved_at,
+        publication_status, published_at, publication_error,
+        indexed_chunk_count, qdrant_collection
+    FROM documents
+    ORDER BY uploaded_at DESC
+"""
 
 
 def _normalize_publication_status(
@@ -906,6 +1000,14 @@ async def _set_document_status(
     await db.commit()
 
 
+async def _fetch_document_rows(db: AsyncSession) -> list[dict]:
+    """Fetch document rows for the documents listing endpoint."""
+    from sqlalchemy import text as _text
+
+    result = await db.execute(_text(_LIST_DOCUMENTS_SQL))
+    return result.mappings().all()
+
+
 def _emit_optimization_log(document_id: str, level: str, message: str) -> None:
     normalized_level = level.upper()
     if normalized_level not in {"INFO", "WARNING", "ERROR"}:
@@ -1074,6 +1176,80 @@ async def _get_document_status_value(document_id: UUID4, db: AsyncSession) -> Op
     if not row:
         return None
     return row[0]
+
+
+async def _require_document_status(document_id: UUID4, db: AsyncSession) -> str:
+    """Return current document status or raise 404 when the document is missing."""
+    document_status = await _get_document_status_value(document_id, db)
+    if document_status is None:
+        _raise_document_not_found()
+    return document_status
+
+
+def _ensure_status_in(
+    *,
+    current_status: str,
+    allowed_statuses: set[str],
+    detail: str,
+    error_status_code: int = status.HTTP_409_CONFLICT,
+) -> None:
+    """Raise HTTPException when a status is outside the allowed set."""
+    if current_status not in allowed_statuses:
+        raise HTTPException(
+            status_code=error_status_code,
+            detail=detail,
+        )
+
+
+def _ensure_status_not_in(
+    *,
+    current_status: str,
+    blocked_statuses: set[str],
+    detail: str,
+    error_status_code: int = status.HTTP_409_CONFLICT,
+) -> None:
+    """Raise HTTPException when a status is inside a blocked set."""
+    if current_status in blocked_statuses:
+        raise HTTPException(
+            status_code=error_status_code,
+            detail=detail,
+        )
+
+
+async def _read_request_json_or_empty(request: Request) -> dict:
+    """Best-effort JSON payload parsing for permissive decision endpoints."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _raise_artifact_not_found(artifact_type: ArtifactType) -> None:
+    """Raise a standardized artifact-not-found HTTP error."""
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Artifact {artifact_type} not found",
+    )
+
+
+def _raise_document_not_found() -> None:
+    """Raise a standardized document-not-found HTTP error."""
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Document not found",
+    )
+
+
+def _build_artifact_file_response(artifact_path: Path) -> FileResponse:
+    """Build a standardized FileResponse for artifact payloads."""
+    return FileResponse(
+        path=str(artifact_path),
+        filename=artifact_path.name,
+        media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream",
+    )
 
 
 def _build_page_response(
@@ -1254,21 +1430,7 @@ async def list_documents(
     """
     from sqlalchemy import text as _text
     try:
-        result = await db.execute(
-            _text("""
-                SELECT
-                    id, title, version, system, document_type,
-                    status, file_path, uploaded_by, notes,
-                    uploaded_at, updated_at,
-                    total_pages, total_sections, review_progress, qa_score,
-                    approved_by, approved_at,
-                    publication_status, published_at, publication_error,
-                    indexed_chunk_count, qdrant_collection
-                FROM documents
-                ORDER BY uploaded_at DESC
-            """)
-        )
-        rows = result.mappings().all()
+        rows = await _fetch_document_rows(db)
 
         stale_error = (
             "Ingestion appears to have stopped unexpectedly because no active "
@@ -1303,21 +1465,7 @@ async def list_documents(
                 )
             await db.commit()
 
-            result = await db.execute(
-                _text("""
-                    SELECT
-                        id, title, version, system, document_type,
-                        status, file_path, uploaded_by, notes,
-                        uploaded_at, updated_at,
-                        total_pages, total_sections, review_progress, qa_score,
-                        approved_by, approved_at,
-                        publication_status, published_at, publication_error,
-                        indexed_chunk_count, qdrant_collection
-                    FROM documents
-                    ORDER BY uploaded_at DESC
-                """)
-            )
-            rows = result.mappings().all()
+            rows = await _fetch_document_rows(db)
 
         docs = [
             {
@@ -1348,8 +1496,8 @@ async def list_documents(
         if any(d["totalPages"] is None or d["totalSections"] is None or d["qaScore"] is None for d in docs):
             docs = await _enrich_metadata_from_artifacts(docs, db)
         return docs
-    except Exception as e:
-        logger.error(f"Error listing documents: {e}")
+    except Exception as exc:
+        logger.error("Error listing documents: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list documents",
@@ -1380,10 +1528,7 @@ async def delete_document(
     row = result.mappings().first()
 
     if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
+        _raise_document_not_found()
 
     if row["status"] in _DELETE_BLOCKED_STATUSES:
         raise HTTPException(
@@ -1405,7 +1550,7 @@ async def delete_document(
             file_path=row.get("file_path"),
         )
     except OSError as exc:
-        logger.error(f"Error deleting storage for {document_id}: {exc}")
+        logger.error("Error deleting storage for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to remove document files from storage",
@@ -1518,11 +1663,11 @@ async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
                 u,
             )
         except Exception as exc:
-            logger.warning(f"Failed to persist metadata for {u['doc_id']}: {exc}")
+            logger.warning("Failed to persist metadata for %s: %s", u["doc_id"], exc)
     try:
         await db.commit()
     except Exception as exc:
-        logger.warning(f"Failed to commit metadata updates: {exc}")
+        logger.warning("Failed to commit metadata updates: %s", exc)
 
     return enriched
 
@@ -1566,7 +1711,7 @@ async def upload_document(
             detail=f"File size exceeds maximum of {settings.MAX_UPLOAD_SIZE_MB}MB"
         )
     
-    logger.info(f"Uploading document: {file.filename} ({file_size} bytes)")
+    logger.info("Uploading document: %s (%s bytes)", file.filename, file_size)
     
     try:
         # Generate unique document ID
@@ -1580,7 +1725,7 @@ async def upload_document(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        logger.info(f"File saved to: {file_path}")
+        logger.info("File saved to: %s", file_path)
         
         # Create document record in database
         from sqlalchemy import text
@@ -1611,7 +1756,7 @@ async def upload_document(
         )
         await db.commit()
         
-        logger.info(f"Document record created: {document_id}")
+        logger.info("Document record created: %s", document_id)
         
         # Trigger pipeline asynchronously
         job_id = await PipelineService.trigger_pipeline(
@@ -1628,11 +1773,11 @@ async def upload_document(
             message=f"Document uploaded successfully. Pipeline job {job_id} started.",
         )
         
-    except Exception as e:
-        logger.error(f"Upload failed: {e}")
+    except Exception as exc:
+        logger.error("Upload failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Upload failed: {str(e)}"
+            detail=f"Upload failed: {str(exc)}"
         )
 
 
@@ -1659,13 +1804,13 @@ async def get_document_status(
         )
         return status_info
         
-    except ValueError as e:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            detail=str(exc)
         )
-    except Exception as e:
-        logger.error(f"Error getting status: {e}")
+    except Exception as exc:
+        logger.error("Error getting status: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get document status"
@@ -1685,13 +1830,13 @@ async def stream_document_events(
             document_id=str(document_id),
             db=db,
         )
-    except ValueError as e:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
+            detail=str(exc),
         )
-    except Exception as e:
-        logger.error(f"Error streaming document events: {e}")
+    except Exception as exc:
+        logger.error("Error streaming document events: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to stream document events",
@@ -1854,7 +1999,7 @@ async def get_document_sections(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error loading sections for {document_id}: {exc}")
+        logger.error("Error loading sections for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load document sections",
@@ -1886,7 +2031,7 @@ async def get_document_pages(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error loading page review units for {document_id}: {exc}")
+        logger.error("Error loading page review units for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load document pages",
@@ -1965,7 +2110,7 @@ async def update_document_page_content(
         page_entry["markdown_content"] = payload.markdown_content
         manifest_path.write_text(json.dumps(page_manifest, indent=2), encoding="utf-8")
     except OSError as exc:
-        logger.error(f"Error saving page content for {document_id}/{page_id}: {exc}")
+        logger.error("Error saving page content for %s/%s: %s", document_id, page_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save page content",
@@ -1983,23 +2128,12 @@ async def get_document_optimized_chunks(
     """Return editable optimized chunks for the post-optimization editor."""
     del current_user_id
 
-    document_status = await _get_document_status_value(document_id, db)
-    if document_status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
-
-    if document_status not in {
-        PipelineStatus.OPTIMIZATION_COMPLETE.value,
-        PipelineStatus.QA_REVIEW.value,
-        PipelineStatus.QA_PASSED.value,
-        PipelineStatus.FINAL_APPROVED.value,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Optimized output is only available after optimization has completed",
-        )
+    document_status = await _require_document_status(document_id, db)
+    _ensure_status_in(
+        current_status=document_status,
+        allowed_statuses=_OPTIMIZED_OUTPUT_AVAILABLE_STATUSES,
+        detail="Optimized output is only available after optimization has completed",
+    )
 
     try:
         work_dir = _find_document_workspace(document_id, require_document_dir=True)
@@ -2023,7 +2157,7 @@ async def get_document_optimized_chunks(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error loading optimized chunks for {document_id}: {exc}")
+        logger.error("Error loading optimized chunks for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to load optimized chunks",
@@ -2041,21 +2175,12 @@ async def update_document_optimized_chunk(
     """Persist updated optimized chunk content and invalidate stale QA results."""
     del current_user_id
 
-    document_status = await _get_document_status_value(document_id, db)
-    if document_status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
-
-    if document_status not in {
-        PipelineStatus.OPTIMIZATION_COMPLETE.value,
-        PipelineStatus.QA_REVIEW.value,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Optimized output can only be edited before QA has passed",
-        )
+    document_status = await _require_document_status(document_id, db)
+    _ensure_status_in(
+        current_status=document_status,
+        allowed_statuses=_OPTIMIZED_OUTPUT_EDITABLE_STATUSES,
+        detail="Optimized output can only be edited before QA has passed",
+    )
 
     try:
         payload = OptimizedChunkUpdate.model_validate(await request.json())
@@ -2100,13 +2225,13 @@ async def update_document_optimized_chunk(
     except HTTPException:
         raise
     except OSError as exc:
-        logger.error(f"Error saving optimized chunk for {document_id}/{chunk_id}: {exc}")
+        logger.error("Error saving optimized chunk for %s/%s: %s", document_id, chunk_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save optimized chunk",
         )
     except Exception as exc:
-        logger.error(f"Error updating optimized chunk for {document_id}/{chunk_id}: {exc}")
+        logger.error("Error updating optimized chunk for %s/%s: %s", document_id, chunk_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update optimized chunk",
@@ -2123,41 +2248,21 @@ async def _approve_for_optimization(
 ):
     """Generate optimization-prep artifacts and trigger Stage 10 after fidelity review."""
     try:
-        document_status = await _get_document_status_value(document_id, db)
-        if document_status is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found",
-            )
-
-        if document_status in {
-            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
-            PipelineStatus.OPTIMIZING.value,
-            PipelineStatus.OPTIMIZATION_COMPLETE.value,
-            PipelineStatus.QA_REVIEW.value,
-            PipelineStatus.QA_PASSED.value,
-            PipelineStatus.FINAL_APPROVED.value,
-            PipelineStatus.APPROVED.value,
-            PipelineStatus.REJECTED.value,
-        }:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot approve document in {document_status} status",
-            )
-
-        if document_status not in {
-            PipelineStatus.VALIDATION_COMPLETE.value,
-            PipelineStatus.IN_REVIEW.value,
-            PipelineStatus.REVIEW_COMPLETE.value,
-            PipelineStatus.FAILED.value,
-        }:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=(
-                    "Approve for optimization is only available for documents in "
-                    "validation-complete, in-review, review-complete, or failed status"
-                ),
-            )
+        document_status = await _require_document_status(document_id, db)
+        _ensure_status_not_in(
+            current_status=document_status,
+            blocked_statuses=_APPROVE_FOR_OPTIMIZATION_BLOCKED_STATUSES,
+            detail=f"Cannot approve document in {document_status} status",
+        )
+        _ensure_status_in(
+            current_status=document_status,
+            allowed_statuses=_APPROVE_FOR_OPTIMIZATION_ALLOWED_STATUSES,
+            detail=(
+                "Approve for optimization is only available for documents in "
+                "validation-complete, in-review, review-complete, or failed status"
+            ),
+            error_status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
 
         work_dir = _find_document_workspace(document_id, require_document_dir=True)
         review_dir = _find_review_workspace(document_id)
@@ -2216,7 +2321,7 @@ async def _approve_for_optimization(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error approving optimization for {document_id}: {exc}")
+        logger.error("Error approving optimization for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to approve document for optimization",
@@ -2255,35 +2360,20 @@ async def rescore_document_qa(
     del current_user_id
 
     try:
-        document_status = await _get_document_status_value(document_id, db)
-        if document_status is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found",
-            )
-
-        if document_status in {
-            PipelineStatus.APPROVED.value,
-            PipelineStatus.FINAL_APPROVED.value,
-            PipelineStatus.REJECTED.value,
-        }:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot rescore document in {document_status} status",
-            )
-
-        if document_status not in {
-            PipelineStatus.OPTIMIZATION_COMPLETE.value,
-            PipelineStatus.QA_REVIEW.value,
-            PipelineStatus.QA_PASSED.value,
-        }:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "QA rescore is only available for documents after optimization "
-                    "has completed"
-                ),
-            )
+        document_status = await _require_document_status(document_id, db)
+        _ensure_status_not_in(
+            current_status=document_status,
+            blocked_statuses=_FINALIZED_STATUSES,
+            detail=f"Cannot rescore document in {document_status} status",
+        )
+        _ensure_status_in(
+            current_status=document_status,
+            allowed_statuses=_QA_RESCORE_ALLOWED_STATUSES,
+            detail=(
+                "QA rescore is only available for documents after optimization "
+                "has completed"
+            ),
+        )
 
         result = await _compute_and_persist_qa_report(
             document_id=document_id,
@@ -2303,7 +2393,7 @@ async def rescore_document_qa(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Error rescoring QA for {document_id}: {exc}")
+        logger.error("Error rescoring QA for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to rescore QA report",
@@ -2318,10 +2408,7 @@ async def record_qa_decision(
     db: AsyncSession = Depends(get_db),
 ):
     """Record QA gate decision (accept → qa-passed; reject → rejected)."""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_request_json_or_empty(request)
 
     decision = payload.get("decision")
     if decision not in ("accept", "reject"):
@@ -2330,21 +2417,12 @@ async def record_qa_decision(
             detail="decision must be 'accept' or 'reject'",
         )
 
-    current_status = await _get_document_status_value(document_id, db)
-    if current_status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
-    if current_status in {
-        PipelineStatus.FINAL_APPROVED.value,
-        PipelineStatus.APPROVED.value,
-        PipelineStatus.REJECTED.value,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot record QA decision for document in {current_status} status",
-        )
+    current_status = await _require_document_status(document_id, db)
+    _ensure_status_not_in(
+        current_status=current_status,
+        blocked_statuses=_FINALIZED_STATUSES,
+        detail=f"Cannot record QA decision for document in {current_status} status",
+    )
 
     if decision == "accept":
         qa_report_path = get_artifacts_path(
@@ -2370,7 +2448,7 @@ async def record_qa_decision(
         await _set_document_status(db, document_id, new_status)
         return {"status": new_status}
     except Exception as exc:
-        logger.error(f"Error recording QA decision for {document_id}: {exc}")
+        logger.error("Error recording QA decision for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to record QA decision",
@@ -2385,10 +2463,7 @@ async def final_approve_document(
     db: AsyncSession = Depends(get_db),
 ):
     """Record final approval or rejection decision."""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    payload = await _read_request_json_or_empty(request)
 
     decision = payload.get("decision")
     if decision not in ("approve", "reject"):
@@ -2397,22 +2472,12 @@ async def final_approve_document(
             detail="decision must be 'approve' or 'reject'",
         )
 
-    current_status = await _get_document_status_value(document_id, db)
-    if current_status is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
-
-    if current_status in {
-        PipelineStatus.FINAL_APPROVED.value,
-        PipelineStatus.APPROVED.value,
-        PipelineStatus.REJECTED.value,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Document is already in {current_status} status",
-        )
+    current_status = await _require_document_status(document_id, db)
+    _ensure_status_not_in(
+        current_status=current_status,
+        blocked_statuses=_FINALIZED_STATUSES,
+        detail=f"Document is already in {current_status} status",
+    )
 
     if decision == "approve" and current_status != PipelineStatus.QA_PASSED.value:
         raise HTTPException(
@@ -2438,7 +2503,7 @@ async def final_approve_document(
         )
         return {"status": new_status}
     except Exception as exc:
-        logger.error(f"Error recording final approval for {document_id}: {exc}")
+        logger.error("Error recording final approval for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to record approval decision",
@@ -2469,10 +2534,7 @@ async def publish_document(
     row = result.mappings().first()
 
     if not row:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found",
-        )
+        _raise_document_not_found()
 
     document_status = row["status"]
     publication_status = _normalize_publication_status(document_status, row["publication_status"])
@@ -2562,7 +2624,7 @@ async def publish_document(
             publication_error=str(exc),
             indexed_chunk_count=_CLEAR,
         )
-        logger.error(f"Error publishing document {document_id} to RAG: {exc}")
+        logger.error("Error publishing document %s to RAG: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to publish document to RAG: {exc}",
@@ -2589,17 +2651,16 @@ async def reprocess_document(
         )
         row = result.mappings().first()
     except Exception as exc:
-        logger.error(f"DB lookup failed for reprocess {document_id}: {exc}")
+        logger.error("DB lookup failed for reprocess %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to look up document",
         )
 
     if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        _raise_document_not_found()
 
-    locked_statuses = {PipelineStatus.APPROVED.value, PipelineStatus.FINAL_APPROVED.value, PipelineStatus.REJECTED.value}
-    if row["status"] in locked_statuses and not getattr(request, "force", False):
+    if row["status"] in _FINALIZED_STATUSES and not getattr(request, "force", False):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Document is {row['status']}. Pass force=true to reprocess.",
@@ -2626,7 +2687,7 @@ async def reprocess_document(
             message=f"Reprocessing started. Job {job_id}.",
         )
     except Exception as exc:
-        logger.error(f"Reprocess failed for {document_id}: {exc}")
+        logger.error("Reprocess failed for %s: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Reprocess failed: {exc}",
@@ -2651,12 +2712,7 @@ async def get_document_artifact(
     - table_figure: Table/figure report (JSON)
     """
     try:
-        document_status = await _get_document_status_value(document_id, db)
-        if document_status is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found",
-            )
+        document_status = await _require_document_status(document_id, db)
 
         if artifact_type == ArtifactType.QA_REPORT:
             allow_legacy_qa_fallback = not _is_post_optimization_lifecycle(document_status)
@@ -2667,11 +2723,7 @@ async def get_document_artifact(
             )
             if not artifact_path.exists():
                 if not allow_legacy_qa_fallback:
-                    if document_status in {
-                        PipelineStatus.OPTIMIZATION_COMPLETE.value,
-                        PipelineStatus.QA_REVIEW.value,
-                        PipelineStatus.QA_PASSED.value,
-                    }:
+                    if document_status in _QA_REPORT_AUTOGEN_ELIGIBLE_STATUSES:
                         target_status = (
                             PipelineStatus.QA_REVIEW.value
                             if document_status == PipelineStatus.OPTIMIZATION_COMPLETE.value
@@ -2702,20 +2754,13 @@ async def get_document_artifact(
                             )
 
                     if artifact_path.exists():
-                        return FileResponse(
-                            path=str(artifact_path),
-                            filename=artifact_path.name,
-                            media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream",
-                        )
+                        return _build_artifact_file_response(artifact_path)
 
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Post-optimization QA report not found; run QA rescore on the optimized output first",
                     )
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Artifact {artifact_type} not found",
-                )
+                _raise_artifact_not_found(artifact_type)
         else:
             artifact_path = await PipelineService.get_artifact(
                 document_id=str(document_id),
@@ -2723,26 +2768,19 @@ async def get_document_artifact(
             )
 
         if not artifact_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Artifact {artifact_type} not found",
-            )
+            _raise_artifact_not_found(artifact_type)
 
-        return FileResponse(
-            path=str(artifact_path),
-            filename=artifact_path.name,
-            media_type="application/json" if artifact_path.suffix == ".json" else "application/octet-stream",
-        )
+        return _build_artifact_file_response(artifact_path)
 
-    except FileNotFoundError as e:
+    except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
+            detail=str(exc),
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error getting artifact: {e}")
+    except Exception as exc:
+        logger.error("Error getting artifact: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve artifact",

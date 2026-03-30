@@ -1,6 +1,21 @@
 /**
  * Bookmarks API - PostgREST integration
- * Handles bookmark CRUD operations
+ * Handles bookmark CRUD operations.
+ *
+ * Responsibilities:
+ * - Read user bookmark projections from `bookmark_details` view.
+ * - Transform snake_case database fields into frontend domain objects.
+ * - Persist new bookmarks bound to conversation/message context.
+ * - Remove bookmarks and keep UI lists synchronized.
+ *
+ * Query behavior:
+ * - Default ordering is newest-first by `created_at`.
+ * - Optional pagination via limit/offset for large datasets.
+ * - Tag filtering is applied client-side for predictable behavior.
+ *
+ * Data conversion:
+ * - `toBookmark` adapts view-specific columns into canonical `Bookmark` type.
+ * - JSONB citation payload is normalized to array semantics for rendering safety.
  */
 
 import { postgrestFetch, from } from './client';

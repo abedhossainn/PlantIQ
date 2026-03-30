@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const isStaticExport = process.env.NEXT_STATIC_EXPORT === "true";
 
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["10.1.10.181", "127.0.0.1", "localhost"],
+  allowedDevOrigins: ["10.1.10.181", "127.0.0.1", "localhost", "plantiq.sahossain.com", "api.plantiq.sahossain.com"],
   ...(isStaticExport ? { output: "export" as const } : {}),
   basePath: "/PlantIQ",
   trailingSlash: true,

@@ -98,15 +98,61 @@ def _read_valid_optimized_artifact_metadata(document_id: str) -> dict[str, Optio
 
 
 class PipelineService:
-    """Service for managing pipeline subprocess execution."""
+    """Service for managing pipeline subprocess execution.
     
-    # Track active pipeline processes
+    HITL Pipeline Lifecycle:
+    The pipeline orchestrates document processing through distinct phases:
+    
+    INGESTION (fast, automated):
+    1. UPLOADING: File receipt and storage
+    2. EXTRACTING: Docling PDF-to-markdown conversion
+    3. VLM_VALIDATING: Vision-language model checks content and issues
+    => VALIDATION_COMPLETE: Ingestion terminal state (ready for human review)
+    
+    REVIEW (human-driven):
+    1. IN_REVIEW: Reviewer examines pages, facts, figures; optional edits
+    2. REVIEW_COMPLETE: All pages reviewed; ready for decision
+    => APPROVED_FOR_OPTIMIZATION or REJECTED
+    
+    OPTIMIZATION (heavy computation, optional):
+    1. OPTIMIZING: Chunking, cleaning, semantic enhancement for RAG
+    2. OPTIMIZATION_COMPLETE: Output ready for QA decision
+    => QA_REVIEW
+    
+    QA (automated metric checks):
+    1. QA_REVIEW: Re-score chunks, assess coverage, emit recommendation
+    2. QA_PASSED: Metrics acceptable, eligible for final approval
+    => FINAL_APPROVED
+    
+    TERMINAL STATES: APPROVED, REJECTED, FAILED (no further transitions)
+    
+    Operational Notes:
+    - Only one active ingestion request per document
+    - Status changes drive state machine logic (e.g., can't delete while optimizing)
+    - Event stream subscribers notified on progress changes
+    - Subprocess stdout/stderr captured for artifact logs
+    """
+    
+    # Track active subprocess processes keyed by job_id (UUID)
     _active_processes: Dict[str, asyncio.subprocess.Process] = {}
+    
+    # Cache latest status for each document (avoids repeated DB queries during polling)
     _status_cache: Dict[str, PipelineStatusResponse] = {}
+    
+    # Map document_id -> job_id for process lifecycle tracking
     _job_ids_by_document: Dict[str, str] = {}
+    
+    # Event history retained per document (enables client reconnect without losing updates)
     _event_history: Dict[str, list[dict[str, Any]]] = {}
+    
+    # SSE subscribers listening for real-time updates per document
     _event_subscribers: Dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
 
+    # Progress percentage thresholds for each ingestion/review/optimization status.
+    # Used for frontend progress bar rendering (0-100%).
+    # INGESTION phases: 10% -> 30% -> 60% -> 100% (completion)
+    # REVIEW phases: maintained at 100% (human-driven, no ETA)
+    # OPTIMIZATION/QA: similar stepped progression
     _status_progress_map = {
         PipelineStatus.PENDING.value: 0,
         PipelineStatus.UPLOADING.value: 10,
@@ -126,6 +172,8 @@ class PipelineService:
         PipelineStatus.FAILED.value: 0,
     }
 
+    # Map status values to operational stage names (used in UI + APIs).
+    # Enables frontend grouping of statuses (e.g., all review-related statuses -> "review" stage).
     _status_stage_map = {
         PipelineStatus.UPLOADING.value: "upload",
         PipelineStatus.EXTRACTING.value: "extraction",
@@ -144,6 +192,8 @@ class PipelineService:
         PipelineStatus.FAILED.value: "failed",
     }
 
+    # Status values representing active ingestion (subprocess running, no human input).
+    # Used to detect stalled processes (if status is stale AND no live subprocess).
     _active_ingestion_statuses = {
         PipelineStatus.UPLOADING.value,
         PipelineStatus.EXTRACTING.value,

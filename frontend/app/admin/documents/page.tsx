@@ -1,5 +1,39 @@
 "use client";
 
+/**
+ * Document Inventory & Queue Management Dashboard
+ *
+ * Purpose:
+ * - Central operational view for all uploaded documents in the pipeline.
+ * - Separates documents by lifecycle state (pending, in-progress, approved, rejected).
+ * - Provides direct navigation to the correct stage-specific page per document.
+ * - Supports admin triage actions like delete, open queue views, and progress tracking.
+ *
+ * Data Sources:
+ * - FastAPI pipeline service for pending and active statuses.
+ * - Final approved list endpoint for production-ready RAG documents.
+ * - Client-side status helpers from document-status.ts for consistent gating logic.
+ *
+ * Status Routing:
+ * - Each status maps to an action route (review, qa-gates, optimized-review, approve, etc.).
+ * - STATUS_CONFIG centralizes labels, badges, icons, and CTA text to avoid duplicate mapping.
+ * - Unknown statuses fall back to neutral display, preserving resiliency to backend changes.
+ *
+ * Operational UX:
+ * - Pending-documents view highlights queue urgency and handoff points.
+ * - Progress bars communicate stage completion where numeric progress exists.
+ * - Badge/icon semantics provide at-a-glance health for operators.
+ *
+ * Error Handling:
+ * - API errors are surfaced with user-readable messages.
+ * - Defensive rendering for partial records prevents table crashes.
+ * - Delete flow catches and reports failures while keeping list state consistent.
+ *
+ * Why this file is large:
+ * - Consolidates status taxonomy, table rendering, and queue-specific controls in one page.
+ * - Avoids fragmented navigation logic across multiple thin wrappers.
+ */
+
 import { Suspense, useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -15,6 +49,69 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ApiError, deleteDocument, getFinalApprovedDocuments, getPendingDocuments } from "@/lib/api";
 import type { Document } from "@/types";
 import { isQAQueueStatus } from "@/lib/document-status";
+
+// ---------------------------------------------------------------------------
+// Status Taxonomy Reference
+// ---------------------------------------------------------------------------
+// Ingestion / early pipeline
+// - pending
+// - uploading
+// - extracting
+// - vlm-validating
+// - validation-complete
+//
+// Human review and optimization
+// - in-review
+// - review-complete
+// - approved-for-optimization
+// - optimizing
+// - optimization-complete
+//
+// QA and release gates
+// - qa-review
+// - qa-passed
+// - final-approved
+//
+// Terminal outcomes
+// - approved
+// - rejected
+// - failed
+//
+// UX mapping goals:
+// - Ensure every status has a deterministic badge/icon/action.
+// - Keep action labels stage-appropriate and reviewer-friendly.
+// - Prefer explicit handling over hidden implicit fallbacks.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Dashboard QA Checklist
+// ---------------------------------------------------------------------------
+// Data loading checks:
+// - Pending and approved queries both execute successfully.
+// - Partial API failures do not blank out existing successful sections.
+// - Empty-state messaging is shown when no records are returned.
+//
+// Status display checks:
+// - Every known status renders icon + badge + label.
+// - Unknown statuses render safely without runtime errors.
+// - Progress values stay clamped to [0,100] in UI components.
+//
+// Action routing checks:
+// - review-complete routes to QA gates.
+// - optimization-complete routes to optimized review.
+// - qa-passed routes to final approval.
+// - terminal statuses route to read-only relevant pages.
+//
+// Mutating action checks:
+// - Delete action confirms intent and reports failures clearly.
+// - Optimistic row removal is reconciled with backend response.
+// - Navigation actions preserve selected view parameters.
+//
+// Accessibility checks:
+// - Table headers remain descriptive.
+// - Action buttons have readable labels and icon affordances.
+// - Status colors are supplemented with text labels.
+// ---------------------------------------------------------------------------
 
 const STATUS_CONFIG: Record<
   string,

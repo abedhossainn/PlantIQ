@@ -55,7 +55,7 @@ class LDAPClient:
         if self.use_mock:
             logger.info("Using mock LDAP provider for development")
         else:
-            logger.info(f"Using LDAP server: {self.server_url}")
+            logger.info("Using LDAP server: %s", self.server_url)
             # Initialize real LDAP connection here
             # import ldap3
             # self.conn = ldap3.Connection(...)
@@ -91,8 +91,8 @@ class LDAPClient:
         #     
         #     # Fetch user attributes
         #     return await self._fetch_user_info(username)
-        # except Exception as e:
-        #     logger.error(f"LDAP authentication failed: {e}")
+        # except Exception as exc:
+        #     logger.error("LDAP authentication failed: %s", exc)
         #     return None
         
         return None
@@ -122,14 +122,14 @@ class LDAPClient:
         
         user_data = mock_users.get(username)
         if not user_data:
-            logger.warning(f"Mock LDAP: User not found: {username}")
+            logger.warning("Mock LDAP: User not found: %s", username)
             return None
         
         if user_data["password"] != password:
-            logger.warning(f"Mock LDAP: Invalid password for user: {username}")
+            logger.warning("Mock LDAP: Invalid password for user: %s", username)
             return None
         
-        logger.info(f"Mock LDAP: Authentication successful for user: {username}")
+        logger.info("Mock LDAP: Authentication successful for user: %s", username)
         return LDAPUser(
             username=username,
             email=user_data["email"],

@@ -1,7 +1,32 @@
 /**
  * WebSocket Client
- * Real-time streaming for pipeline status and chat responses
+ * Real-time streaming for pipeline status and chat responses.
+ *
+ * Role in architecture:
+ * - Provides low-latency bidirectional channel for status/token updates.
+ * - Complements SSE endpoints used elsewhere in the app.
+ * - Normalizes backend payloads into typed unions for UI consumers.
+ *
+ * Supported streams:
+ * - Pipeline channel: progress, stage-complete, complete, error, heartbeat.
+ * - Chat channel: token, citation, complete, error, heartbeat.
+ *
+ * Message contracts:
+ * - Messages are represented as discriminated unions by `type`.
+ * - Unknown or keepalive frames (`connected`, `heartbeat`, `pong`) are preserved but safely typed.
+ * - Consumers can switch on `type` exhaustively to guarantee runtime safety.
+ *
+ * Reliability considerations:
+ * - Connection lifecycle (open/close/error) is expected to be handled by caller components.
+ * - Heartbeat and pong events enable stale-connection detection.
+ * - Errors are structured with context (`stage`, `document_id`) for actionable UI messages.
+ *
+ * Design note:
+ * - This module intentionally focuses on contracts and transport helpers rather than UI logic.
+ * - Keeping contracts here avoids duplicated ad-hoc parsing in pages/components.
  */
+
+import { getFastApiWsBaseUrl } from './client';
 
 // ============================================================================
 // Type Definitions
@@ -25,6 +50,8 @@ export type ChatMessageType =
   | 'heartbeat'
   | 'pong';
 
+// Pipeline progress frame emitted repeatedly during active stages.
+// `progress` is normalized as percentage [0..100].
 export interface PipelineProgressMessage {
   type: 'progress';
   document_id: string;
@@ -34,6 +61,8 @@ export interface PipelineProgressMessage {
   timestamp: string;
 }
 
+// Stage-complete frame emitted once per completed backend stage.
+// `duration` allows UI to surface per-stage timing diagnostics.
 export interface PipelineStageCompleteMessage {
   type: 'stage-complete';
   document_id: string;
@@ -43,6 +72,7 @@ export interface PipelineStageCompleteMessage {
   timestamp: string;
 }
 
+// Error frame for unrecoverable pipeline-stage failures.
 export interface PipelineErrorMessage {
   type: 'error';
   document_id: string;
@@ -51,6 +81,7 @@ export interface PipelineErrorMessage {
   timestamp: string;
 }
 
+// Terminal success frame when pipeline processing is complete.
 export interface PipelineCompleteMessage {
   type: 'complete';
   document_id: string;
@@ -59,6 +90,7 @@ export interface PipelineCompleteMessage {
   timestamp: string;
 }
 
+// Token-by-token assistant output for streaming chat UI.
 export interface ChatTokenMessage {
   type: 'token';
   content: string;
@@ -67,6 +99,8 @@ export interface ChatTokenMessage {
   timestamp: string;
 }
 
+// Citation payload emitted independently from text tokens.
+// Enables source badges/drawers to update without waiting for completion.
 export interface ChatCitationMessage {
   type: 'citation';
   citation: {
@@ -81,6 +115,7 @@ export interface ChatCitationMessage {
   timestamp: string;
 }
 
+// Terminal chat frame containing final citation set for persistence.
 export interface ChatCompleteMessage {
   type: 'complete';
   message_id: string;
@@ -96,6 +131,7 @@ export interface ChatCompleteMessage {
   timestamp: string;
 }
 
+// Terminal chat error frame for stream interruption/failure states.
 export interface ChatErrorMessage {
   type: 'error';
   error: string;
@@ -115,6 +151,14 @@ export type ChatMessage =
   | ChatCompleteMessage
   | ChatErrorMessage
   | { type: 'connected' | 'heartbeat' | 'pong'; [key: string]: unknown };
+
+const isDevEnvironment = process.env.NODE_ENV !== 'production';
+
+function logDebug(...args: unknown[]): void {
+  if (isDevEnvironment) {
+    console.debug(...args);
+  }
+}
 
 function getAuthToken(): string | null {
   if (typeof globalThis === 'undefined' || !('localStorage' in globalThis)) {
@@ -165,7 +209,7 @@ abstract class BaseWebSocketClient {
     if (!this.ws) return;
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected:', this.wsUrl);
+      logDebug('WebSocket connected:', this.wsUrl);
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.startPingInterval();
@@ -187,7 +231,7 @@ abstract class BaseWebSocketClient {
     };
 
     this.ws.onclose = (event) => {
-      console.log('WebSocket closed:', event.code, event.reason);
+      logDebug('WebSocket closed:', event.code, event.reason);
       this.stopPingInterval();
       this.onClose(event);
 
@@ -202,7 +246,7 @@ abstract class BaseWebSocketClient {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
     
-    console.log(
+    logDebug(
       `Scheduling reconnect attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts} in ${delay}ms`
     );
 
@@ -271,13 +315,11 @@ export class PipelineWebSocketClient extends BaseWebSocketClient {
   }
 
   get wsUrl(): string {
-    const baseUrl = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
-    const wsUrl = baseUrl.replace(/^http/, 'ws');
-    return `${wsUrl}/ws/pipeline/${this.documentId}`;
+    return `${getFastApiWsBaseUrl()}/ws/pipeline/${this.documentId}`;
   }
 
   protected onOpen(): void {
-    console.log(`Connected to pipeline status for document: ${this.documentId}`);
+    logDebug(`Connected to pipeline status for document: ${this.documentId}`);
   }
 
   protected onMessage(message: unknown): void {
@@ -291,7 +333,7 @@ export class PipelineWebSocketClient extends BaseWebSocketClient {
   }
 
   protected onClose(event: CloseEvent): void {
-    console.log('Pipeline WebSocket closed:', event.code);
+    logDebug('Pipeline WebSocket closed:', event.code);
   }
 }
 
@@ -312,13 +354,11 @@ export class ChatWebSocketClient extends BaseWebSocketClient {
   }
 
   get wsUrl(): string {
-    const baseUrl = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
-    const wsUrl = baseUrl.replace(/^http/, 'ws');
-    return `${wsUrl}/ws/chat/${this.conversationId}`;
+    return `${getFastApiWsBaseUrl()}/ws/chat/${this.conversationId}`;
   }
 
   protected onOpen(): void {
-    console.log(`Connected to chat stream for conversation: ${this.conversationId}`);
+    logDebug(`Connected to chat stream for conversation: ${this.conversationId}`);
   }
 
   protected onMessage(message: unknown): void {
@@ -332,7 +372,7 @@ export class ChatWebSocketClient extends BaseWebSocketClient {
   }
 
   protected onClose(event: CloseEvent): void {
-    console.log('Chat WebSocket closed:', event.code);
+    logDebug('Chat WebSocket closed:', event.code);
   }
 
   /**

@@ -1,5 +1,53 @@
 "use client";
 
+/**
+ * Optimized Content Review Stage - LLM Output Validation & Refinement
+ * 
+ * Purpose:
+ * - Display LLM-optimized content (summaries, synthetic QA pairs)
+ * - Enable human review and in-place corrections
+ * - Validate output quality and relevance to source document
+ * - Approve or request re-optimization
+ * 
+ * Pipeline Stage Context:
+ * - Input: Document in OPTIMIZATION_COMPLETE status
+ * - Display: Optimized_summary.txt + synthetic_qa_pairs.json artifacts
+ * - Action: Review optimized content, correct misalignments, flag ambiguities
+ * - Output: Document ready for QA metrics evaluation
+ * 
+ * Content Types:
+ * - Optimized Summary: LLM-generated concise summary (editable text)
+ * - Synthetic QA Pairs: Auto-generated Q&A for knowledge base (editable list)
+ * - Table Facts: Extracted tabular data as bullet points (editable)
+ * - Ambiguity Flags: Issues identified by LLM (editable, for remediation tracking)
+ * 
+ * Review Features:
+ * - Side-by-side comparison: Original extracted text + optimized version
+ * - In-place editing: Correct LLM-generated content directly
+ * - Validation: Check summary against source for hallucuation/drift
+ * - QA pair review: Validate synthetic Q&A relevance + accuracy
+ * - Ambiguity tracking: Flag unclear sections for human review
+ * 
+ * Data Model:
+ * - OptimizedChunk: One piece of optimized content (summary, QA pair, etc.)
+ * - DocumentOptimizedChunksResponse: Collection of all chunks per document
+ * - Editable fields: Summary text, QA pairs, facts, ambiguity notes
+ * 
+ * Edit Mode:
+ * - Toggle per section (summary, QA pairs, facts, ambiguities)
+ * - Unsaved changes tracked + save confirmation required
+ * - Submission sends edited content back to backend (optimized_review artifact)
+ * 
+ * Error Handling:
+ * - Fetch failures: Show error state + retry button
+ * - Save failures: Display error toast + keep edits in form
+ * - Validation: Prevent empty summaries, invalid QA pairs
+ * 
+ * Next Steps:
+ * - After approval: Document transitions to QA_REVIEW stage
+ * - Backend uses reviewed_optimizations artifact for QA metrics
+ */
+
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -24,6 +72,15 @@ import { getDocumentOptimizedChunks, updateOptimizedChunk } from "@/lib/api/opti
 import { isQAReadyStatus, isFinalizedDocumentStatus } from "@/lib/document-status";
 import { fastapiFetch } from "@/lib/api";
 import type { OptimizedChunk, DocumentOptimizedChunksResponse } from "@/types";
+
+// ---------------------------------------------------------------------------
+// Optimized Review Runtime Notes
+// ---------------------------------------------------------------------------
+// - Reviewer edits are the final guard against hallucinated optimization output.
+// - Always preserve source alignment: edits should remain traceable to extracted text.
+// - Chunk-level save operations should be idempotent when retried.
+// - Read-only mode is enforced for finalized statuses to protect audit integrity.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Small helpers

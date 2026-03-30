@@ -2,6 +2,16 @@ import type { QAGateReport, QAMetric } from "@/types";
 
 /**
  * Mock QA gate metrics for document quality assessment
+ *
+ * Why this fixture exists:
+ * - Enables QA-gates UI development without requiring live backend metric generation.
+ * - Provides deterministic pass/fail/warning scenarios for visual and logic testing.
+ * - Covers edge cases such as near-threshold warnings and critical rejection paths.
+ *
+ * Dataset design:
+ * - Each report includes per-metric scores + recommendation + failing criteria.
+ * - Scores are intentionally varied to exercise different badge/progress states.
+ * - Timestamps mimic realistic processing windows for timeline rendering.
  */
 
 // Helper to create metric
@@ -22,6 +32,22 @@ const createMetric = (
 
   return { name, score, threshold, status, details };
 };
+
+// Scenario catalog:
+// - doc-1: Strong pass profile, expected recommendation=accept.
+//   Use this record to validate green-path visuals and approval CTA behavior.
+// - doc-2: Mixed failures with at least one critical under-threshold metric.
+//   Use this record to verify reject banners and failed-criteria rendering.
+// - doc-5: Multi-failure profile with broad score degradation.
+//   Use this record to test warning aggregation and prioritization logic.
+// - doc-6: Borderline/warning profile to exercise yellow-state semantics.
+//   Use this record to validate threshold-near behavior.
+//
+// Maintenance guidance:
+// - Keep metric names aligned with UI labels in QA pages.
+// - Keep thresholds realistic for LNG procedure quality expectations.
+// - Preserve variety of pass/warning/fail outcomes after edits.
+// - Update generatedAt values when intentionally simulating recency.
 
 export const mockQAGateReports: Record<string, QAGateReport> = {
   "doc-1": {

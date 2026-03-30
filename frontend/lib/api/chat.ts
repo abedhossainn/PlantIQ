@@ -1,7 +1,27 @@
 /**
- * Chat API Client
- * Handles RAG chat queries with streaming and citation support.
- *
+ * Chat API client for RAG-powered conversations.
+ * 
+ * Streaming Architecture:
+ * - submitChatQuery(): Synchronous request (small payloads, non-critical queries)
+ * - streamChatQuery(): Server-Sent Events (SSE) streaming of token-by-token generation
+ * - Falls back to polling if SSE unsupported or fails
+ * 
+ * Event Types:
+ * - MessageSSEEvent: LLM-generated text tokens (role=assistant)
+ * - CitationSSEEvent: Document citations with source metadata
+ * - StatusSSEEvent: Lifecycle updates (e.g., "generating", "done")
+ * - ErrorSSEEvent: Backend errors during generation
+ * 
+ * Citation System:
+ * - Emitted as separate events during/after generation
+ * - Contains document_id, source, page_number, chunk_text
+ * - Frontend renders as hover-able badges with source detail drawer
+ * 
+ * Token Accumulation:
+ * - Text tokens accumulated into complete message before UI update
+ * - Prevents excessive re-renders and layout thrashing
+ * - Batched updates every 50ms or on citation/terminal event
+ * 
  * SSE contract (matches backend/app/models/sse.py):
  *   event: token   → ChatTokenSSEEvent
  *   event: citation → ChatCitationSSEEvent
@@ -9,7 +29,7 @@
  *   event: error    → ChatErrorSSEEvent     (terminal)
  */
 
-import { fastapiFetch, getAuthToken } from './client';
+import { fastapiFetch, getAuthToken, getFastApiBaseUrl } from './client';
 
 // ============================================================================
 // Type Definitions
@@ -199,7 +219,7 @@ export async function* streamChatQuery(
   }
 
   const response = await fetch(
-    `${process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000'}/api/v1/chat/stream`,
+    `${getFastApiBaseUrl()}/api/v1/chat/stream`,
     {
       method: 'POST',
       headers,

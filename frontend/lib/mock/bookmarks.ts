@@ -2,6 +2,15 @@ import type { Bookmark } from "@/types";
 
 /**
  * Mock bookmarked answers for quick reference
+ *
+ * Fixture goals:
+ * - Validate bookmark list rendering with markdown answers and citations.
+ * - Cover multiple tags and note combinations for filtering UX.
+ * - Provide varied query/answer lengths to test card responsiveness.
+ *
+ * Operational realism:
+ * - Uses LNG procedure-oriented prompts representative of field usage.
+ * - Keeps citation payloads aligned with chat fixture documents.
  */
 
 export const mockBookmarks: Bookmark[] = [

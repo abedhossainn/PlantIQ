@@ -4,17 +4,20 @@ WebSocket Manager - Handle WebSocket connections and message broadcasting.
 Manages WebSocket connections for pipeline status and chat streaming.
 """
 import logging
-import json
 import asyncio
 from typing import Dict, Set, Optional
 from fastapi import WebSocket
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 
 class ConnectionManager:
-    """Manage WebSocket connections."""
+    """Manage WebSocket connections for real-time data delivery.
+    
+    Supports channel-based broadcasting: multiple clients subscribe to the same
+    document/topic and receive simultaneous updates (e.g., pipeline progress, chat tokens).
+    Thread-safe for concurrent connections and disconnections.
+    """
     
     def __init__(self):
         # Active connections by channel
@@ -31,7 +34,7 @@ class ConnectionManager:
                 self.active_connections[channel] = set()
             self.active_connections[channel].add(websocket)
         
-        logger.info(f"Client connected to channel: {channel}")
+        logger.info("Client connected to channel: %s", channel)
     
     async def disconnect(self, websocket: WebSocket, channel: str):
         """Remove a WebSocket connection."""
@@ -43,7 +46,7 @@ class ConnectionManager:
                 if not self.active_connections[channel]:
                     del self.active_connections[channel]
         
-        logger.info(f"Client disconnected from channel: {channel}")
+            logger.info("Client disconnected from channel: %s", channel)
     
     async def send_message(self, channel: str, message: dict):
         """
@@ -65,8 +68,8 @@ class ConnectionManager:
         for websocket in connections:
             try:
                 await websocket.send_json(message)
-            except Exception as e:
-                logger.error(f"Error sending message: {e}")
+            except Exception as exc:
+                logger.error("Error sending message: %s", exc)
                 disconnected.append(websocket)
         
         # Remove disconnected clients
@@ -87,8 +90,8 @@ class ConnectionManager:
         for websocket in all_connections:
             try:
                 await websocket.send_json(message)
-            except Exception as e:
-                logger.error(f"Error broadcasting message: {e}")
+            except Exception as exc:
+                logger.error("Error broadcasting message: %s", exc)
                 disconnected.append(websocket)
         
         # Clean up disconnected clients

@@ -2,6 +2,16 @@ import type { DocumentSection, ReviewChecklist, SectionVersion } from "@/types";
 
 /**
  * Mock document sections for the review interface
+ *
+ * Purpose:
+ * - Seed realistic review content for UI development and regression testing.
+ * - Simulate mixed-quality extraction outputs with varied severity issues.
+ * - Support section-level checklist, versioning, and evidence image flows.
+ *
+ * Coverage:
+ * - Includes complete/in-review/draft section statuses.
+ * - Models table fidelity, missing text, and formatting defects.
+ * - Provides multi-page ranges and reviewer metadata for audit-like displays.
  */
 
 // Helper to create default checklist
@@ -13,6 +23,19 @@ const createDefaultChecklist = (overrides?: Partial<ReviewChecklist>): ReviewChe
   technicalTermsAccurate: false,
   ...overrides,
 });
+
+// Review-fixture conventions:
+// - `status` progression should represent real review queue movement.
+// - `checklist` reflects reviewer confirmations by criterion.
+// - `issues` should include realistic context snippets and severity.
+// - `evidenceImages` paths are placeholders for visual QA workflows.
+// - `currentVersion` and `lastApprovedVersion` model auditability/version compare.
+//
+// Test intent coverage:
+// - complete section: verifies read-only/approved visuals.
+// - in-review section: verifies active edit and issue triage behavior.
+// - draft section: verifies onboarding/edit-from-scratch workflows.
+// - mixed page ranges: verifies navigation and page-label formatting.
 
 // Mock sections for doc-2 (Cryogenic Pump System - in review)
 export const mockSections: DocumentSection[] = [

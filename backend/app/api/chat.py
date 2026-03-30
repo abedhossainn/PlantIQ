@@ -46,18 +46,18 @@ async def chat_query(
         )
         return response
 
-    except (LLMConfigurationError, LLMUnavailableError) as e:
-        logger.error(f"Chat generation unavailable: {e}")
+    except (LLMConfigurationError, LLMUnavailableError) as exc:
+        logger.error("Chat generation unavailable: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Chat generation unavailable: {str(e)}",
+            detail=f"Chat generation unavailable: {str(exc)}",
         )
         
-    except Exception as e:
-        logger.error(f"Query processing failed: {e}")
+    except Exception as exc:
+        logger.error("Query processing failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process query: {str(e)}"
+            detail=f"Failed to process query: {str(exc)}"
         )
 
 

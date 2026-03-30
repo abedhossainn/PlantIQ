@@ -28,7 +28,12 @@ COPY pipeline /workspace/pipeline
 # Install Python dependencies for both backend and pipeline
 # Include backend dev extras so pytest and related tooling are available
 # in the development container used for local test execution.
+# Install transformers 5.x + huggingface_hub>=1.0 explicitly first so that
+# docling's stale metadata constraint (huggingface_hub<1) does not cause pip
+# to downgrade huggingface_hub and break transformers. Docling 2.82.0 works
+# with huggingface_hub 1.x at runtime despite the metadata mismatch.
 RUN pip install --no-cache-dir -e '/workspace/backend[dev]' \
+    && pip install --no-cache-dir "transformers>=5.0.0,<6.0.0" "huggingface_hub>=1.0.0" \
     && pip install --no-cache-dir -e /workspace/pipeline
 
 WORKDIR /workspace/backend

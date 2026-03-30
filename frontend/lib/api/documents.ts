@@ -1,6 +1,21 @@
 /**
  * Documents API
  * Handles document metadata retrieval from the FastAPI pipeline service.
+ *
+ * Scope:
+ * - Read list of all documents across lifecycle stages.
+ * - Filter by status/system for dashboard and queue views.
+ * - Expose convenience selectors for review queue and QA queue.
+ * - Provide delete operation contract and response typing.
+ *
+ * Mapping strategy:
+ * - Backend rows are normalized into frontend `Document` shape.
+ * - Nullable backend values are converted to safe defaults for resilient rendering.
+ * - Status helpers from `document-status.ts` prevent duplicated hard-coded status sets.
+ *
+ * Architectural note:
+ * - This module isolates document-oriented API calls from page components,
+ *   enabling simpler UI code and reusable domain helpers.
  */
 
 import { fastapiFetch, getFastApiBaseUrl } from './client';

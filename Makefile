@@ -1,14 +1,14 @@
 # PlantIQ Development Makefile
 # Air-Gapped RAG System for Industrial OT Environments
 
-.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs venv activate ensure-compose llm-supervisor-start llm-supervisor-stop llm-supervisor-status
+.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs venv activate ensure-compose verify-llm-gpu llm-supervisor-start llm-supervisor-stop llm-supervisor-status
 
 # Path to Python interpreter
 PYTHON := python3
 VENV := .venv
 VENV_BIN := $(VENV)/bin
-VENV_PYTHON := $(VENV_BIN)/python
-VENV_PIP := $(VENV_BIN)/pip
+VENV_PYTHON := $(abspath $(VENV_BIN))/python
+VENV_PIP := $(abspath $(VENV_BIN))/pip
 COMPOSE_V2 := $(shell if docker compose version >/dev/null 2>&1; then printf '%s' 'docker compose'; fi)
 COMPOSE_V1 := $(shell if command -v docker-compose >/dev/null 2>&1; then printf '%s' 'docker-compose'; fi)
 COMPOSE := $(if $(COMPOSE_V2),$(COMPOSE_V2),$(COMPOSE_V1))
@@ -45,6 +45,7 @@ help:
 	@echo "  make docker-down     Stop all services"
 	@echo "  make docker-build    Build all Docker images"
 	@echo "  make docker-logs     View logs from all containers"
+	@echo "  make verify-llm-gpu  Fail fast if Ollama is not using NVIDIA runtime"
 	@echo "  make llm-supervisor-start  Start host-side on-demand LLM lifecycle supervisor"
 	@echo "  make llm-supervisor-stop   Stop host-side on-demand LLM lifecycle supervisor"
 	@echo "  make llm-supervisor-status Show supervisor process status"
@@ -78,7 +79,13 @@ install: venv install-pipeline install-backend install-frontend
 
 install-backend: venv
 	@echo "Installing backend dependencies..."
-	@cd backend && $(VENV_PIP) install -r requirements.txt || echo "⚠️  Backend requirements.txt not yet created"
+	@if [ -f backend/requirements.txt ]; then \
+		cd backend && $(VENV_PIP) install -r requirements.txt; \
+	elif [ -f backend/pyproject.toml ]; then \
+		cd backend && $(VENV_PIP) install -e .; \
+	else \
+		echo "⚠️  No backend dependency manifest found (expected requirements.txt or pyproject.toml)"; \
+	fi
 
 install-frontend:
 	@echo "Installing frontend dependencies..."
@@ -184,7 +191,7 @@ ensure-compose:
 docker-up: ensure-compose
 	@echo "Starting stable infrastructure services..."
 	@docker ps -aq --format '{{.ID}} {{.Names}}' | awk '/docling-serve/ {print $$1}' | xargs -r docker rm -f >/dev/null 2>&1 || true
-	@$(COMPOSE) up -d postgres vector-db docling-serve
+	@$(COMPOSE) up -d postgres vector-db docling-serve llm
 	@echo "Applying database migrations to local PostgreSQL volume..."
 	@POSTGRES_USER=$${POSTGRES_USER:-plantiq}; \
 	POSTGRES_DB=$${POSTGRES_DB:-plantiq}; \
@@ -212,6 +219,10 @@ docker-up: ensure-compose
 	@$(COMPOSE) rm -fs backend frontend >/dev/null 2>&1 || true
 	@docker ps -aq --format '{{.ID}} {{.Names}}' | awk '/plantiq-backend|plantiq-frontend/ {print $$1}' | xargs -r docker rm -f >/dev/null 2>&1 || true
 	@$(COMPOSE) up -d --force-recreate --no-deps backend frontend
+	@$(MAKE) verify-llm-gpu
+
+verify-llm-gpu: ensure-compose
+	@bash infra/scripts/verify_llm_gpu_runtime.sh llm
 
 docker-down: ensure-compose
 	@echo "Stopping all services..."

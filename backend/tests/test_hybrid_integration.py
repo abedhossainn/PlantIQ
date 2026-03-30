@@ -1086,6 +1086,62 @@ def test_chat_stream_emits_structured_error_event_on_generation_failure(client: 
     assert parsed_events[-1][1]["done"] is True
 
 
+def test_chat_websocket_query_returns_explicit_unsupported_operation_error(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_verify_ws_token(_token: str | None):
+        return TEST_USER_ID, "user"
+
+    async def fake_check_conversation_access(_conversation_id: str, _user_id: uuid.UUID):
+        return True
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_conversation_access", fake_check_conversation_access)
+
+    conversation_id = str(uuid.uuid4())
+    with client.websocket_connect(f"/ws/chat/{conversation_id}?token=test-token") as websocket:
+        connected_event = websocket.receive_json()
+        assert connected_event["type"] == "connected"
+
+        websocket.send_json({"type": "query", "content": "What is LNG density?"})
+        error_event = websocket.receive_json()
+
+    assert error_event == {
+        "type": "error",
+        "error": "Query processing via WebSocket is not yet implemented. Use POST /api/v1/chat/stream instead.",
+        "operation": "query",
+    }
+
+
+def test_chat_websocket_cancel_returns_explicit_unsupported_operation_error(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async def fake_verify_ws_token(_token: str | None):
+        return TEST_USER_ID, "user"
+
+    async def fake_check_conversation_access(_conversation_id: str, _user_id: uuid.UUID):
+        return True
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_conversation_access", fake_check_conversation_access)
+
+    conversation_id = str(uuid.uuid4())
+    with client.websocket_connect(f"/ws/chat/{conversation_id}?token=test-token") as websocket:
+        connected_event = websocket.receive_json()
+        assert connected_event["type"] == "connected"
+
+        websocket.send_json({"type": "cancel"})
+        error_event = websocket.receive_json()
+
+    assert error_event == {
+        "type": "error",
+        "error": "Generation cancellation via WebSocket is not supported for this endpoint.",
+        "operation": "cancel",
+    }
+
+
 def test_pipeline_events_stream_replays_accept_progress_and_complete(client: TestClient, fake_db: FakeAsyncSession):
     document_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)

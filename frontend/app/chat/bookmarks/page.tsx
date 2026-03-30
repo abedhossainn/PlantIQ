@@ -1,5 +1,28 @@
 "use client";
 
+/**
+ * Saved Answers / Bookmarks Page
+ *
+ * Purpose:
+ * - Shows user-curated Q&A entries saved from chat sessions.
+ * - Preserves high-value responses with citations for fast operational lookup.
+ * - Supports remove action to keep personal knowledge set current.
+ *
+ * Data flow:
+ * - Requires authenticated user from AuthContext.
+ * - Fetches bookmarks via PostgREST-backed API.
+ * - Renders markdown answers and citation metadata in readable cards.
+ *
+ * UX behavior:
+ * - Loading and empty states communicate retrieval status clearly.
+ * - Error state captures backend issues without losing previously fetched data.
+ * - Header badge reflects current bookmark count for quick inventory feedback.
+ *
+ * Operational value:
+ * - Reduces repeated querying for frequent procedures.
+ * - Anchors answers to source citations for trust and auditability.
+ */
+
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";

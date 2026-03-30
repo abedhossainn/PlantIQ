@@ -1,5 +1,28 @@
 "use client";
 
+/**
+ * User Profile Page
+ *
+ * Purpose:
+ * - Displays authenticated user identity and account metadata.
+ * - Provides role visibility and last-login observability.
+ * - Hosts account-related affordances (placeholder password flow in prototype).
+ *
+ * Data source:
+ * - User object comes directly from AuthContext session state.
+ * - No additional API fetch required for basic profile rendering.
+ *
+ * UX details:
+ * - `getInitials` provides stable avatar fallback.
+ * - `formatLastLogin` safely handles null/invalid timestamps.
+ * - Profile fields are rendered through reusable `ProfileField` helper.
+ *
+ * Future enhancements:
+ * - Add server-driven profile edits with optimistic updates.
+ * - Add password rotation flow for production identity providers.
+ * - Add session/device visibility for security posture.
+ */
+
 import { useState } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";

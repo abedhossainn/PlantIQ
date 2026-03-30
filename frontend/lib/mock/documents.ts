@@ -2,9 +2,19 @@ import type { Document } from "@/types";
 
 /**
  * Mock document data for the ingestion pipeline
+ *
+ * Purpose:
+ * - Enables document list and queue views without backend dependency.
+ * - Represents diverse lifecycle statuses for end-to-end UI state coverage.
+ * - Provides realistic metadata (pages, sections, scores, approver context).
+ *
+ * Scenario modeling:
+ * - Approved, in-review, validation-complete, processing, and rejected cases.
+ * - Includes large-doc and edge-case records for pagination/performance behavior.
  */
 
 export const mockDocuments: Document[] = [
+  // doc-1: ideal approved record used for green-path dashboards.
   {
     id: "doc-1",
     title: "COMMON Module 3 Characteristics of LNG",
@@ -22,6 +32,7 @@ export const mockDocuments: Document[] = [
     approvedBy: "Mike Chen",
     notes: "Primary reference document for LNG properties and handling procedures",
   },
+  // doc-2: active review record used for in-progress queue behavior.
   {
     id: "doc-2",
     title: "Cryogenic Pump System Operating Manual",
@@ -37,6 +48,7 @@ export const mockDocuments: Document[] = [
     qaScore: undefined,
     notes: "Currently under technical review - sections 1-14 complete",
   },
+  // doc-3: validation complete record used for transition-to-review CTA.
   {
     id: "doc-3",
     title: "Emergency Shutdown System P&ID",
@@ -51,6 +63,7 @@ export const mockDocuments: Document[] = [
     reviewProgress: 0,
     notes: "VLM validation complete, ready for engineering review",
   },
+  // doc-4: actively processing record used for progress/loader visuals.
   {
     id: "doc-4",
     title: "Gas Turbine Compressor Maintenance Guide",
@@ -65,6 +78,7 @@ export const mockDocuments: Document[] = [
     reviewProgress: 0,
     notes: "Large document - VLM processing in progress",
   },
+  // doc-5: rejected record used for remediation/rejection display paths.
   {
     id: "doc-5",
     title: "Heat Exchanger Troubleshooting Procedures",
@@ -80,6 +94,7 @@ export const mockDocuments: Document[] = [
     qaScore: 72,
     notes: "Rejected - QA score below threshold. Table extraction fidelity issues.",
   },
+  // doc-6: approved technical standard used for chat citation source diversity.
   {
     id: "doc-6",
     title: "Instrumentation Calibration Standards",

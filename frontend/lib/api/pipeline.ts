@@ -1,14 +1,39 @@
 /**
- * Pipeline API Client
- * Handles document upload, processing status, artifacts retrieval,
- * and ingestion SSE event streaming.
- *
- * Ingestion SSE contract (matches backend/app/models/sse.py):
- *   event: job.accepted   → IngestionJobAcceptedSSEEvent
- *   event: progress       → IngestionProgressSSEEvent
- *   event: stage.complete → IngestionStageCompleteSSEEvent
- *   event: complete       → IngestionCompleteSSEEvent  (terminal)
- *   event: error          → IngestionErrorSSEEvent     (terminal)
+/**
+ * Pipeline API Client for Document Ingestion Orchestration
+ * 
+ * Core Responsibilities:
+ * - Document upload with FormData handling
+ * - Real-time processing monitoring (SSE + polling fallback)
+ * - Artifact retrieval per pipeline stage
+ * - Support for concurrent uploads with abort control
+ * 
+ * Backend Pipeline Lifecycle (5 Stages):
+ * 1. INGESTION: Raw file → extracted text/chunks, vision embeddings (if multimodal)
+ * 2. REVIEW: Human review of extraction accuracy + manual corrections
+ * 3. OPTIMIZATION: LLM synthetic summary, augmented QA pairs (optional stage)
+ * 4. QA: Automated metrics (similarity, completeness, relevance) + release gating
+ * 5. TERMINAL: Archive/reject status or ready for RAG retrieval
+ * 
+ * Artifact Outputs (Per Stage):
+ * - INGESTION: extracted_text.txt, chunks.json, embeddings.bin
+ * - REVIEW: review_notes.md, human_corrections.json, confidence_score.float
+ * - OPTIMIZATION: optimized_summary.txt, synthetic_qa_pairs.json
+ * - QA: metrics.json (recall, precision, relevance), consolidated_score.float
+ * - TERMINAL: final_status.json (ready|rejected|archived)
+ * 
+ * SSE Event Contract (Streaming Updates):
+ * - job.accepted: Document queued, assigned job_id
+ * - progress: Stage in-progress (e.g., extracting chunks, embedding)
+ * - stage.complete: Stage finished, ready for next
+ * - complete: Terminal stage reached, ingestion finished
+ * - error: Unrecoverable error, ingestion aborted (terminal)
+ * 
+ * Monitoring Strategy:
+ * - streamIngestionEvents(): SSE-based real-time updates (preferred)
+ * - monitorPipelineUntilTerminal(): Polling loop with exponential backoff
+ * - Timeout: 30 mins for safety (prevents stuck monitoring loops)
+ * - Abort control: Allows caller to cancel long-running monitor operations
  */
 
 import { fastapiFetch, getAuthToken, getFastApiBaseUrl } from './client';
@@ -30,6 +55,17 @@ function isAbortLikeError(error: unknown): boolean {
 // Type Definitions
 // ============================================================================
 
+// PipelineStatus values are sourced from shared DocumentStatus union.
+// Keep this alias instead of duplicating string unions to avoid drift.
+//
+// Lifecycle reference (common progression):
+// pending -> uploading -> extracting -> vlm-validating -> validation-complete
+// -> in-review -> review-complete -> approved-for-optimization -> optimizing
+// -> optimization-complete -> qa-review -> qa-passed -> final-approved
+//
+// Terminal/error branches can include rejected/failed depending on stage outcome.
+// Frontend should always treat backend-reported status as authoritative.
+
 export type PipelineStatus =
   | DocumentStatus;
 
@@ -41,6 +77,11 @@ export type ArtifactType =
   | 'review'
   | 'table_figure'
   | 'audit';
+
+// Artifact naming notes:
+// - `qa-report` is accepted for backward compatibility with older clients.
+// - Backend canonical key currently uses `qa_report`.
+// - normalizeArtifactType bridges both forms.
 
 function normalizeArtifactType(artifactType: ArtifactType): string {
   if (artifactType === 'qa-report') {
@@ -477,7 +518,7 @@ export async function* streamIngestionEvents(
   let response: Response;
   try {
     response = await fetch(
-      `${process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000'}/api/v1/documents/${encodeURIComponent(documentId)}/events`,
+      `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/events`,
       { headers, signal }
     );
   } catch (err) {
@@ -681,7 +722,7 @@ export async function* streamOptimizationLogs(
   let response: Response;
   try {
     response = await fetch(
-      `${process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000'}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs`,
+      `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs`,
       { headers, signal }
     );
   } catch (err) {

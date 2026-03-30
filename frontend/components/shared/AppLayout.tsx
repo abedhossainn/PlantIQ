@@ -1,5 +1,29 @@
 "use client";
 
+/**
+ * AppLayout - Global Shell for Authenticated Experience
+ *
+ * Responsibilities:
+ * - Enforces auth gate and route protection at layout boundary.
+ * - Applies role-based navigation visibility (admin vs user routes).
+ * - Hosts shared sidebar/header composition used across app pages.
+ * - Centralizes logout behavior and identity display (avatar, role badge).
+ *
+ * Route guards:
+ * - Unauthenticated users are redirected to `/login`.
+ * - Users with `user` role are blocked from `/admin/*` and redirected to `/chat`.
+ * - Guards run client-side for UX; backend authorization remains source of truth.
+ *
+ * Navigation model:
+ * - Admin nav includes document pipeline + user management areas.
+ * - Standard user nav focuses on chat-centric workflows.
+ * - Optional `sidebarContent` lets pages inject contextual panels (e.g., conversation list).
+ *
+ * Developer ergonomics:
+ * - Applies Next.js portal style tweak to avoid toast overlap with sidebar profile section.
+ * - Keeps cross-page shell concerns out of individual page components.
+ */
+
 import { useEffect } from "react";
 import Image from "next/image";
 import { useAuth } from "@/lib/auth/AuthContext";

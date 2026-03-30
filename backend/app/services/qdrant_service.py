@@ -16,8 +16,25 @@ logger = logging.getLogger(__name__)
 
 
 class QdrantService:
-    """Service for interacting with Qdrant vector database."""
+    """Service for interacting with Qdrant vector database.
     
+    Core Operations:
+    - Storage and retrieval of document chunks as embedding vectors
+    - Similarity search with multi-layered filtering (workspace, document type, shared access)
+    - Chunk lifecycle management (upsert on publish, delete on document removal)
+    
+    Design Patterns:
+    - Singleton client: one Qdrant client instance reused for all operations
+    - Payload architecture: each vector's payload contains metadata (doc_id, page, workspace, doc_type)
+      enabling complex filtering without full collection scans
+    - Scope-aware search: filters applied at query time before similarity computation
+    
+    Distance Metric:
+    - Uses cosine similarity (values 0–1) for embedding comparisons
+    - Threshold tuning in ChatService applies relaxed strategy if initial results sparse
+    """
+    
+    # Singleton client instance (created on first use, reused for all connections)
     _client: Optional[QdrantClient] = None
     
     @classmethod
@@ -29,7 +46,7 @@ class QdrantService:
                 port=settings.QDRANT_PORT,
                 timeout=settings.QDRANT_TIMEOUT,
             )
-            logger.info(f"Connected to Qdrant at {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
+            logger.info("Connected to Qdrant at %s:%s", settings.QDRANT_HOST, settings.QDRANT_PORT)
         return cls._client
     
     @classmethod
@@ -42,7 +59,7 @@ class QdrantService:
             collection_names = [c.name for c in collections]
             
             if settings.QDRANT_COLLECTION not in collection_names:
-                logger.info(f"Creating collection {settings.QDRANT_COLLECTION}")
+                logger.info("Creating collection %s", settings.QDRANT_COLLECTION)
                 client.create_collection(
                     collection_name=settings.QDRANT_COLLECTION,
                     vectors_config=models.VectorParams(
@@ -51,8 +68,8 @@ class QdrantService:
                     ),
                 )
             return True
-        except Exception as e:
-            logger.error(f"Failed to ensure collection: {e}")
+        except Exception as exc:
+            logger.error("Failed to ensure collection: %s", exc)
             return False
     
     @classmethod
@@ -196,14 +213,14 @@ class QdrantService:
                     )
                 )
             
-            logger.info(f"Found {len(contexts)} similar chunks")
+            logger.info("Found %s similar chunks", len(contexts))
             return contexts
             
-        except UnexpectedResponse as e:
-            logger.error(f"Qdrant search failed: {e}")
+        except UnexpectedResponse as exc:
+            logger.error("Qdrant search failed: %s", exc)
             return []
-        except Exception as e:
-            logger.error(f"Unexpected error during search: {e}")
+        except Exception as exc:
+            logger.error("Unexpected error during search: %s", exc)
             return []
     
     @classmethod
@@ -238,11 +255,11 @@ class QdrantService:
                 wait=True,
             )
             
-            logger.info(f"Upserted {len(chunks)} chunks to Qdrant")
+            logger.info("Upserted %s chunks to Qdrant", len(chunks))
             return True
             
-        except Exception as e:
-            logger.error(f"Failed to upsert chunks: {e}")
+        except Exception as exc:
+            logger.error("Failed to upsert chunks: %s", exc)
             return False
     
     @classmethod
@@ -276,9 +293,9 @@ class QdrantService:
                 )
             )
             
-            logger.info(f"Deleted chunks for document {document_id}")
+            logger.info("Deleted chunks for document %s", document_id)
             return True
             
-        except Exception as e:
-            logger.error(f"Failed to delete document chunks: {e}")
+        except Exception as exc:
+            logger.error("Failed to delete document chunks: %s", exc)
             return False

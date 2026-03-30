@@ -80,13 +80,24 @@ htmlcov/
 .pytest_cache/
 .nyc_output/
 coverage/
-pipeline/tests/
 validation_evidence/
 data/*
-backend/tests/
 backend/test_keys/
 backend/scripts/
 logs.txt
+
+# Ignore tests everywhere by default
+**/tests/
+**/tests/**
+**/__tests__/
+**/__tests__/**
+.metrics-venv/
+
+# Keep tests inside backend and frontend tracked
+!backend/tests/
+!backend/tests/**
+!frontend/tests/
+!frontend/tests/**
 
 # === Temporary Files ===
 *.tmp

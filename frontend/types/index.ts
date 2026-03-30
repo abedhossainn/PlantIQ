@@ -1,9 +1,46 @@
 /**
- * Type Definitions for PlantIQ Prototype
- * Air-Gapped Document Retrieval - Cove Point LNG
+/**
+ * Type Definitions for PlantIQ Frontend
+ * Air-Gapped RAG System for Cove Point LNG Facility Operations
+ * 
+ * Core Entities:
+ * - User: Authenticated user profile from FastAPI /auth/me endpoint
+ * - Document: PDF document in ingestion pipeline with lifecycle stages
+ * - Citation: Reference source (document chunk) cited in RAG response
+ * - ChatMessage: Single message in conversation (user query or assistant response)
+ * - Conversation: Thread of chat messages with scope filters (workspace, doc types)
+ * - Bookmark: Saved Q&A pair for later review or knowledge base building
+ * 
+ * Data Flow:
+ * 1. User logs in → User profile fetched from FastAPI
+ * 2. User uploads document → Document created in PENDING status
+ * 3. Document processed through pipeline → Status progresses through stages
+ * 4. User starts conversation → Conversation created, messages appended
+ * 5. User submits query → FastAPI returns Citations from vector search
+ * 6. LLM generates response → Response streamed with interleaved Citations
+ * 7. User bookmarks Q&A → Bookmark saved to PostgREST for knowledge base
+ * 
+ * Domain glossary:
+ * - Workspace: Plant area used as retrieval filter (e.g., Liquefaction, Electrical).
+ * - Document Type: Operational classification used for retrieval narrowing.
+ * - Citation: Source chunk metadata paired with generated answer content.
+ * - Review Progress: Percent completion of human document review process.
+ * - QA Score: Composite quality signal produced in QA stage.
+ * - Final Approved: Document is eligible for retrieval in production chat context.
+ * 
+ * Modeling conventions:
+ * - Backend payloads often use snake_case; frontend domain models use camelCase.
+ * - Optional fields represent stage-dependent availability.
+ * - Timestamps are ISO-8601 strings for stable serialization.
+ * - IDs are treated as opaque strings (UUID-compatible).
+ * - Keep type changes synchronized with backend schema evolution.
+ * - Prefer additive changes to preserve backward compatibility.
  */
 
 export interface User {
+   // Authenticated user profile from POST /auth/login → GET /auth/me
+   // Includes role-based access control (admin vs user)
+   // department field supports workspace-level filtering + audit logging
   id: string;
   username: string;
   email: string;
@@ -15,6 +52,12 @@ export interface User {
 }
 
 export type DocumentStatus =
+   // Pipeline stages for document ingestion:
+   // UPST REAM: pending → uploading → extracting (Docling text/table/figure extraction)
+   // REVIEW: vlm-validating → validation-complete (Vision-Language Model checks fidelity)
+   // OPTIMIZATION: approved-for-optimization → optimizing → optimization-complete (LLM-powered)
+   // QA: qa-review → qa-passed (Automated metrics + human sign-off)
+   // TERMINAL: approved (ready for RAG) | rejected (human review failed) | failed (error)
   | "pending"
   | "uploading"
   | "extracting"
@@ -33,6 +76,11 @@ export type DocumentStatus =
   | "failed";
 
 export interface Document {
+   // Document in database: combines pipeline metadata + user metadata
+   // Lifecycle: User uploads PDF → goes through HITL stages → approved for RAG
+   // totalPages/totalSections: Extracted by Docling, displayed in inventory
+   // qaScore: Relevance/quality metric from metrics.json (optional, only if QA passed)
+   // status: Maps to DocumentStatus enum for UI rendering
   id: string;
   title: string;
   version: string;
@@ -51,6 +99,12 @@ export interface Document {
 }
 
 export interface Citation {
+   // Result from RAG vector search: document chunk returned by Qdrant + metadata
+   // Used in two contexts:
+   //   1. Embedded in ChatMessage.citations (parsed from _citations field in database)
+   //   2. Emitted as CitationSSEEvent during streaming (sent separately from tokens)
+   // relevanceScore: Semantic similarity from Qdrant distance metric (cosine similarity)
+   // excerpts + pageNumber: Allow users to jump to source in document detail view
   id: string;
   documentId: string;
   documentTitle: string;
@@ -64,6 +118,11 @@ export interface Citation {
 }
 
 export interface ChatMessage {
+   // Single message in conversation thread
+   // role: "user" (Query from user input) | "assistant" (Response from LLM)
+   // content: Plain text (markdown supported for assistant messages)
+   // citations: Sources cited in response (populated by backend or SSE stream)
+   // workspace: Optional filter applied during query (for context/audit)
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -73,6 +132,12 @@ export interface ChatMessage {
 }
 
 export interface Conversation {
+   // Conversation thread: collection of ChatMessages + metadata
+   // Scope filters (workspace, documentTypeFilters): Applied to all queries in this conversation
+   // isPinned: User-selected persistence (pinned first in UI list)
+   // messageCount/lastMessageAt: From PostgREST view for efficient discovery
+   // includeSharedDocuments: Boolean flag to include/exclude shared document scope
+   // createdAt/updatedAt: Timestamps for auditing + freshness detection
   id: string;
   userId: string;
   title: string;
@@ -90,6 +155,10 @@ export interface Conversation {
 }
 
 export interface Bookmark {
+   // Saved Q&A pair: user-curated knowledge base entry
+   // Can be tagged for organization + discovery
+   // Links to original message in conversation (for context retrieval)
+   // Can be exported/shared for training or knowledge base seeding
   id: string;
   userId: string;
   conversationId: string;

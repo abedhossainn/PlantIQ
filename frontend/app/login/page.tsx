@@ -1,5 +1,27 @@
 "use client";
 
+/**
+ * Login Page
+ *
+ * Purpose:
+ * - Captures user credentials and initiates authentication flow via AuthContext.
+ * - Supports quick-login presets for local development and demo scenarios.
+ * - Provides clear loading/error feedback during async auth attempts.
+ *
+ * Flow:
+ * 1. User submits username/password (or quick-access account).
+ * 2. `login()` in AuthContext performs backend/dev-mode auth logic.
+ * 3. On success, router redirects to app root.
+ * 4. On failure, user-facing error message is displayed.
+ *
+ * QA notes:
+ * - Quick-login buttons should remain available in non-production environments.
+ * - Loading state should disable submit controls to prevent duplicate requests.
+ * - Error text should clear on subsequent attempts.
+ * - Redirect should only occur after successful auth context update.
+ * - Keep credential fields controlled to avoid stale form state.
+ */
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
@@ -18,13 +40,31 @@ export default function LoginPage() {
   const { login } = useAuth();
   const router = useRouter();
 
+  function getPostLoginRoute(): string {
+    if (typeof window === "undefined") {
+      return "/chat";
+    }
+
+    try {
+      const raw = localStorage.getItem("authUser") ?? localStorage.getItem("mockUser");
+      if (raw) {
+        const parsed = JSON.parse(raw) as { role?: string };
+        return parsed.role === "admin" ? "/admin/documents" : "/chat";
+      }
+    } catch {
+      // Fall through to safe default.
+    }
+
+    return "/chat";
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setIsLoading(true);
     try {
       await login(username, password);
-      router.push("/");
+      router.push(getPostLoginRoute());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Authentication failed");
     } finally {
@@ -37,7 +77,7 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       await login(quickUsername, quickPassword);
-      router.push("/");
+      router.push(getPostLoginRoute());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Authentication failed");
     } finally {

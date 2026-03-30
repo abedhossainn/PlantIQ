@@ -1,5 +1,33 @@
 "use client";
 
+/**
+ * Validation Report Viewer - VLM Quality Findings
+ *
+ * Purpose:
+ * - Presents machine-generated validation findings before manual review.
+ * - Converts backend validation artifact schema into UX-friendly issue cards/tables.
+ * - Allows reviewers to inspect severity, page-level evidence, and confidence trends.
+ *
+ * Workflow position:
+ * - Runs after extraction and before/alongside detailed review workflows.
+ * - Serves as first-pass triage to identify critical OCR/table/image defects.
+ *
+ * Backend artifact mapping:
+ * - BackendValidationReport -> page_validations + metadata + overall confidence.
+ * - BackendValidationIssue -> frontend ValidationIssue with normalized category names.
+ * - Severity model preserved (critical/high/medium/low) and mapped to visual semantics.
+ *
+ * UX behavior:
+ * - Issues are sortable/filterable by severity and category.
+ * - Confidence score gives quick signal of extraction reliability.
+ * - Download action supports artifact export for audit/review packets.
+ *
+ * Failure resilience:
+ * - Missing artifact data gracefully degrades to empty state.
+ * - Parse mismatches do not crash the page; unknown types map to safe defaults.
+ * - Cancel flags in effects avoid stale-state updates on unmount.
+ */
+
 import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -38,6 +66,8 @@ interface BackendValidationReport {
 }
 
 const ISSUE_TYPE_TO_CATEGORY: Record<string, ValidationIssue['category']> = {
+  // Backend -> frontend category normalization map.
+  // Keep keys aligned with artifact producer naming.
   image_loss: 'image-loss',
   missing_text: 'missing-text',
   table_fidelity: 'table-fidelity',
@@ -46,6 +76,10 @@ const ISSUE_TYPE_TO_CATEGORY: Record<string, ValidationIssue['category']> = {
 };
 
 const SEVERITY_CONFIG = {
+  // Severity display semantics:
+  // - critical/high: immediate reviewer attention required.
+  // - medium: should be resolved before final release when possible.
+  // - low: informational or cosmetic, evaluate with context.
   critical: { badgeClass: "text-red-400 bg-red-400/10 border-red-400/30", icon: <AlertTriangle className="h-3 w-3" />, order: 0 },
   high:     { badgeClass: "text-orange-400 bg-orange-400/10 border-orange-400/30", icon: <AlertTriangle className="h-3 w-3" />, order: 1 },
   medium:   { badgeClass: "text-amber-400 bg-amber-400/10 border-amber-400/30", icon: <Info className="h-3 w-3" />, order: 2 },

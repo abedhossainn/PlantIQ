@@ -1,5 +1,49 @@
 "use client";
 
+/**
+ * Document Review Stage - HITL Validation & Correction Workflow
+ * 
+ * Purpose:
+ * - Display extracted content from document (text + figures/tables)
+ * - Enable human reviewers to validate extraction accuracy
+ * - Allow in-place corrections to extracted content
+ * - Support multi-page review with navigation
+ * - Approve document for next pipeline stage (optimization or QA)
+ * 
+ * Pipeline Stage Context:
+ * - Input: Document in EXTRACTION_COMPLETE status
+ * - Action: Review extracted text, correct errors, add notes
+ * - Output: Document transitions to REVIEW_COMPLETE (ready for optimization)
+ * 
+ * Data Model:
+ * - pages: Array of ReviewPage objects (extracted text + figures per page)
+ * - pageContent: Editable copy of extracted text (allows in-place corrections)
+ * - severity flags: Critical/high/medium/low extraction issues (annotations)
+ * 
+ * UI Layout:
+ * - Left sidebar: Page navigation + severity indicators
+ * - Main area: Extracted content with edit mode
+ * - Right drawer: Extracted figures/tables with in-context preview
+ * - Footer: Navigation + Approve/Reject actions
+ * 
+ * Review Features:
+ * - Edit extracted text directly (for OCR/extraction errors)
+ * - Preview figures alongside extracted content
+ * - Multi-page document support with indexed navigation
+ * - Severity color-coding for visual priority
+ * - Notes field for reviewer comments + context
+ * 
+ * State Management:
+ * - selectedIdx: Current page being reviewed (0-based)
+ * - pageContent: Mutable copy of extracted text per page
+ * - isSubmitting: Prevents duplicate submissions during async operations
+ * 
+ * Error Handling:
+ * - Fetch failures: Show error state + retry button
+ * - Validation errors: Display in-page alerts with severity codes
+ * - Submission errors: Display toast notification with error details
+ */
+
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
@@ -31,6 +75,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { fastapiFetch, getDocumentFromPipeline } from "@/lib/api";
 import { isOptimizationPendingStatus } from "@/lib/document-status";
 import type { Document, DocumentPagesResponse, ReviewPage } from "@/types";
+
+// ---------------------------------------------------------------------------
+// Review Stage Runtime Notes
+// ---------------------------------------------------------------------------
+// - This stage captures human corrections before optimization/QA consumes content.
+// - Edited page content should be treated as source-of-truth for downstream stages.
+// - Severity cues prioritize operator attention for high-risk extraction defects.
+// - Navigation must preserve unsaved edits in local component state.
+// ---------------------------------------------------------------------------
 
 /** Remove HTML comments embedded by the pipeline before rendering */
 function stripHtmlComments(content: string): string {

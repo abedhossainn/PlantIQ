@@ -1,5 +1,11 @@
 """
 Authentication service - Business logic for user authentication and token management.
+
+Responsibilities:
+- User password hashing/verification (PBKDF2-SHA256 per OWASP standards)
+- JWT token generation and validation
+- LDAP directory integration (with mock fallback for development)
+- Session management and token refresh
 """
 from typing import Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -25,6 +31,8 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# PBKDF2 iterations: OWASP-recommended standard as of 2023.
+# Provides strong resistance against dictionary/brute-force attacks.
 _PBKDF2_ITERATIONS = 600_000
 
 
@@ -32,7 +40,8 @@ def _hash_password(password: str) -> str:
     """Hash a password using PBKDF2-SHA256 with a random salt.
 
     Format: ``pbkdf2:sha256:<hex-salt>:<hex-digest>``
-    OWASP recommends 600 000 iterations for PBKDF2-SHA256 (2023).
+    OWASP recommends 600k iterations for PBKDF2-SHA256 (2023).
+    Salt is randomly generated per password to resist rainbow tables.
     """
     salt = os.urandom(16).hex()
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), _PBKDF2_ITERATIONS)

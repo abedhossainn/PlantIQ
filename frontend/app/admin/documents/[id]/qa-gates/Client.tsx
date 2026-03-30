@@ -1,5 +1,52 @@
 "use client";
 
+/**
+ * QA Gates Stage - Automated Metrics & Release Gating
+ * 
+ * Purpose:
+ * - Display automated quality metrics for the extracted + optimized document
+ * - Show pass/fail criteria based on configurable thresholds
+ * - Enable reviewers to approve, reject, or request re-scoring
+ * - Gate document release to RAG system based on quality scores
+ * 
+ * Pipeline Stage Context:
+ * - Input: Document in QA_READY status (after optimization, if enabled)
+ * - Metrics: Pre-computed by backend (metrics.json artifact)
+ * - Action: Review metrics, approve/reject, or request re-scoring
+ * - Output: Document transitions to FINAL_APPROVED (ready for RAG) or REJECTED
+ * 
+ * Metrics Computed:
+ * - citation_coverage_percent: How many chunks are cited in extracted text
+ * - question_heading_compliance_percent: Headings match section structure
+ * - table_to_bullets_ratio: Tables converted to readable lists
+ * - figure_description_coverage_percent: All figures have captions/descriptions
+ * - hallucination_risk_score: LLM-generated content fidelity to source
+ * - overall_confidence_score: Composite quality metric (0-1.0)
+ * 
+ * Thresholds:
+ * - Configurable per metric (default: 80% for most, 50% for figure descriptions)
+ * - Allows flexibility in release gating policies
+ * - Warnings show yellow/orange when approaching threshold
+ * - Failures show red with reason codes
+ * 
+ * Decisions:
+ * - approved: All criteria passed, document approved for RAG
+ * - review: Some criteria below threshold, manual review recommended
+ * - rejected: Critical failures, document flagged for re-processing
+ * - re-score: Request backend re-run metrics (e.g., after manual corrections)
+ * 
+ * UI Components:
+ * - Metrics cards: Visual progress bars + status badges (pass/fail/warning)
+ * - Criteria list: Passed + failed criteria with explanations
+ * - Recommendations: Actionable next steps from metrics engine
+ * - Re-score button: Triggers backend metrics recalculation
+ * 
+ * State Management:
+ * - metrics: QAPreReviewMetrics from metrics.json artifact
+ * - decision: approval decision (approved|rejected|review)
+ * - isRescoring: Indicates pending re-score request
+ */
+
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -14,6 +61,15 @@ import { getDocumentFromPipeline } from "@/lib/api";
 import { fetchArtifactJson, fastapiFetch, ApiError } from "@/lib/api";
 import { canStartFinalApproval, canOpenOptimizedReview, isFinalizedDocumentStatus, isOptimizationPendingStatus, isQAReadyStatus } from "@/lib/document-status";
 import type { Document, QAMetric } from "@/types";
+
+// ---------------------------------------------------------------------------
+// QA Gates Runtime Notes
+// ---------------------------------------------------------------------------
+// - QA metrics are advisory plus gating; final approval remains a human decision.
+// - Re-score should be used after substantive review/optimization edits.
+// - Thresholds should stay consistent with backend policy to avoid UX mismatch.
+// - Failed critical criteria should block approval pathways in the UI.
+// ---------------------------------------------------------------------------
 
 // ---------- Backend types --------------------------------------------------
 

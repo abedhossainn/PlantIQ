@@ -1,6 +1,8 @@
 """Chat Service - RAG query orchestration."""
+import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import List, Optional, AsyncIterator
 from datetime import datetime, timezone
 from uuid import UUID
@@ -34,14 +36,49 @@ class _ConversationScope(dict):
     """Internal helper payload for persisted conversation scope."""
 
 
-class ChatService:
-    """Service for processing RAG chat queries."""
+@dataclass(slots=True)
+class _PreparedChatTurn:
+    """Shared chat turn state prepared before LLM generation."""
 
+    conversation_id: str
+    contexts: List[RAGContext]
+
+
+class ChatService:
+    """Service for processing RAG chat queries.
+    
+    Core Responsibility:
+    - Orchestrate document retrieval, context assembly, and LLM-based response generation
+    - Manage conversation lifecycle, scope constraints, and multi-turn context preservation
+    - Emit structured citation events for grounded answer accountability
+    
+    Retrieval Strategy:
+    - Uses scoped vector search (workspace, document type, shared documents) to reduce noise
+    - Applies document-type weighting to boost relevance for preferred content categories
+    - Falls back to relaxed threshold strategy if initial retrieval yields insufficient results
+    """
+
+    # Boost factor applied when preferred document types are found during retrieval.
+    # Amplifies relevance scores from 0.08 (8%) to push contextually relevant docs higher.
     _DOCUMENT_TYPE_WEIGHT_BOOST = 0.08
+    
+    # Retrieval pool size multiplier: retrieve 4x the final context count, then re-rank.
+    # Allows flexible re-ranking and filtering without discarding early candidates.
     _WEIGHTING_RETRIEVAL_POOL_MULTIPLIER = 4
+    
+    # Maximum length for auto-generated conversation titles (used when user doesn't set one).
     _CONVERSATION_TITLE_MAX_LENGTH = 80
+    
+    # RELAXED THRESHOLD STRATEGY: If initial retrieval is too strict (high threshold),
+    # lower the bar incrementally to find usable context. Floor at 0.45 similarity score;
+    # allows up to 0.25 delta reduction from original threshold before giving up.
     _RELAXED_SCORE_THRESHOLD_FLOOR = 0.45
     _RELAXED_SCORE_THRESHOLD_DELTA = 0.25
+    
+    # Fallback response when retrieval yields no relevant context (below threshold).
+    _NO_CONTEXT_RESPONSE = (
+        "I couldn't find relevant information in the documentation to answer your question."
+    )
 
     _WORKSPACE_ALIASES = {
         "power block": "Power Block",
@@ -58,6 +95,10 @@ class ChatService:
         "mechanical": "Mechanical",
     }
     
+    # System prompt used for all RAG queries. Instructs the LLM to:
+    # (1) Ground answers in provided context only (no hallucination)
+    # (2) Emit structured citations for traceability
+    # (3) Explicitly communicate when no relevant context exists
     RAG_SYSTEM_PROMPT = """You are an expert assistant for LNG plant documentation. 
 Your role is to answer questions accurately based on the provided context from technical manuals and procedures.
 
@@ -77,84 +118,35 @@ Guidelines:
         db: AsyncSession,
     ) -> ChatQueryResponse:
         """
-        Process RAG query (non-streaming).
+        Process RAG query (non-streaming synchronous path).
+        
+        Execution flow:
+        1. Prepare turn: resolve conversation scope, perform scoped retrieval
+        2. Build RAG prompt: assemble context + user query with system instructions
+        3. Generate response: call LLM service with streaming disabled
+        4. Extract citations: harvest source references from retrieved context
+        5. Persist conversation: save both user message and assistant response
         
         Args:
-            request: Chat query request
-            user_id: Current user ID
-            db: Database session
+            request: Chat query request (query text, conversation ID, scope controls)
+            user_id: Current user ID (for scope and conversation access)
+            db: Database session (for persistence and scope lookup)
             
         Returns:
-            Chat response with citations
+            Chat response with structured citations for source traceability
         """
-        logger.info(f"Processing query from user {user_id}: {request.query[:50]}...")
-
-        persisted_scope = await cls._get_persisted_conversation_scope(
-            conversation_id=str(request.conversation_id) if request.conversation_id else None,
+        logger.info("Processing query from user %s: %s...", user_id, request.query[:50])
+        prepared_turn = await cls._prepare_chat_turn(
+            request=request,
             user_id=user_id,
             db=db,
         )
-        scope_resolution = cls._resolve_query_scope(
-            request=request,
-            persisted_scope=persisted_scope,
-        )
-        preferred_document_types = scope_resolution["preferred_document_types"]
-        normalized_workspace = scope_resolution["workspace"]
-        document_type_filters = scope_resolution["document_type_filters"]
-        include_shared_documents = scope_resolution["include_shared_documents"]
-        conversation_scope = cls._build_conversation_scope(
-            workspace=normalized_workspace,
-            document_type_filters=document_type_filters,
-            preferred_document_types=preferred_document_types,
-            include_shared_documents=include_shared_documents,
-        )
-        
-        # Step 1: Create or get conversation
-        conversation_id = await cls._get_or_create_conversation(
-            str(request.conversation_id) if request.conversation_id else None,
-            user_id,
-            db,
-            conversation_scope,
-            cls._generate_conversation_title(request.query),
-        )
-        
-        # Step 2: Save user message
-        user_message_id = await cls._save_message(
-            conversation_id,
-            "user",
-            request.query,
-            None,
-            db
-        )
-        
-        # Step 3: Generate query embedding
-        logger.info("Generating query embedding...")
-        query_vector = await EmbeddingService.embed_query(request.query)
-        
-        # Step 4: Retrieve relevant context from Qdrant
-        logger.info("Searching for relevant documents...")
-        retrieval_top_k = settings.RAG_TOP_K
-        if preferred_document_types:
-            retrieval_top_k = settings.RAG_TOP_K * cls._WEIGHTING_RETRIEVAL_POOL_MULTIPLIER
-
-        contexts = await cls._search_with_scope_resilience(
-            query_vector=query_vector,
-            request=request,
-            retrieval_top_k=retrieval_top_k,
-            document_type_filters=document_type_filters,
-            normalized_workspace=normalized_workspace,
-            include_shared_documents=include_shared_documents,
-        )
-
-        contexts = cls._apply_document_type_weighting(
-            contexts,
-            preferred_document_types,
-            settings.RAG_TOP_K,
-        )
+        conversation_id = prepared_turn.conversation_id
+        contexts = prepared_turn.contexts
         
         if not contexts:
             logger.warning("No relevant contexts found")
-            response_text = "I couldn't find relevant information in the documentation to answer your question."
+            response_text = cls._NO_CONTEXT_RESPONSE
             citations = []
         else:
             # Step 5: Build RAG prompt
@@ -178,7 +170,7 @@ Guidelines:
             db
         )
         
-        logger.info(f"Query processed successfully, message_id={assistant_message_id}")
+        logger.info("Query processed successfully, message_id=%s", assistant_message_id)
         
         return ChatQueryResponse(
             message_id=UUID(assistant_message_id),
@@ -206,79 +198,24 @@ Guidelines:
         Yields:
             Structured chat SSE payloads.
         """
-        logger.info(f"Processing streaming query from user {user_id}")
+        logger.info("Processing streaming query from user %s", user_id)
 
         conversation_id: Optional[str] = None
         assistant_message_id: Optional[str] = None
 
         try:
-            persisted_scope = await cls._get_persisted_conversation_scope(
-                conversation_id=str(request.conversation_id) if request.conversation_id else None,
+            prepared_turn = await cls._prepare_chat_turn(
+                request=request,
                 user_id=user_id,
                 db=db,
             )
-            scope_resolution = cls._resolve_query_scope(
-                request=request,
-                persisted_scope=persisted_scope,
-            )
-            preferred_document_types = scope_resolution["preferred_document_types"]
-            normalized_workspace = scope_resolution["workspace"]
-            document_type_filters = scope_resolution["document_type_filters"]
-            include_shared_documents = scope_resolution["include_shared_documents"]
-            conversation_scope = cls._build_conversation_scope(
-                workspace=normalized_workspace,
-                document_type_filters=document_type_filters,
-                preferred_document_types=preferred_document_types,
-                include_shared_documents=include_shared_documents,
-            )
-
-            # Step 1: Create or get conversation
-            conversation_id = await cls._get_or_create_conversation(
-                str(request.conversation_id) if request.conversation_id else None,
-                user_id,
-                db,
-                conversation_scope,
-                cls._generate_conversation_title(request.query),
-            )
-
-            # Step 2: Save user message
-            await cls._save_message(
-                conversation_id,
-                "user",
-                request.query,
-                None,
-                db,
-            )
-
-            # Step 3: Generate query embedding
-            query_vector = await EmbeddingService.embed_query(request.query)
-
-            # Step 4: Retrieve relevant context
-            retrieval_top_k = settings.RAG_TOP_K
-            if preferred_document_types:
-                retrieval_top_k = settings.RAG_TOP_K * cls._WEIGHTING_RETRIEVAL_POOL_MULTIPLIER
-
-            contexts = await cls._search_with_scope_resilience(
-                query_vector=query_vector,
-                request=request,
-                retrieval_top_k=retrieval_top_k,
-                document_type_filters=document_type_filters,
-                normalized_workspace=normalized_workspace,
-                include_shared_documents=include_shared_documents,
-            )
-
-            contexts = cls._apply_document_type_weighting(
-                contexts,
-                preferred_document_types,
-                settings.RAG_TOP_K,
-            )
+            conversation_id = prepared_turn.conversation_id
+            contexts = prepared_turn.contexts
 
             assistant_message_id = str(uuid.uuid4())
 
             if not contexts:
-                fallback_message = (
-                    "I couldn't find relevant information in the documentation to answer your question."
-                )
+                fallback_message = cls._NO_CONTEXT_RESPONSE
                 yield ChatTokenEvent(
                     conversation_id=conversation_id,
                     message_id=assistant_message_id,
@@ -360,12 +297,88 @@ Guidelines:
             )
 
         except Exception as exc:
-            logger.error(f"Streaming query failed: {exc}")
+            logger.exception("Streaming query failed: %s", exc)
             yield ChatErrorEvent(
                 conversation_id=conversation_id,
                 message_id=assistant_message_id,
                 error=str(exc),
             )
+
+    @classmethod
+    async def _prepare_chat_turn(
+        cls,
+        *,
+        request: ChatQueryRequest,
+        user_id: str,
+        db: AsyncSession,
+    ) -> _PreparedChatTurn:
+        """Prepare the shared conversation, scope, and retrieval state for one chat turn."""
+        persisted_scope = await cls._get_persisted_conversation_scope(
+            conversation_id=str(request.conversation_id) if request.conversation_id else None,
+            user_id=user_id,
+            db=db,
+        )
+        scope_resolution = cls._resolve_query_scope(
+            request=request,
+            persisted_scope=persisted_scope,
+        )
+        preferred_document_types = scope_resolution["preferred_document_types"]
+        normalized_workspace = scope_resolution["workspace"]
+        document_type_filters = scope_resolution["document_type_filters"]
+        include_shared_documents = scope_resolution["include_shared_documents"]
+        conversation_scope = cls._build_conversation_scope(
+            workspace=normalized_workspace,
+            document_type_filters=document_type_filters,
+            preferred_document_types=preferred_document_types,
+            include_shared_documents=include_shared_documents,
+        )
+
+        conversation_id = await cls._get_or_create_conversation(
+            str(request.conversation_id) if request.conversation_id else None,
+            user_id,
+            db,
+            conversation_scope,
+            cls._generate_conversation_title(request.query),
+        )
+
+        await cls._save_message(
+            conversation_id,
+            "user",
+            request.query,
+            None,
+            db,
+        )
+
+        logger.info("Generating query embedding...")
+        query_vector = await EmbeddingService.embed_query(request.query)
+
+        logger.info("Searching for relevant documents...")
+        retrieval_top_k = cls._get_retrieval_top_k(preferred_document_types)
+        contexts = await cls._search_with_scope_resilience(
+            query_vector=query_vector,
+            request=request,
+            retrieval_top_k=retrieval_top_k,
+            document_type_filters=document_type_filters,
+            normalized_workspace=normalized_workspace,
+            include_shared_documents=include_shared_documents,
+        )
+        contexts = cls._apply_document_type_weighting(
+            contexts,
+            preferred_document_types,
+            settings.RAG_TOP_K,
+        )
+
+        return _PreparedChatTurn(
+            conversation_id=conversation_id,
+            contexts=contexts,
+        )
+
+    @classmethod
+    def _get_retrieval_top_k(cls, preferred_document_types: Optional[List[str]]) -> int:
+        """Return retrieval pool size, expanding it when doc-type weighting is active."""
+        if preferred_document_types:
+            return settings.RAG_TOP_K * cls._WEIGHTING_RETRIEVAL_POOL_MULTIPLIER
+        return settings.RAG_TOP_K
     
     @classmethod
     def _build_rag_prompt(cls, query: str, contexts: List[RAGContext]) -> str:
@@ -695,7 +708,7 @@ Answer:"""
         )
         await db.commit()
         
-        logger.info(f"Created new conversation {new_id}")
+        logger.info("Created new conversation %s", new_id)
         return new_id
 
     @classmethod
@@ -756,26 +769,26 @@ Answer:"""
             {"conv_id": conversation_id, "user_id": user_id},
         )
         row = result.first()
-        if not row:
+        mapping = cls._coerce_result_mapping(row)
+        if not mapping:
             return None
 
+        return {
+            "workspace": mapping.get("workspace"),
+            "document_type_filters": mapping.get("document_type_filters"),
+            "preferred_document_types": mapping.get("preferred_document_types"),
+            "include_shared_documents": mapping.get("include_shared_documents"),
+        }
+
+    @staticmethod
+    def _coerce_result_mapping(row: object) -> Optional[dict]:
+        """Normalize SQLAlchemy row-like results into a dictionary when possible."""
+        if row is None:
+            return None
         if hasattr(row, "_mapping"):
-            mapping = row._mapping
-            return {
-                "workspace": mapping.get("workspace"),
-                "document_type_filters": mapping.get("document_type_filters"),
-                "preferred_document_types": mapping.get("preferred_document_types"),
-                "include_shared_documents": mapping.get("include_shared_documents"),
-            }
-
+            return dict(row._mapping)
         if isinstance(row, dict):
-            return {
-                "workspace": row.get("workspace"),
-                "document_type_filters": row.get("document_type_filters"),
-                "preferred_document_types": row.get("preferred_document_types"),
-                "include_shared_documents": row.get("include_shared_documents"),
-            }
-
+            return row
         return None
     
     @classmethod
@@ -794,7 +807,6 @@ Answer:"""
         # Serialize citations to JSON string (asyncpg requires a JSON string for JSONB columns)
         citations_json: Optional[str] = None
         if citations:
-            import json
             citations_json = json.dumps([c.model_dump(mode="json") for c in citations])
         
         await db.execute(

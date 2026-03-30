@@ -28,10 +28,28 @@ class LLMUnavailableError(RuntimeError):
 
 
 class LLMService:
-    """Service for interacting with OpenAI-compatible LLM inference servers."""
+    """Service for interacting with OpenAI-compatible LLM inference servers.
+    
+    Architecture:
+    - Manages httpx client lifecycle for async HTTP calls to OpenAI-compatible backends
+    - Tracks active requests to signal demand to external orchestrators (e.g., Ollama container start/stop)
+    - Provides both streaming and non-streaming generation paths
+    - Implements fallback strategy: if streaming fails, retry with non-streaming mode
+    
+    Supported Backends:
+    - vLLM (recommended for production)
+    - Ollama (local inference with GPU, supports model unloading)
+    - llama.cpp server (lightweight CPU inference)
+    - Any OpenAI /v1/completions or /v1/chat/completions compatible server
+    """
 
+    # Singleton httpx client for async requests (reused across all LLM calls)
     _client: Optional[httpx.AsyncClient] = None
+    
+    # Tracks in-flight LLM requests. Used for demand signaling to orchestrators.
     _active_requests: int = 0
+    
+    # Lock ensures thread-safe request counting and model unload decisions.
     _request_lock: asyncio.Lock = asyncio.Lock()
 
     @classmethod
