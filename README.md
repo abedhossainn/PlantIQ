@@ -59,7 +59,7 @@ flowchart TB
 
       PUB --> EMB["Embedding (BGE-Large-v1.5)"] --> QD[("Qdrant vectors + metadata")]
 
-      PG[("PostgreSQL\ndocuments + status + publication")]
+    PG[("PostgreSQL<br/>documents + status + publication")]
       UPL --> PG
       EXT --> PG
       HR --> PG
@@ -80,8 +80,8 @@ flowchart LR
       CHATAPI --> QEMB["Query Embedding (BGE-Large-v1.5)"]
 
       QEMB --> RET["Scoped Retrieval (workspace/doc-type/shared)"]
-      PG2[("PostgreSQL\nconversations + scope")] --> RET
-      QD2[("Qdrant\nchunk vectors + metadata")] --> RET
+    PG2[("PostgreSQL<br/>conversations + scope")] --> RET
+    QD2[("Qdrant<br/>chunk vectors + metadata")] --> RET
 
       RET --> CTX["Context Assembly (top-k chunks)"]
       CTX --> LLM["LLM Generation (Qwen3-4B via vLLM)"]
@@ -95,26 +95,26 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph PL[Presentation Layer]
-        UIA[Admin UI\n(Upload/Review/QA/Publish)]
-        UIO[Operator UI\n(Chat/Citations/Bookmarks)]
+        UIA["Admin UI<br/>(Upload/Review/QA/Publish)"]
+        UIO["Operator UI<br/>(Chat/Citations/Bookmarks)"]
     end
 
     subgraph API[API Gateway Layer]
-        FASTAPI[FastAPI\nREST + SSE]
+        FASTAPI["FastAPI<br/>REST + SSE"]
     end
 
     subgraph SRV[Service Layer]
-        PIPE[PipelineService\nLifecycle Orchestration]
-        CHAT[ChatService\nRAG Orchestration]
-        EMB[EmbeddingService\nBGE-Large-v1.5]
-        QDS[QdrantService\nScoped Retrieval/Indexing]
-        LLM[LLMService\nQwen3-4B via vLLM]
+        PIPE["PipelineService<br/>Lifecycle Orchestration"]
+        CHAT["ChatService<br/>RAG Orchestration"]
+        EMB["EmbeddingService<br/>BGE-Large-v1.5"]
+        QDS["QdrantService<br/>Scoped Retrieval/Indexing"]
+        LLM["LLMService<br/>Qwen3-4B via vLLM"]
     end
 
     subgraph DATA[Data & Infrastructure Layer]
-        PG[(PostgreSQL\nWorkflow + Chat State)]
-        QD[(Qdrant\nVector Index + Payloads)]
-        ART[(Artifact Store\nValidation/Review/QA Outputs)]
+        PG[("PostgreSQL<br/>Workflow + Chat State")]
+        QD[("Qdrant<br/>Vector Index + Payloads")]
+        ART[("Artifact Store<br/>Validation/Review/QA Outputs")]
     end
 
     UIA --> FASTAPI
