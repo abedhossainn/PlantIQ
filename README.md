@@ -1,253 +1,214 @@
-# PlantIQ - Air-Gapped RAG System
+# PlantIQ — Air-Gapped RAG System for Industrial OT Environments
 
-**AI-Powered Technical Documentation Retrieval for Industrial OT Environments**
+PlantIQ is a local-first, citation-grounded Retrieval-Augmented Generation (RAG) platform for industrial operations teams.
+It is designed for safety-critical, proprietary-document environments where cloud AI is not allowed.
 
-PlantIQ is an enterprise-grade, air-gapped Retrieval-Augmented Generation (RAG) system designed specifically for critical infrastructure facilities. It enables operations technicians to query proprietary equipment manuals using natural language while maintaining strict cybersecurity requirements and ensuring safety-critical accuracy through human-in-the-loop validation.
+## What makes PlantIQ different
 
----
+Unlike conventional RAG systems that directly vectorize raw documents, PlantIQ uses a **quality-gated pipeline** before anything is indexed:
 
-## Project Overview
+1. Upload + metadata capture
+2. VLM-assisted extraction and validation
+3. Human review and correction
+4. RAG optimization
+5. QA-gated publication to vector retrieval
 
-**Client:** BHE GT&S (Berkshire Hathaway Energy) - Cove Point LNG Facility  
-**Timeline:** Spring 2026 (11-week MVP development)  
-**Status:** In Development - Backend and Frontend Integration in Progress  
-**Capstone:** UMBC Master's in Information Systems
+This architecture improves answer trustworthiness by ensuring only reviewed and quality-scored content is retrievable.
 
-### Problem Statement
+## Alpha status (as of March 30, 2026)
 
-Industrial facilities cannot use cloud-based AI tools due to cybersecurity policies and proprietary data restrictions. Technicians waste 30+ minutes manually searching through hundreds of pages of vendor manuals during time-sensitive troubleshooting scenarios, increasing operational downtime and safety risks.
+- **User stories fully implemented:** 10 / 13 (76.9%)
+- **Partially implemented:** 1 / 13 (7.7%)
+- **Deferred to Beta:** 2 / 13 (15.4%)
+- **Weighted completion:** 10.5 / 13 = 80.8%
 
-### Solution
+### Delivered in Alpha
 
-PlantIQ provides instant access to accurate, cited technical information through:
-- **Human-in-the-Loop Pipeline:** VLM-powered validation ensures engineering manuals (with complex tables, diagrams, schematics) are accurately digitized
-- **Natural Language Interface:** Technicians ask questions in plain English and receive cited answers with source verification
-- **Air-Gapped Architecture:** Complete offline operation on local infrastructure with no external network connectivity
-- **Role-Based Access Control:** Integration with facility Active Directory for secure user management
+- End-to-end ingestion and review pipeline
+- Citation-grounded RAG chat (sync + streaming)
+- Scoped retrieval (workspace/document-type/shared)
+- Conversation persistence and bookmarks
+- Artifact evidence retrieval (validation/optimization/QA)
 
----
+### Pending for Beta hardening
 
-## Repository Structure
+- Active Directory / LDAP production authentication
+- Full role-governance administration
+- Strict two-version retention policy enforcement
+- Formal concurrent-user benchmarking
 
-```
-PlantIQ/
-├── frontend/                    # Next.js/React TypeScript UI
-├── backend/                     # FastAPI middleware + RAG orchestration (Beta+)
-├── pipeline/                    # HITL document processing modules
-│   ├── src/
-│   │   ├── ingestion/          # PDF conversion (Docling)
-│   │   ├── validation/         # VLM validation & image description
-│   │   ├── review/             # Section-based review workspace
-│   │   ├── qa/                 # QA gates & metrics
-│   │   ├── lineage/            # Audit trail & versioning
-│   │   ├── utils/              # VLM options, parsers, progress tracking
-│   │   └── cli/                # Pipeline orchestration & reformatting
-│   ├── configs/                # Configuration files (VLM, Docling)
-│   └── tests/                  # Pipeline test suite
-├── infra/                      # Docker, K8s, deployment scripts
-├── data/                       # Runtime data (git-ignored)
-│   ├── raw/                    # Source PDFs
-│   ├── processed/              # Intermediate outputs
-│   ├── artifacts/              # Validation evidence, review workspaces
-│   └── indexes/                # Vector database persistence
-├── docs/                       # Technical documentation
-│   ├── architecture/           # Architecture plans & diagrams
-│   ├── api/                    # API specifications
-│   ├── operations/             # Runbooks & troubleshooting
-│   ├── security/               # Threat model & compliance
-│   └── capstone/               # Proposal, deliverables, checklists
-├── tests/                      # Cross-system integration tests
-├── tools/                      # Developer utilities
-├── docker-compose.yml          # Unified service orchestration
-├── Makefile                    # Development task automation
-└── .env.example                # Environment configuration template
-```
+## Architecture overview
 
----
+PlantIQ separates **transactional workflow state** from **semantic retrieval state**:
 
-## Development Setup
+- **PostgreSQL**: document lifecycle, review/approval, conversations, messages, bookmarks, audit-relevant state
+- **Qdrant**: chunk vectors + payload metadata for scoped semantic retrieval
 
-### Prerequisites
-
-- **Python 3.10+** with pip
-- **Node.js 18+** with npm
-- **Docker & Docker Compose**
-- **GPU** (NVIDIA, 24GB+ VRAM for VLM models)
-
-### Installation
-
-```bash
-# Clone repository
-git clone https://github.com/abedhossainn/PlantIQ.git
-cd PlantIQ
-
-# Install all dependencies
-make install
-
-# Or install individually
-make install-pipeline   # Pipeline HITL modules
-make install-backend    # FastAPI backend
-make install-frontend   # Next.js frontend
-```
-
-### Container Stack
-
-The repository now uses a **single** root `docker-compose.yml` as the authoritative local stack definition.
-
-- Run all required services from the repo root
-- Keep the local stack focused on core services only
-- Core supporting services such as `docling-serve`, `vector-db`, `postgres`, `backend`, and `frontend` are defined in the root compose file
-
-### Environment Configuration
-
-```bash
-# Copy environment template
-cp .env.example .env
-
-# Edit .env with your settings
-nano .env
-```
-
----
-
-## Testing
-
-```bash
-# Run all tests
-make test
-
-# Run specific test suites
-make test-pipeline      # Pipeline module tests
-make test-backend       # Backend API tests
-make test-frontend      # Frontend component tests
-make test-integration   # End-to-end integration tests
-
-# Check code quality
-make lint               # Linting
-make format             # Code formatting
-make validate           # Lint + test combined
-```
-
----
-
-
-## Work Completed
-
-### Document Ingestion Pipeline
-- Docling PDF to Markdown conversion with automatic table/figure handling
-- VLM-powered page-by-page validation using the env-configured local vision model
-- Evidence generation for validation artifacts
-- Section-based review workspace for manual QA
-- QA gates with quantitative metrics
-- Document lineage and audit tracking
-- Complete test suite with 5/5 passing tests
-
-### Backend Infrastructure
-- FastAPI application structure with modular architecture
-- RESTful API endpoints for document management
-- PostgreSQL integration with SQLAlchemy ORM
-- Authentication and authorization middleware
-- Observability and logging infrastructure
-- Comprehensive test coverage for API endpoints
-
-### Frontend Application
-- Next.js 14 TypeScript application with modern React patterns
-- Component library using shadcn/ui and Tailwind CSS
-- Document management interface with upload, validation, and review workflows
-- Chat interface with markdown rendering and citation support
-- User management and role-based access control UI
-- Responsive design for desktop and tablet devices
-- Complete user story coverage (13/13 requirements)
-
-### Integration & Testing
-- Docker Compose configuration for local development
-- End-to-end integration tests across backend and frontend
-- Performance testing framework setup
-- CI/CD workflow structure
-- Makefile for common development tasks
-
----
-
-## RAG Optimization
-```bash
-# After manual review, reformat for RAG optimization
-python pipeline/src/cli/text_reformatter.py \
-  --markdown reviewed_output.md \
-  --validation validation_report.json \
-  --output rag_optimized
-```
-
-### Testing Pipeline Integration
-
-```bash
-# Run VLM integration tests
-pytest pipeline/tests/test_vlm_integration.py -v
-
-# Verify HITL setup
-python pipeline/tests/verify_hitl_setup.py
-
-# Validate import structure
-python pipeline/tests/validate_imports.py
-```
-
-### Pipeline Package Structure
-
-The pipeline is organized as a proper Python package with relative imports:
-
-```python
-# Import utility modules
-from pipeline.src.utils.vlm_options import VLMOptions
-from pipeline.src.utils.progress_tracker import ProgressBar
-
-# Import validation modules  
-from pipeline.src.validation.vlm_comparison import compare_with_vlm
-
-# Import orchestration
-from pipeline.src.cli.hitl_pipeline import HITLPipeline
-```
-
-**Installing as Editable Package:**
-```bash
-# Install pipeline in development mode
-pip install -e pipeline/
-
-# Now imports work from anywhere
-python -c "from pipeline.src.utils.vlm_options import VLMOptions; print('Pipeline installed')"
-```
-
----
-
-## Architecture
-
-### System Components
+This separation preserves auditability and operational governance while keeping vector retrieval fast.
 
 ```mermaid
 flowchart TB
-    subgraph OT[Industrial OT Environment - Air-Gapped]
-        User[Operations Technician]
-        Frontend[Next.js Frontend]
-        Backend[FastAPI Backend]
-        VLM[vLLM Inference]
-        VectorDB[Qdrant Vector DB]
-        Postgres[PostgreSQL]
-        Pipeline[HITL Pipeline]
+    subgraph PL[Presentation]
+        Admin[Admin UI]
+        User[Operator Chat UI]
     end
-    
-    User -->|Natural Language Query| Frontend
-    Frontend -->|API Request| Backend
-    Backend -->|Retrieve Context| VectorDB
-    Backend -->|Generate Response| VLM
-    Backend -->|User/Doc Metadata| Postgres
-    Pipeline -->|Approved Chunks| VectorDB
-    Pipeline -->|Review Data| Postgres
+
+    subgraph API[API Layer]
+        FastAPI[FastAPI REST + SSE]
+    end
+
+    subgraph SRV[Service Layer]
+        Pipeline[PipelineService]
+        Chat[ChatService]
+        Embed[EmbeddingService]
+        Retrieve[QdrantService]
+        LLM[LLMService]
+    end
+
+    subgraph DATA[Data Layer]
+        PG[(PostgreSQL)]
+        QD[(Qdrant)]
+        Artifacts[(Artifact Store)]
+    end
+
+    Admin --> FastAPI
+    User --> FastAPI
+
+    FastAPI --> Pipeline
+    FastAPI --> Chat
+
+    Pipeline --> Embed
+    Pipeline --> Retrieve
+    Pipeline --> PG
+    Pipeline --> Artifacts
+
+    Chat --> Embed
+    Chat --> Retrieve
+    Chat --> LLM
+    Chat --> PG
+
+    Embed --> QD
+    Retrieve --> QD
 ```
 
-### Technology Stack
+## Core pipeline and retrieval approach
+
+### Ingestion (quality-gated)
+
+- PDF extraction with Docling
+- VLM (Qwen3-VL-4B) support for figure/table-rich engineering content
+- Human-in-the-loop page-level review
+- QA gate scoring before publication
+- Chunk embedding with BAAI/bge-large-en-v1.5 and upsert to Qdrant
+
+### Chat runtime
+
+1. Query embedding
+2. Scoped vector retrieval in Qdrant
+3. Context assembly (top-k chunks)
+4. Prompt assembly with citation instructions
+5. Local generation via Qwen3-4B (vLLM)
+6. Citation grounding to document/page metadata
+
+A relaxed-threshold retrieval fallback is used to reduce empty responses on sparse but valid queries.
+
+## Technology stack
 
 | Layer | Technologies |
-|-------|-------------|
-| **Frontend** | React 18, Next.js 14, TypeScript, Tailwind CSS, shadcn/ui |
-| **Backend** | Python 3.10+, FastAPI, LangChain, Pydantic, SQLAlchemy |
-| **AI/ML** | vLLM, env-configured Qwen3 text + vision models, Sentence Transformers |
-| **Data** | PostgreSQL, Qdrant, Docling, pdfplumber |Pipeline installed')"
+|---|---|
+| Frontend | Next.js 15, React, TypeScript, Tailwind CSS, shadcn/ui |
+| Backend | Python 3.10+, FastAPI, Pydantic, SQLAlchemy |
+| AI/ML | Qwen3-VL-4B, Qwen3-4B via vLLM, BAAI/bge-large-en-v1.5 |
+| Data | PostgreSQL 15, Qdrant 1.x |
+| Docs Processing | Docling |
+| Deployment | Docker, Docker Compose |
+
+## Repository structure
+
+```text
+llm-rag-chatbot/
+├── backend/          # FastAPI APIs, services, models
+├── frontend/         # Next.js UI (admin + operator chat)
+├── pipeline/         # HITL ingestion, QA, optimization
+├── docs/             # Architecture, API, ops, security docs
+├── tests/            # Integration and performance tests
+├── tools/            # Utility scripts
+├── docker-compose.yml
+├── Makefile
+└── .env.example
 ```
+
+## Local setup
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 18+
+- Docker + Docker Compose
+- NVIDIA GPU recommended for local model inference
+
+### Install
+
+```bash
+git clone https://github.com/abedhossainn/PlantIQ.git
+cd PlantIQ
+make install
+```
+
+### Configure environment
+
+```bash
+cp .env.example .env
+# edit .env with local values
+```
+
+### Run locally
+
+```bash
+make docker-build
+make docker-up
+```
+
+### Run tests
+
+```bash
+make test
+make validate
+```
+
+## Build/deploy notes (Alpha)
+
+The checkpoint-validated local flow is:
+
+1. Configure `.env`
+2. Install dependencies (`make install`)
+3. Build/start containers (`make docker-build`, `make docker-up`)
+4. Run tests (`make test`)
+5. Inspect logs (`make docker-logs`)
+
+## Public prototype and evidence
+
+- Prototype: https://plantiq.sahossain.com/PlantIQ/
+- Backend API: https://plantiqapi.sahossain.com/
+- Source archive (ZIP): https://drive.google.com/file/d/1jt5cB5uhI1U7ms2icpRUrvbs6SZeB9uH/view?usp=drive_link
+
+## Known limitations at Alpha
+
+1. AD/RBAC not fully production-ready
+2. Formal multi-user load testing pending
+3. Two-version retention enforcement partial
+4. Complex visual extraction still needs reviewer correction
+5. Single-reviewer workflow bottleneck
+6. Backup/DR automation not implemented yet
+
+## Next priorities (Beta)
+
+- Complete AD + RBAC hardening
+- Run controlled concurrency/performance benchmarks
+- Complete retention-policy enforcement
+- Add operational monitoring and backup/recovery automation
+
+---
+
+For full checkpoint evidence and detailed tables, see:
+`Documents/Alpha_Checkpoint_Report_v2.md`
