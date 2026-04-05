@@ -17,10 +17,10 @@ services:
     environment:
       - AUTH_DISABLED=${AUTH_DISABLED:-true}
       - PLANTIQ_REPO_ROOT=/workspace
-      - PYTHONPATH=/workspace
+      - PYTHONPATH=/workspace/apps:/workspace
       - DATABASE_URL=postgresql+asyncpg://plantiq:changeme@postgres:5432/plantiq
       - PIPELINE_PYTHON_PATH=/usr/local/bin/python
-      - PIPELINE_SCRIPT_PATH=/workspace/pipeline/src/cli/hitl_pipeline.py
+      - PIPELINE_SCRIPT_PATH=/workspace/apps/pipeline/src/cli/hitl_pipeline.py
       - PIPELINE_WORK_DIR=/workspace/data/artifacts/hitl_workspace
       - UPLOAD_DIR=/workspace/data/raw
       - ARTIFACTS_DIR=/workspace/data/artifacts
@@ -66,7 +66,7 @@ services:
               device_ids:
                 - '${DOCLING_GPU_DEVICE_ID:-1}'
               capabilities: [gpu]
-    command: sh -lc "cd /workspace/backend && python -m uvicorn app.main:app --reload --reload-dir /workspace/backend/app --reload-dir /workspace/pipeline/src --host 0.0.0.0 --port 8000"
+    command: sh -lc "cd /workspace/apps/api && python -m uvicorn app.main:app --reload --reload-dir /workspace/apps/api/app --reload-dir /workspace/apps/pipeline/src --host 0.0.0.0 --port 8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,8 +83,8 @@ services:
   # ============================================================================
   frontend:
     build:
-      context: ./frontend
-      dockerfile: ../infra/docker/frontend.Dockerfile
+      context: ./apps/web
+      dockerfile: ../../infra/docker/frontend.Dockerfile
     container_name: plantiq-frontend
     ports:
       - "3000:3000"
@@ -99,19 +99,19 @@ services:
       - NEXT_PUBLIC_DEV_JWT=${NEXT_PUBLIC_DEV_JWT:-eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwgInJvbGUiOiAicGxhbnRpZ19hZG1pbiIsICJhdWQiOiAicGxhbnRpZyIsICJpc3MiOiAicGxhbnRpZy1hdXRoIiwgImV4cCI6IDk5OTk5OTk5OTl9.IJXta4CJER43rcID5iGjjeUIEjdxqqsUhIgWc8_laU0}
       - NEXT_PUBLIC_APP_NAME=PlantIQ
     volumes:
-      - ./frontend/app:/app/app
-      - ./frontend/components:/app/components
-      - ./frontend/lib:/app/lib
-      - ./frontend/pages:/app/pages
-      - ./frontend/public:/app/public
-      - ./frontend/types:/app/types
-      - ./frontend/package.json:/app/package.json
-      - ./frontend/package-lock.json:/app/package-lock.json
-      - ./frontend/next.config.ts:/app/next.config.ts
-      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs
-      - ./frontend/tsconfig.json:/app/tsconfig.json
-      - ./frontend/next-env.d.ts:/app/next-env.d.ts
-      - ./frontend/components.json:/app/components.json
+      - ./apps/web/app:/app/app
+      - ./apps/web/components:/app/components
+      - ./apps/web/lib:/app/lib
+      - ./apps/web/pages:/app/pages
+      - ./apps/web/public:/app/public
+      - ./apps/web/types:/app/types
+      - ./apps/web/package.json:/app/package.json
+      - ./apps/web/package-lock.json:/app/package-lock.json
+      - ./apps/web/next.config.ts:/app/next.config.ts
+      - ./apps/web/postcss.config.mjs:/app/postcss.config.mjs
+      - ./apps/web/tsconfig.json:/app/tsconfig.json
+      - ./apps/web/next-env.d.ts:/app/next-env.d.ts
+      - ./apps/web/components.json:/app/components.json
       - /app/node_modules
       - next_cache:/app/.next
     command: npm run dev -- --hostname 0.0.0.0 --port 3000

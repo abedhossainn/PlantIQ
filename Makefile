@@ -79,22 +79,22 @@ install: venv install-pipeline install-backend install-frontend
 
 install-backend: venv
 	@echo "Installing backend dependencies..."
-	@if [ -f backend/requirements.txt ]; then \
-		cd backend && $(VENV_PIP) install -r requirements.txt; \
-	elif [ -f backend/pyproject.toml ]; then \
-		cd backend && $(VENV_PIP) install -e .; \
+	@if [ -f apps/api/requirements.txt ]; then \
+		cd apps/api && $(VENV_PIP) install -r requirements.txt; \
+	elif [ -f apps/api/pyproject.toml ]; then \
+		cd apps/api && $(VENV_PIP) install -e .; \
 	else \
 		echo "⚠️  No backend dependency manifest found (expected requirements.txt or pyproject.toml)"; \
 	fi
 
 install-frontend:
 	@echo "Installing frontend dependencies..."
-	@cd frontend && npm install
+	@cd apps/web && npm install
 
 install-pipeline: venv
 	@echo "Installing pipeline dependencies..."
-	@if [ -f pipeline/requirements.txt ]; then \
-		$(VENV_PIP) install -r pipeline/requirements.txt; \
+	@if [ -f apps/pipeline/requirements.txt ]; then \
+		$(VENV_PIP) install -r apps/pipeline/requirements.txt; \
 	else \
 		echo "⚠️  Pipeline requirements.txt not yet created"; \
 	fi
@@ -106,31 +106,31 @@ test: test-pipeline test-backend test-frontend test-integration
 
 test-backend:
 	@echo "Running backend tests..."
-	@if [ -d backend/tests ]; then \
-		cd backend && $(VENV_PYTHON) -m pytest tests/ -v; \
+	@if [ -d apps/api/tests ]; then \
+		cd apps/api && $(VENV_PYTHON) -m pytest tests/ -v; \
 	else \
 		echo "⚠️  Backend tests not yet implemented"; \
 	fi
 
 test-frontend:
 	@echo "Running frontend tests..."
-	@if [ -f frontend/package.json ] && grep -q '"test"' frontend/package.json; then \
-		cd frontend && npm test; \
+	@if [ -f apps/web/package.json ] && grep -q '"test"' apps/web/package.json; then \
+		cd apps/web && npm test; \
 	else \
 		echo "⚠️  Frontend tests not yet configured"; \
 	fi
 
 test-pipeline:
 	@echo "Running pipeline tests..."
-	@if [ -d pipeline/tests ]; then \
-		cd pipeline && $(VENV_PYTHON) -m pytest tests/ -v; \
+	@if [ -d apps/pipeline/tests ]; then \
+		cd apps/pipeline && $(VENV_PYTHON) -m pytest tests/ -v; \
 	else \
 		echo "⚠️  Pipeline tests not yet implemented"; \
 	fi
 
 validate-imports:
 	@echo "Validating Python import structure..."
-	@$(VENV_PYTHON) pipeline/tests/validate_imports.py
+	@$(VENV_PYTHON) apps/pipeline/tests/validate_imports.py
 
 test-integration:
 	@echo "Running integration tests..."
@@ -144,26 +144,26 @@ test-integration:
 
 lint:
 	@echo "Linting all code..."
-	@if [ -d pipeline/src ]; then \
-		cd pipeline && pylint src/ --disable=all --enable=syntax-error || true; \
+	@if [ -d apps/pipeline/src ]; then \
+		cd apps/pipeline && pylint src/ --disable=all --enable=syntax-error || true; \
 	fi
-	@if [ -d backend/app ]; then \
-		cd backend && pylint app/ --disable=all --enable=syntax-error || true; \
+	@if [ -d apps/api/app ]; then \
+		cd apps/api && pylint app/ --disable=all --enable=syntax-error || true; \
 	fi
-	@if [ -f frontend/package.json ]; then \
-		cd frontend && npm run lint || true; \
+	@if [ -f apps/web/package.json ]; then \
+		cd apps/web && npm run lint || true; \
 	fi
 
 format:
 	@echo "Formatting all code..."
-	@if [ -d pipeline/src ]; then \
-		cd pipeline && black src/ || echo "Install black: pip install black"; \
+	@if [ -d apps/pipeline/src ]; then \
+		cd apps/pipeline && black src/ || echo "Install black: pip install black"; \
 	fi
-	@if [ -d backend/app ]; then \
-		cd backend && black app/ || echo "Install black: pip install black"; \
+	@if [ -d apps/api/app ]; then \
+		cd apps/api && black app/ || echo "Install black: pip install black"; \
 	fi
-	@if [ -f frontend/package.json ]; then \
-		cd frontend && npm run format || true; \
+	@if [ -f apps/web/package.json ]; then \
+		cd apps/web && npm run format || true; \
 	fi
 
 validate: lint test
@@ -288,7 +288,7 @@ clean:
 	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
 	@find . -type f -name "*.pyo" -delete 2>/dev/null || true
 	@find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
-	@rm -rf backend/dist pipeline/dist frontend/.next frontend/out 2>/dev/null || true
+	@rm -rf apps/api/dist apps/pipeline/dist apps/web/.next apps/web/out 2>/dev/null || true
 	@echo "✅ Build artifacts cleaned"
 
 clean-data:
