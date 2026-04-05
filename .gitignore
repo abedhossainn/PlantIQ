@@ -27,32 +27,32 @@ env/
 .env.local
 .env.*.local
 *.env
-backend/secrets/
+apps/api/secrets/
 *.pem
 
 # === Data Directories (Runtime, Not Source-Controlled) ===
 data/artifacts/**
 !data/artifacts/.gitkeep
-data/raw/*
+data/raw/**
 !data/raw/.gitkeep
-data/processed/*
+data/processed/**
 !data/processed/.gitkeep
-backend/data
-data/indexes/*
+apps/api/data/
+data/indexes/**
 !data/indexes/.gitkeep
 
 # === Legacy AnythingLLM Storage ===
 anythingllm-storage/
 
 # === Build Artifacts & Node Modules ===
-frontend/.next/
-frontend/out/
-frontend/dist/
-frontend/node_modules/
-backend/dist/
-pipeline/dist/
+apps/web/.next/
+apps/web/out/
+apps/web/dist/
+apps/web/node_modules/
+apps/api/dist/
+apps/pipeline/dist/
 *.tsbuildinfo
-frontend/tsconfig.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
 
 # === IDE & Editor ===
 .vscode/
@@ -82,8 +82,8 @@ htmlcov/
 coverage/
 validation_evidence/
 data/*
-backend/test_keys/
-backend/scripts/
+apps/api/test_keys/
+apps/api/scripts/
 logs.txt
 
 # Ignore tests everywhere by default
@@ -93,17 +93,17 @@ logs.txt
 **/__tests__/**
 .metrics-venv/
 
-# Keep tests inside backend and frontend tracked
-!backend/tests/
-!backend/tests/**
-!frontend/tests/
-!frontend/tests/**
+# Keep tests inside app source packages tracked
+!apps/api/tests/
+!apps/api/tests/**
+!apps/web/tests/
+!apps/web/tests/**
 
 # Re-ignore generated test cache artifacts
-backend/tests/**/__pycache__/
-backend/tests/**/*.pyc
-frontend/tests/**/__pycache__/
-frontend/tests/**/*.pyc
+apps/api/tests/**/__pycache__/
+apps/api/tests/**/*.pyc
+apps/web/tests/**/__pycache__/
+apps/web/tests/**/*.pyc
 
 # === Temporary Files ===
 *.tmp
@@ -115,11 +115,21 @@ temp/
 validate_t006.sh
 validate_t004_t005.sh
 
+# === Development Documentation & Tooling ===
+# These aid development but add no value for deployment consumers
+docs/architecture/
+docs/capstone/
+docs/operations/
+docs/security/
+tools/
+PROJECT_STATUS.md
+
 # === Keep Essential Files ===
 !README.md
 !.env.example
-!.gitkeep
 !Makefile
+!infra/docker/.gitkeep
+!infra/scripts/.gitkeep
 !.dockerignore
 !Dockerfile
 !docker-compose.yml

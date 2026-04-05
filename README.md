@@ -295,9 +295,10 @@ A relaxed-threshold retrieval fallback is used to reduce empty responses on spar
 
 ```text
 llm-rag-chatbot/
-├── backend/          # FastAPI APIs, services, models
-├── frontend/         # Next.js UI (admin + operator chat)
-├── pipeline/         # HITL ingestion, QA, optimization
+├── apps/
+│   ├── api/          # FastAPI APIs, services, models
+│   ├── web/          # Next.js UI (admin + operator chat)
+│   └── pipeline/     # HITL ingestion, QA, optimization
 ├── docs/             # Architecture, API, ops, security docs
 ├── tests/            # Integration and performance tests
 ├── tools/            # Utility scripts

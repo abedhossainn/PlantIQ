@@ -237,3 +237,4 @@ async def save_message(
         },
     )
     await db.commit()
+    return message_id

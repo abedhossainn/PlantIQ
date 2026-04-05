@@ -7,7 +7,7 @@ from setuptools import setup, find_packages
 from pathlib import Path
 
 # Read the README for long description
-readme_path = Path(__file__).parent.parent / "README.md"
+readme_path = Path(__file__).parent.parent.parent / "README.md"
 long_description = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
 
 # Read requirements

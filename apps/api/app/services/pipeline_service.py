@@ -186,7 +186,7 @@ class PipelineService(PipelineStatusMixin):
         markdown_path = work_dir / f"{Path(pdf_path).stem}.md"
         
         pipeline_script = Path(settings.PIPELINE_SCRIPT_PATH).resolve()
-        repo_root = pipeline_script.parents[3]
+        repo_root = pipeline_script.parents[4]
 
         cmd = [
             settings.PIPELINE_PYTHON_PATH,
