@@ -1,99 +1,5 @@
 "use client";
 
-/**
- * Final Approval Stage - Release Gating & Sign-Off
- * 
- * Purpose:
- * - Final human sign-off before document released to RAG system
- * - Display QA metrics summary + reviewer recommendation
- * - Allow admin override approval/rejection decisions
- * - Capture sign-off notes + approval metadata for audit trail
- * 
- * Pipeline Stage Context:
- * - Input: Document in QA_PASSED status (all metrics + manual reviews passed)
- * - Action: Admin/lead reviews all artifacts, approves or rejects
- * - Output: Document transitions to APPROVED (ready for RAG retrieval)
- * - Terminal: APPROVED documents locked (read-only, no further edits)
- * 
- * Approval Decisions:
- * - Approve: Document approved for RAG, locked from further editing
- * - Reject: Document rejected, returns to review stage for re-processing
- * - Review (context): QA metrics flagged issues, human review needed
- * 
- * Artifact Summary:
- * - QA metrics: overall_confidence_score + pass/fail breakdown
- * - Extraction review: Manual corrections + validation notes
- * - Optimization review: Summary + QA pair validations (if applicable)
- * - Metrics: Automated scores (coverage, compliance, hallucination risk)
- * 
- * Audit Trail:
- * - Submitted by: Authenticated user from AuthContext
- * - Submitted at: ISO timestamp
- * - Notes: Free-text notes from approver (stored in artifacts)
- * - Decision: Final approval/rejection + rationale
- * 
- * Security:
- * - Requires admin role (role check in canStartFinalApproval)
- * - Approved documents locked (immutable for downstream usage)
- * - localStorage cache persists pending decisions (prevents accidental loss)
- * 
- * UI Layout:
- * - Document summary: Title, version, system, status
- * - QA metrics display: Summary with pass/fail indicators
- * - Recommendation: QA engine's auto-decision (for reference)
- * - Manual decision: Admin approval/rejection with notes
- * - Audit info: Who approved, when, with what notes
- * 
- * Error Handling:
- * - Submission errors: Show inline error + retry capability
- * - Invalid state: Document already approved (locked, show read-only view)
- * - Missing QA data: Fetch failure, show error state
- */
-
-/**
- * Final Approval Stage - Human Release Decision Gate
- * 
- * Purpose:
- * - Present consolidated document QA + review outcomes
- * - Capture final human decision (approve/reject)
- * - Record approver identity, timestamp, and notes
- * - Enforce role-based access for release decisions
- * 
- * Pipeline Stage Context:
- * - Input: Document that passed review + QA gates
- * - Decision: approve (release to RAG) | reject (return for rework)
- * - Output: Terminal status update in backend (final-approved/rejected)
- * 
- * Approval Data:
- * - decision: approve/reject/null
- * - notes: Reviewer rationale (required for reject, optional for approve)
- * - submittedAt: Audit timestamp
- * - submittedBy: Reviewer identity (from AuthContext.user)
- * - qaRecommendation: Suggested decision from QA metrics artifact
- * 
- * Audit & Compliance:
- * - Approval decision persisted to localStorage for UX continuity
- * - Backend call writes final approval artifact (audit trail)
- * - Includes reviewer identity, timestamp, document metadata, rationale
- * - Supports regulatory traceability for critical operations docs
- * 
- * Access Control:
- * - Uses AuthContext to verify authenticated user
- * - canStartFinalApproval() guards page access by document status
- * - UI lock state prevents double-submission
- * 
- * UX Features:
- * - Shows QA recommendation from pre-review metrics
- * - Allows freeform notes for contextual decision-making
- * - Displays confirmation state after successful submission
- * - Supports back navigation to prior QA stage
- * 
- * Error Handling:
- * - Failed submissions show in-page error with retry path
- * - Invalid states (doc not ready for approval) redirect to docs page
- * - localStorage parse failures handled gracefully
- */
-
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -109,15 +15,6 @@ import { fastapiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { canStartFinalApproval } from "@/lib/document-status";
 import type { Document } from "@/types";
-
-// ---------------------------------------------------------------------------
-// Final Approval Runtime Notes
-// ---------------------------------------------------------------------------
-// - Approval submission should be single-shot to preserve clear audit sequence.
-// - Rejection should include rationale notes for remediation traceability.
-// - QA recommendation is guidance, not automatic decisioning.
-// - Only qualified roles should access this route (enforced by broader auth guards).
-// ---------------------------------------------------------------------------
 
 type Decision = "approve" | "reject" | null;
 type PublicationStatus = "pending" | "publishing" | "published" | "failed" | null;

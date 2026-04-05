@@ -4,7 +4,6 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from uuid import UUID
 from pathlib import Path
 from typing import Optional, Dict, Any, AsyncIterator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +12,6 @@ from ..core.config import settings, get_artifacts_path
 from ..models.pipeline import (
     PipelineStatus,
     PipelineStatusResponse,
-    PublicationStatus,
 )
 from ..models.sse import (
     IngestionCompleteEvent,
@@ -25,79 +23,10 @@ from ..models.sse import (
 
 logger = logging.getLogger(__name__)
 
-
-def _utc_iso_from_timestamp(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+from .pipeline_status_service import PipelineStatusMixin
 
 
-def _optimized_output_has_usable_content(payload: dict[str, Any]) -> bool:
-    chunks = payload.get("chunks")
-    if not isinstance(chunks, list):
-        return False
-
-    for chunk in chunks:
-        if isinstance(chunk, str) and chunk.strip():
-            return True
-        if not isinstance(chunk, dict):
-            continue
-        for key in ("content", "markdown", "body", "text"):
-            if str(chunk.get(key) or "").strip():
-                return True
-
-    return False
-
-
-def _read_valid_optimized_artifact_metadata(document_id: str) -> dict[str, Optional[str]] | None:
-    work_dir = Path(settings.PIPELINE_WORK_DIR).expanduser().resolve() / document_id
-    if not work_dir.exists():
-        return None
-
-    optimized_json_candidates = sorted(work_dir.glob("*_rag_optimized.json"))
-    optimized_markdown_candidates = sorted(work_dir.glob("*_rag_optimized.md"))
-    optimization_prep_candidates = sorted(work_dir.glob("*_optimization_prep.json"))
-
-    optimized_json_path = optimized_json_candidates[0] if optimized_json_candidates else None
-    optimized_markdown_path = optimized_markdown_candidates[0] if optimized_markdown_candidates else None
-    optimization_prep_path = optimization_prep_candidates[0] if optimization_prep_candidates else None
-
-    markdown_content = ""
-    if optimized_markdown_path and optimized_markdown_path.is_file():
-        markdown_content = optimized_markdown_path.read_text(encoding="utf-8").strip()
-
-    payload: dict[str, Any] = {}
-    if optimized_json_path and optimized_json_path.is_file():
-        try:
-            payload = json.loads(optimized_json_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
-
-        payload_markdown = payload.get("markdown")
-        if isinstance(payload_markdown, str) and payload_markdown.strip():
-            markdown_content = payload_markdown.strip()
-
-    if not _optimized_output_has_usable_content(payload) and not markdown_content:
-        return None
-
-    completion_sources = [
-        path.stat().st_mtime
-        for path in (optimized_json_path, optimized_markdown_path)
-        if path is not None and path.exists()
-    ]
-    started_sources = [
-        path.stat().st_mtime
-        for path in (optimization_prep_path, optimized_json_path, optimized_markdown_path)
-        if path is not None and path.exists()
-    ]
-    if not completion_sources:
-        return None
-
-    return {
-        "started_at": _utc_iso_from_timestamp(min(started_sources)) if started_sources else None,
-        "completed_at": _utc_iso_from_timestamp(max(completion_sources)),
-    }
-
-
-class PipelineService:
+class PipelineService(PipelineStatusMixin):
     """Service for managing pipeline subprocess execution.
     
     HITL Pipeline Lifecycle:
@@ -200,45 +129,6 @@ class PipelineService:
         PipelineStatus.VLM_VALIDATING.value,
     }
 
-    @classmethod
-    def _document_has_live_process(cls, document_id: str) -> bool:
-        job_id = cls._job_ids_by_document.get(document_id)
-        if not job_id:
-            return False
-
-        process = cls._active_processes.get(job_id)
-        return process is not None and process.returncode is None
-
-    @classmethod
-    def _is_stale_ingestion_status(
-        cls,
-        *,
-        document_id: str,
-        status_value: str,
-        updated_at: Optional[datetime],
-    ) -> bool:
-        if status_value not in cls._active_ingestion_statuses:
-            return False
-
-        if cls._document_has_live_process(document_id):
-            return False
-
-        if updated_at is None:
-            return False
-
-        normalized_updated_at = updated_at
-        if isinstance(normalized_updated_at, str):
-            try:
-                normalized_updated_at = datetime.fromisoformat(normalized_updated_at)
-            except ValueError:
-                return False
-
-        if normalized_updated_at.tzinfo is None:
-            normalized_updated_at = normalized_updated_at.replace(tzinfo=timezone.utc)
-
-        age_seconds = (datetime.now(timezone.utc) - normalized_updated_at).total_seconds()
-        return age_seconds >= settings.PIPELINE_STALLED_GRACE_SECONDS
-    
     @classmethod
     async def trigger_pipeline(
         cls,
@@ -539,230 +429,6 @@ class PipelineService:
         finally:
             cls._active_processes.pop(job_id, None)
     
-    @classmethod
-    async def _update_document_status(
-        cls,
-        document_id: str,
-        status: PipelineStatus,
-        progress: int = 0,
-        error: Optional[str] = None
-    ):
-        """Update document status in database."""
-        from ..models.database import get_db_with_claims
-        from sqlalchemy import text
-        
-        try:
-            # Use a new session for background updates
-            async for db in get_db_with_claims():
-                values = {"status": status.value, "doc_id": document_id}
-                sql = "UPDATE documents SET status = :status WHERE id = :doc_id"
-                
-                if error:
-                    values["notes"] = error
-                    sql = "UPDATE documents SET status = :status, notes = :notes WHERE id = :doc_id"
-                
-                await db.execute(text(sql), values)
-                await db.commit()
-                break  # Exit after first session
-        except Exception as e:
-            logger.error(f"Failed to update document status: {e}")
-    
-    @classmethod
-    async def get_pipeline_status(
-        cls,
-        document_id: str,
-        db: AsyncSession,
-    ) -> PipelineStatusResponse:
-        """
-        Get current pipeline status for a document.
-        
-        Args:
-            document_id: Document UUID
-            db: Database session
-            
-        Returns:
-            Pipeline status information
-        """
-        # Query database for document status
-        from sqlalchemy import text
-        
-        result = await db.execute(
-            text(
-                """
-                SELECT
-                    status,
-                    created_at,
-                    updated_at,
-                    notes,
-                    optimization_started_at,
-                    optimization_completed_at,
-                    optimization_error,
-                    publication_status,
-                    published_at,
-                    publication_error,
-                    indexed_chunk_count,
-                    qdrant_collection
-                FROM documents
-                WHERE id = :doc_id
-                """
-            ),
-            {"doc_id": document_id}
-        )
-        row = result.fetchone()
-        
-        if not row:
-            raise ValueError(f"Document {document_id} not found")
-        
-        (
-            status,
-            created_at,
-            updated_at,
-            notes,
-            optimization_started_at,
-            optimization_completed_at,
-            optimization_error,
-            publication_status,
-            published_at,
-            publication_error,
-            indexed_chunk_count,
-            qdrant_collection,
-        ) = row
-
-        if cls._is_stale_ingestion_status(
-            document_id=document_id,
-            status_value=status,
-            updated_at=updated_at,
-        ):
-            from sqlalchemy import text
-
-            stale_error = (
-                "Ingestion appears to have stopped unexpectedly because no active "
-                "pipeline process is running. Please reprocess this document."
-            )
-
-            await db.execute(
-                text(
-                    """
-                    UPDATE documents
-                    SET status = :failed_status,
-                        notes = :notes,
-                        updated_at = NOW()
-                    WHERE id = :doc_id
-                    """
-                ),
-                {
-                    "doc_id": document_id,
-                    "failed_status": PipelineStatus.FAILED.value,
-                    "notes": stale_error,
-                },
-            )
-            await db.commit()
-
-            status = PipelineStatus.FAILED.value
-            notes = stale_error
-            updated_at = datetime.now(timezone.utc)
-
-            cls._publish_event(
-                document_id,
-                IngestionErrorEvent(
-                    document_id=document_id,
-                    job_id=cls._job_ids_by_document.get(document_id),
-                    stage="monitoring",
-                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
-                    message="Document ingestion stalled.",
-                    error=stale_error,
-                ),
-            )
-
-        if status in {
-            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
-            PipelineStatus.OPTIMIZING.value,
-        }:
-            artifact_status = _read_valid_optimized_artifact_metadata(document_id)
-            if artifact_status is not None:
-                from sqlalchemy import text
-
-                artifact_completed_at = (
-                    datetime.fromisoformat(str(artifact_status["completed_at"]))
-                    if artifact_status.get("completed_at")
-                    else None
-                )
-                artifact_is_newer_than_current_run = (
-                    artifact_completed_at is not None
-                    and optimization_started_at is not None
-                    and artifact_completed_at >= optimization_started_at
-                )
-
-                if optimization_started_at is None or artifact_is_newer_than_current_run:
-                    status = PipelineStatus.OPTIMIZATION_COMPLETE.value
-                    if optimization_started_at is None and artifact_status["started_at"]:
-                        optimization_started_at = datetime.fromisoformat(
-                            str(artifact_status["started_at"])
-                        )
-                    if optimization_completed_at is None and artifact_status["completed_at"]:
-                        optimization_completed_at = artifact_completed_at
-                    optimization_error = None
-
-                    await db.execute(
-                        text(
-                            """
-                            UPDATE documents
-                            SET status = :status,
-                                optimization_started_at = COALESCE(optimization_started_at, :optimization_started_at),
-                                optimization_completed_at = COALESCE(optimization_completed_at, :optimization_completed_at),
-                                optimization_error = NULL,
-                                updated_at = NOW()
-                            WHERE id = :doc_id
-                            """
-                        ),
-                        {
-                            "doc_id": document_id,
-                            "status": status,
-                            "optimization_started_at": optimization_started_at,
-                            "optimization_completed_at": optimization_completed_at,
-                        },
-                    )
-                    await db.commit()
-        
-        progress = cls._status_progress_map.get(status, 0)
-        stage = cls._status_stage_map.get(status)
-
-        optimization_statuses = {
-            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
-            PipelineStatus.OPTIMIZING.value,
-            PipelineStatus.OPTIMIZATION_COMPLETE.value,
-            PipelineStatus.FAILED.value,
-        }
-        started_at = (optimization_started_at or created_at) if status in optimization_statuses else created_at
-        completed_at = (
-            optimization_completed_at
-            if status in {
-                PipelineStatus.OPTIMIZATION_COMPLETE.value,
-                PipelineStatus.FAILED.value,
-            } and optimization_completed_at is not None
-            else (updated_at if progress == 100 or status == PipelineStatus.FAILED.value else None)
-        )
-        error = optimization_error or (notes if status == PipelineStatus.FAILED.value else None)
-        normalized_publication_status = publication_status
-        if normalized_publication_status is None and status == PipelineStatus.FINAL_APPROVED.value:
-            normalized_publication_status = PublicationStatus.PENDING.value
-        
-        return PipelineStatusResponse(
-            document_id=UUID(document_id),
-            status=PipelineStatus(status),
-            current_stage=stage,
-            progress=progress,
-            message=error if status == PipelineStatus.FAILED.value else None,
-            started_at=started_at,
-            completed_at=completed_at,
-            error=error,
-            publication_status=normalized_publication_status,
-            published_at=published_at,
-            publication_error=publication_error,
-            indexed_chunk_count=indexed_chunk_count,
-            qdrant_collection=qdrant_collection,
-        )
-
     @classmethod
     async def stream_events(
         cls,

@@ -1,196 +1,39 @@
 "use client";
 
-/**
- * Optimized Content Review Stage - LLM Output Validation & Refinement
- * 
- * Purpose:
- * - Display LLM-optimized content (summaries, synthetic QA pairs)
- * - Enable human review and in-place corrections
- * - Validate output quality and relevance to source document
- * - Approve or request re-optimization
- * 
- * Pipeline Stage Context:
- * - Input: Document in OPTIMIZATION_COMPLETE status
- * - Display: Optimized_summary.txt + synthetic_qa_pairs.json artifacts
- * - Action: Review optimized content, correct misalignments, flag ambiguities
- * - Output: Document ready for QA metrics evaluation
- * 
- * Content Types:
- * - Optimized Summary: LLM-generated concise summary (editable text)
- * - Synthetic QA Pairs: Auto-generated Q&A for knowledge base (editable list)
- * - Table Facts: Extracted tabular data as bullet points (editable)
- * - Ambiguity Flags: Issues identified by LLM (editable, for remediation tracking)
- * 
- * Review Features:
- * - Side-by-side comparison: Original extracted text + optimized version
- * - In-place editing: Correct LLM-generated content directly
- * - Validation: Check summary against source for hallucuation/drift
- * - QA pair review: Validate synthetic Q&A relevance + accuracy
- * - Ambiguity tracking: Flag unclear sections for human review
- * 
- * Data Model:
- * - OptimizedChunk: One piece of optimized content (summary, QA pair, etc.)
- * - DocumentOptimizedChunksResponse: Collection of all chunks per document
- * - Editable fields: Summary text, QA pairs, facts, ambiguity notes
- * 
- * Edit Mode:
- * - Toggle per section (summary, QA pairs, facts, ambiguities)
- * - Unsaved changes tracked + save confirmation required
- * - Submission sends edited content back to backend (optimized_review artifact)
- * 
- * Error Handling:
- * - Fetch failures: Show error state + retry button
- * - Save failures: Display error toast + keep edits in form
- * - Validation: Prevent empty summaries, invalid QA pairs
- * 
- * Next Steps:
- * - After approval: Document transitions to QA_REVIEW stage
- * - Backend uses reviewed_optimizations artifact for QA metrics
- */
-
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
-  CheckCircle2,
-  Edit3,
-  FileText,
-  RefreshCw,
-  Save,
-  X,
-} from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Edit3, FileText, RefreshCw, Save, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { getDocumentOptimizedChunks, updateOptimizedChunk } from "@/lib/api/optimized-review";
-import { isQAReadyStatus, isFinalizedDocumentStatus } from "@/lib/document-status";
 import { fastapiFetch } from "@/lib/api";
 import type { OptimizedChunk, DocumentOptimizedChunksResponse } from "@/types";
-
-// ---------------------------------------------------------------------------
-// Optimized Review Runtime Notes
-// ---------------------------------------------------------------------------
-// - Reviewer edits are the final guard against hallucinated optimization output.
-// - Always preserve source alignment: edits should remain traceable to extracted text.
-// - Chunk-level save operations should be idempotent when retried.
-// - Read-only mode is enforced for finalized statuses to protect audit integrity.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Small helpers
-// ---------------------------------------------------------------------------
-
-/** Editable list (table_facts / ambiguity_flags) with add/remove controls. */
-function EditableList({
-  label,
-  items,
-  onChange,
-  readOnly = false,
-}: {
-  label: string;
-  items: string[];
-  onChange: (next: string[]) => void;
-  readOnly?: boolean;
-}) {
-  const [draft, setDraft] = useState("");
-
-  function addItem() {
-    const trimmed = draft.trim();
-    if (!trimmed) return;
-    onChange([...items, trimmed]);
-    setDraft("");
-  }
-
-  function removeItem(idx: number) {
-    onChange(items.filter((_, i) => i !== idx));
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-      {items.length === 0 && (
-        <p className="text-xs text-muted-foreground italic">None</p>
-      )}
-      <ul className="space-y-1">
-        {items.map((item, idx) => (
-          <li key={idx} className="flex items-start gap-1.5">
-            <span className="flex-1 text-xs leading-snug text-foreground/80 pt-0.5 break-words">
-              {item}
-            </span>
-            {!readOnly && (
-              <button
-                aria-label="Remove"
-                className="text-muted-foreground hover:text-red-400 shrink-0 mt-0.5"
-                onClick={() => removeItem(idx)}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-      {!readOnly && (
-        <div className="flex gap-1.5 pt-1">
-          <input
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
-            placeholder="Add item…"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addItem();
-              }
-            }}
-          />
-          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={addItem}>
-            Add
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
+import { EditableList } from "./_components/EditableList";
+import { ChunkList } from "./_components/ChunkList";
 
 type ChunkSaveState = "saving" | "saved" | "error";
 
 export default function OptimizedReviewClient({ docId }: { docId: string }) {
   const router = useRouter();
 
-  // Document + chunks
   const [documentName, setDocumentName] = useState<string>("");
   const [chunks, setChunks] = useState<OptimizedChunk[]>([]);
   const [chunksLoading, setChunksLoading] = useState(true);
   const [chunksError, setChunksError] = useState<string | null>(null);
 
-  // Selection
   const [selectedIdx, setSelectedIdx] = useState(0);
 
-  // Per-chunk draft edits (keyed by chunk id)
   const [headingDraft, setHeadingDraft] = useState<Record<string, string>>({});
   const [contentDraft, setContentDraft] = useState<Record<string, string>>({});
   const [tableFacts, setTableFacts] = useState<Record<string, string[]>>({});
   const [ambiguityFlags, setAmbiguityFlags] = useState<Record<string, string[]>>({});
 
-  // Per-chunk save state
   const [saveState, setSaveState] = useState<Record<string, ChunkSaveState>>({});
-
-  // Editing
   const [editingChunkId, setEditingChunkId] = useState<string | null>(null);
-
-  // ---------------------------------------------------------------------------
-  // Load chunks
-  // ---------------------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
@@ -203,7 +46,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
         if (cancelled) return;
         setDocumentName(data.document_name ?? "");
         setChunks(data.chunks ?? []);
-        // Seed draft state from loaded chunks
         const headings: Record<string, string> = {};
         const contents: Record<string, string> = {};
         const facts: Record<string, string[]> = {};
@@ -231,10 +73,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
     return () => { cancelled = true; };
   }, [docId]);
 
-  // ---------------------------------------------------------------------------
-  // Save a single chunk
-  // ---------------------------------------------------------------------------
-
   const saveChunk = useCallback(
     async (chunkId: string) => {
       setSaveState((prev) => ({ ...prev, [chunkId]: "saving" }));
@@ -246,7 +84,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
           table_facts: tableFacts[chunkId] ?? [],
           ambiguity_flags: ambiguityFlags[chunkId] ?? [],
         });
-        // Sync local chunk list to persisted values
         setChunks((prev) =>
           prev.map((c) =>
             c.id === chunkId
@@ -269,7 +106,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
   );
 
   function cancelEdit(chunkId: string) {
-    // Restore drafts to last persisted chunk values
     const chunk = chunks.find((c) => c.id === chunkId);
     if (chunk) {
       setHeadingDraft((prev) => ({ ...prev, [chunkId]: chunk.heading }));
@@ -280,17 +116,9 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
     setEditingChunkId(null);
   }
 
-  // ---------------------------------------------------------------------------
-  // Derived state
-  // ---------------------------------------------------------------------------
-
   const selectedChunk: OptimizedChunk | undefined = chunks[selectedIdx];
   const isEditing = selectedChunk ? editingChunkId === selectedChunk.id : false;
   const hasAnyEdits = chunks.some((c) => saveState[c.id] === "saved");
-
-  // ---------------------------------------------------------------------------
-  // Loading / error states
-  // ---------------------------------------------------------------------------
 
   if (chunksLoading) {
     return (
@@ -308,11 +136,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
         <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
           <AlertTriangle className="h-8 w-8 text-red-400" />
           <p className="text-muted-foreground text-sm">{chunksError}</p>
-          <Button
-            variant="outline"
-            className="gap-2"
-            onClick={() => router.push("/admin/documents")}
-          >
+          <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents")}>
             <ArrowLeft className="h-4 w-4" />
             Back to Document Pipeline
           </Button>
@@ -333,19 +157,11 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => router.push(`/admin/documents/${docId}/optimizing`)}
-            >
+            <Button variant="outline" className="gap-2" onClick={() => router.push(`/admin/documents/${docId}/optimizing`)}>
               <RefreshCw className="h-4 w-4" />
               View Optimization Status
             </Button>
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => router.push("/admin/documents")}
-            >
+            <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents")}>
               <ArrowLeft className="h-4 w-4" />
               Back to Pipeline
             </Button>
@@ -355,22 +171,13 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Main layout
-  // ---------------------------------------------------------------------------
-
   return (
     <AppLayout>
       <div className="flex-1 flex flex-col h-full min-h-0">
 
-        {/* ── Header ── */}
+        {/* Header */}
         <div className="border-b border-border px-6 py-4 bg-card/50 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 mb-2 -ml-2"
-            onClick={() => router.push("/admin/documents")}
-          >
+          <Button variant="ghost" size="sm" className="gap-1.5 mb-2 -ml-2" onClick={() => router.push("/admin/documents")}>
             <ArrowLeft className="h-4 w-4" />
             Document Pipeline
           </Button>
@@ -385,18 +192,14 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                 </p>
               </div>
             </div>
-            <Button
-              size="sm"
-              className="gap-1.5 font-semibold shrink-0"
-              onClick={() => router.push(`/admin/documents/${docId}/qa-gates`)}
-            >
+            <Button size="sm" className="gap-1.5 font-semibold shrink-0" onClick={() => router.push(`/admin/documents/${docId}/qa-gates`)}>
               Proceed to QA
               <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
         </div>
 
-        {/* ── Info banner ── */}
+        {/* Info banner */}
         <div className="px-5 py-2 bg-primary/5 border-b border-primary/10 flex items-center gap-2 shrink-0">
           <CheckCircle2 className="h-3.5 w-3.5 text-primary/60 shrink-0" />
           <p className="text-xs text-muted-foreground">
@@ -406,87 +209,24 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
           </p>
         </div>
 
-        {/* ── 3-pane layout ── */}
-        <div
-          className="flex-1 grid min-h-0"
-          style={{ gridTemplateColumns: "220px 1fr 280px" }}
-        >
+        {/* 3-pane layout */}
+        <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "220px 1fr 280px" }}>
 
-          {/* ── LEFT: chunk list ── */}
-          <div className="flex flex-col border-r border-border min-h-0">
-            <div className="p-3 border-b border-border shrink-0">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Chunks · {selectedIdx + 1} of {chunks.length}
-              </p>
-            </div>
-            <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-1">
-              {chunks.map((chunk, idx) => {
-                const isSelected = idx === selectedIdx;
-                const cs = saveState[chunk.id];
-                return (
-                  <button
-                    key={chunk.id}
-                    onClick={() => setSelectedIdx(idx)}
-                    className={`w-full text-left p-3 rounded text-sm transition-colors border-l-4 ${
-                      isSelected
-                        ? "bg-primary/12 border-l-primary"
-                        : "hover:bg-muted/40 border-l-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-0.5">
-                      <p className={`text-xs font-semibold truncate ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>
-                        Chunk {chunk.chunk_number}
-                      </p>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {cs === "saving" && (
-                          <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
-                        )}
-                        {cs === "saved" && (
-                          <CheckCircle2 className="h-3 w-3 text-green-400" />
-                        )}
-                        {cs === "error" && (
-                          <AlertTriangle className="h-3 w-3 text-red-400" />
-                        )}
-                      </div>
-                    </div>
-                    {chunk.text_preview && (
-                      <p className="text-[10px] text-muted-foreground/60 line-clamp-2 leading-snug">
-                        {chunk.text_preview}
-                      </p>
-                    )}
-                    {chunk.source_pages.length > 0 && (
-                      <div className="flex gap-1 flex-wrap mt-1">
-                        {chunk.source_pages.slice(0, 3).map((pg) => (
-                          <span
-                            key={pg}
-                            className="text-[9px] bg-muted/60 text-muted-foreground rounded px-1 py-0.5"
-                          >
-                            p{pg}
-                          </span>
-                        ))}
-                        {chunk.source_pages.length > 3 && (
-                          <span className="text-[9px] text-muted-foreground">
-                            +{chunk.source_pages.length - 3}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <ChunkList
+            chunks={chunks}
+            selectedIdx={selectedIdx}
+            saveState={saveState}
+            onSelect={setSelectedIdx}
+          />
 
-          {/* ── CENTER: main editor pane ── */}
+          {/* CENTER: main editor pane */}
           <div className="flex flex-col min-h-0 overflow-hidden">
             {selectedChunk && (
               <>
                 {/* Subheader */}
                 <div className="px-5 py-3 border-b border-border bg-card/60 flex items-center gap-3 shrink-0">
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm">
-                      Chunk {selectedChunk.chunk_number}
-                    </p>
+                    <p className="font-semibold text-sm">Chunk {selectedChunk.chunk_number}</p>
                     {selectedChunk.source_pages.length > 0 && (
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Source pages: {selectedChunk.source_pages.join(", ")}
@@ -511,31 +251,17 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                     )}
                     {isEditing ? (
                       <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 gap-1.5 text-xs"
-                          onClick={() => cancelEdit(selectedChunk.id)}
-                        >
+                        <Button size="sm" variant="ghost" className="h-7 gap-1.5 text-xs" onClick={() => cancelEdit(selectedChunk.id)}>
                           <X className="h-3.5 w-3.5" />
                           Cancel
                         </Button>
-                        <Button
-                          size="sm"
-                          className="h-7 gap-1.5 text-xs"
-                          onClick={() => void saveChunk(selectedChunk.id)}
-                        >
+                        <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => void saveChunk(selectedChunk.id)}>
                           <Save className="h-3.5 w-3.5" />
                           Save
                         </Button>
                       </>
                     ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 gap-1.5 text-xs"
-                        onClick={() => setEditingChunkId(selectedChunk.id)}
-                      >
+                      <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => setEditingChunkId(selectedChunk.id)}>
                         <Edit3 className="h-3.5 w-3.5" />
                         Edit
                       </Button>
@@ -545,7 +271,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
 
                 {/* Editor area */}
                 <div className="flex-1 overflow-y-auto min-h-0 p-5 space-y-4">
-
                   {/* Heading */}
                   <div>
                     <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1.5 block">
@@ -556,10 +281,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                         className="w-full rounded border border-border bg-background px-3 py-1.5 text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
                         value={headingDraft[selectedChunk.id] ?? ""}
                         onChange={(e) =>
-                          setHeadingDraft((prev) => ({
-                            ...prev,
-                            [selectedChunk.id]: e.target.value,
-                          }))
+                          setHeadingDraft((prev) => ({ ...prev, [selectedChunk.id]: e.target.value }))
                         }
                       />
                     ) : (
@@ -579,10 +301,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                         className="w-full font-mono text-xs min-h-[320px] resize-y bg-background"
                         value={contentDraft[selectedChunk.id] ?? ""}
                         onChange={(e) =>
-                          setContentDraft((prev) => ({
-                            ...prev,
-                            [selectedChunk.id]: e.target.value,
-                          }))
+                          setContentDraft((prev) => ({ ...prev, [selectedChunk.id]: e.target.value }))
                         }
                       />
                     ) : (
@@ -598,7 +317,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
             )}
           </div>
 
-          {/* ── RIGHT: context pane ── */}
+          {/* RIGHT: context pane */}
           <div className="flex flex-col border-l border-border min-h-0 overflow-y-auto">
             <div className="p-3 border-b border-border shrink-0">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -608,7 +327,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
 
             {selectedChunk && (
               <div className="flex-1 p-4 space-y-5">
-
                 {/* Source pages (read-only) */}
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
@@ -619,11 +337,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
                       {selectedChunk.source_pages.map((pg) => (
-                        <Badge
-                          key={pg}
-                          variant="outline"
-                          className="text-[10px] text-muted-foreground"
-                        >
+                        <Badge key={pg} variant="outline" className="text-[10px] text-muted-foreground">
                           Page {pg}
                         </Badge>
                       ))}
@@ -631,7 +345,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                   )}
                 </div>
 
-                {/* Table facts */}
                 <EditableList
                   label="Table Facts"
                   items={tableFacts[selectedChunk.id] ?? []}
@@ -641,7 +354,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                   }
                 />
 
-                {/* Ambiguity flags */}
                 <EditableList
                   label="Ambiguity Flags"
                   items={ambiguityFlags[selectedChunk.id] ?? []}
@@ -651,7 +363,6 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
                   }
                 />
 
-                {/* QA impact note */}
                 {hasAnyEdits && (
                   <div className="rounded border border-amber-400/30 bg-amber-400/5 p-3 text-xs text-amber-300 space-y-1">
                     <p className="font-semibold">QA scores invalidated</p>
@@ -667,20 +378,13 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
 
         </div>
 
-        {/* ── Footer CTA ── */}
+        {/* Footer CTA */}
         <div className="border-t border-border px-6 py-4 bg-card/50 shrink-0 flex items-center justify-between gap-4">
-          <Button
-            variant="outline"
-            className="gap-2"
-            onClick={() => router.push(`/admin/documents/${docId}/optimizing`)}
-          >
+          <Button variant="outline" className="gap-2" onClick={() => router.push(`/admin/documents/${docId}/optimizing`)}>
             <ArrowLeft className="h-4 w-4" />
             Back to Optimization
           </Button>
-          <Button
-            className="gap-2 font-semibold"
-            onClick={() => router.push(`/admin/documents/${docId}/qa-gates`)}
-          >
+          <Button className="gap-2 font-semibold" onClick={() => router.push(`/admin/documents/${docId}/qa-gates`)}>
             Proceed to QA
             <ArrowRight className="h-4 w-4" />
           </Button>

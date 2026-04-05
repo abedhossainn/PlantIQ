@@ -2,282 +2,33 @@
 
 /**
  * Document Upload & Ingestion Monitoring Interface
- * 
- * Purpose:
- * - Accept PDF document uploads with metadata (title, version, system, notes)
- * - Monitor real-time ingestion via SSE (Server-Sent Events)
- * - Display pipeline stage progression with detailed sub-stage logs
- * - Support artifact downloads upon completion
- * - Persist upload metadata to localStorage for document detail pages
- * 
- * Ingestion Pipeline (Backend HITL):
- * 1. Upload → File stored, extraction job enqueued
- * 2. Extraction → Docling extracts text/tables/figures, generates embeddings
- * 3. VLM Validation → Vision-language model validates extraction fidelity
- * 4. Terminal → Ready for RAG retrieval or flagged for human review
- * 
- * Stage Mapping:
- * - Backend emits granular stage strings (queued, extraction, docling, validation, etc.)
- * - BACKEND_TO_UI_STAGE maps to simplified UI stages (uploading, extracting, vlm-validating, etc.)
- * - Allows visual progress without exposing all internal sub-stages
- * 
- * SSE Event Streaming:
- * - streamIngestionEvents() opens SSE connection to /documents/{id}/events
- * - Backend emits: job.accepted, progress, stage.complete, complete, error
- * - Parser (parseIngestionSSEBlock) converts to typed IngestionSSEEvent objects
- * - Terminal events: complete (success) or error (failure)
- * - Allows graceful abort on component unmount via AbortSignal
- * 
- * UI State:
- * - currentStage: Mapped from backend stage string
- * - progress: 0-100% completion across all stages
- * - logs: Terminal-style output buffer for debugging + monitoring visibility
- * - artifacts: Downloadable outputs per stage (manifests, QA reports, etc.)
- * 
- * Error Handling:
- * - Upload errors: File size validation, extension check
- * - Streaming errors: Connection failures, timeout recovery, SSE fallback
- * - Terminal logs display raw error messages for troubleshooting
- * - Retry logic: User can restart pipeline from terminal
- * 
- * Metadata Persistence:
- * - Upload form data cached to localStorage[plantiq-upload-preview-{id}]
- * - Document detail pages retrieve metadata without PostgREST query
- * - Avoids N+1 problem when listing documents
+ *
+ * Accepts PDF uploads with metadata, streams ingestion progress via SSE,
+ * displays pipeline stage progression with terminal logs, and supports
+ * artifact browsing upon completion.
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { Upload, FileText, CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, Terminal } from "lucide-react";
+import { CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, Terminal, FileText, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
+import {
+  PIPELINE_STAGES,
+  MAX_UPLOAD_BYTES,
+  ALLOWED_UPLOAD_EXTENSION,
+  toUIStage,
+} from "./_constants";
+import { IngestionLogEntry, toLogLine, type PipelineLogLine } from "./_components/IngestionLogEntry";
+import { UploadForm } from "./_components/UploadForm";
 
 // ---------------------------------------------------------------------------
-// Upload Page Operational Reference
+// Local types
 // ---------------------------------------------------------------------------
-// Validation gates before upload:
-// - File extension must match ALLOWED_UPLOAD_EXTENSION.
-// - File size must not exceed MAX_UPLOAD_BYTES.
-// - Required metadata (title, system, type) should be present.
-//
-// Runtime state categories:
-// - Input state: selected file + metadata fields.
-// - Transfer state: upload in progress, progress, error.
-// - Pipeline state: current stage/status from SSE or polling.
-// - Terminal state: completion success/failure with navigation options.
-//
-// Streaming model:
-// - Primary: SSE via streamIngestionEvents for near-real-time progress.
-// - Fallback: getPipelineStatus polling for environments without SSE.
-// - Abort support: cancel stream on unmount/restart to avoid leaks.
-//
-// Log model:
-// - Structured log lines classify events into init/progress/stage-done/error.
-// - Stage labels normalize backend stage names to user-facing readability.
-// - Terminal-style pane provides operational observability for reviewers.
-//
-// Transition guard examples:
-// - Validation complete -> allow navigation to review flow.
-// - Error terminal -> present retry and diagnostics.
-// - In-progress -> disable duplicate submit actions.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Ingestion Troubleshooting Checklist (Developer/QA)
-// ---------------------------------------------------------------------------
-// Symptom: upload request fails immediately
-// - Verify selected file extension is .pdf.
-// - Verify selected file size is below MAX_UPLOAD_BYTES.
-// - Verify auth token exists and has not expired.
-// - Verify backend API base URL resolves correctly in client.ts.
-//
-// Symptom: upload succeeds but no stream events arrive
-// - Verify SSE endpoint `/api/v1/documents/{id}/events` is reachable.
-// - Verify proxy/tunnel configuration permits `text/event-stream`.
-// - Verify Authorization header is forwarded to SSE endpoint.
-// - Fall back to polling and compare status endpoint behavior.
-//
-// Symptom: stage appears stuck
-// - Inspect terminal logs for last emitted stage and message.
-// - Validate backend worker availability (LLM/VLM extraction dependencies).
-// - Confirm no hidden error event was emitted and filtered.
-// - Trigger manual refresh of getPipelineStatus for ground truth.
-//
-// Symptom: completion event never arrives
-// - Check if backend job completed but stream disconnected.
-// - Poll status endpoint to detect terminal status.
-// - Consider reconnect strategy from known document ID.
-// - Ensure AbortController was not triggered unexpectedly.
-//
-// Symptom: UI shows wrong stage label
-// - Confirm BACKEND_TO_UI_STAGE contains emitted backend stage key.
-// - Add mapping for new backend stages if pipeline evolved.
-// - Preserve fallback to raw stage for forward compatibility.
-//
-// Symptom: artifacts unavailable after terminal status
-// - Verify backend emitted stage.complete with artifact metadata.
-// - Verify artifact endpoint permissions and path normalization.
-// - Confirm terminal status allows artifact retrieval in backend policy.
-//
-// Regression checks after edits in this page:
-// - Upload happy path still reaches validation-complete.
-// - Error path still shows terminal log and retry controls.
-// - Navigation to review page still gated by review-ready statuses.
-// - Cancel/unmount no longer updates state after component disposal.
-// ---------------------------------------------------------------------------
-
-// Backend pipeline stages mapped to UI display
-type Stage = {
-  id: string;
-  label: string;
-  description: string;
-};
-
-const PIPELINE_STAGES: Stage[] = [
-  { id: "uploading", label: "File Upload", description: "Transferring document to server" },
-  { id: "extracting", label: "Document Extraction", description: "Extracting text, tables, and figures with Docling" },
-  { id: "vlm-validating", label: "VLM Validation", description: "AI validation of content fidelity" },
-  { id: "validation-complete", label: "Validation Complete", description: "Ready for fidelity review" },
-];
-
-// Map backend SSE stage strings → UI PIPELINE_STAGES id.
-// Backend emits: queued, upload, extraction, validation, completed, startup, monitoring.
-// Also maps sub-stages emitted by the pipeline CLI structured events.
-const BACKEND_TO_UI_STAGE: Record<string, string> = {
-  queued: "uploading",
-  upload: "uploading",
-  extraction: "extracting",
-  docling: "extracting",
-  manifest: "extracting",
-  validation: "vlm-validating",
-  tables: "vlm-validating",
-  review: "vlm-validating",
-  version: "vlm-validating",
-  qa: "vlm-validating",
-  audit: "vlm-validating",
-  completed: "validation-complete",
-  // Fallback: startup / monitoring errors map to the first stage.
-  startup: "uploading",
-  monitoring: "vlm-validating",
-};
-
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-const ALLOWED_UPLOAD_EXTENSION = ".pdf";
-
-/** Resolve a backend stage string to a UI PIPELINE_STAGES id, falling back to the raw value. */
-function toUIStage(backendStage: string): string {
-  return BACKEND_TO_UI_STAGE[backendStage] ?? backendStage;
-}
-
-// ---------------------------------------------------------------------------
-// Terminal log types + helpers
-// ---------------------------------------------------------------------------
-
-type LogCategory = "init" | "step-start" | "progress" | "stage-done" | "done" | "error";
-
-interface PipelineLogLine {
-  timestamp: string;
-  level: "INFO" | "ERROR";
-  category: LogCategory;
-  stage: string;
-  message: string;
-}
-
-const STAGE_LABEL: Record<string, string> = {
-  queued: "queue",
-  upload: "upload",
-  extraction: "extract",
-  validation: "validate",
-  completed: "pipeline",
-  startup: "system",
-  monitoring: "monitor",
-};
-
-function toLogLine(event: IngestionSSEEvent): PipelineLogLine {
-  const stage = STAGE_LABEL[event.stage] ?? event.stage;
-  const ts = event.timestamp;
-  switch (event.type) {
-    case "job.accepted":
-      return { timestamp: ts, level: "INFO", category: "init", stage, message: event.message || "Pipeline job accepted" };
-    case "progress": {
-      // Stage header lines start with "Stage N:" — show as visual step separator.
-      const isStepHeader = /^Stage \d+:/.test(event.message);
-      return { timestamp: ts, level: "INFO", category: isStepHeader ? "step-start" : "progress", stage, message: event.message };
-    }
-    case "stage.complete":
-      return { timestamp: ts, level: "INFO", category: "stage-done", stage, message: event.message };
-    case "complete":
-      return { timestamp: ts, level: "INFO", category: "done", stage: "pipeline", message: event.message || "Pipeline complete" };
-    case "error":
-      return { timestamp: ts, level: "ERROR", category: "error", stage, message: event.error || event.message };
-  }
-}
-
-function toHHMMSS(isoTs: string): string {
-  try { return new Date(isoTs).toTimeString().slice(0, 8); } catch { return "--:--:--"; }
-}
-
-function IngestionLogEntry({ line }: { line: PipelineLogLine }) {
-  const timeStr = toHHMMSS(line.timestamp);
-
-  // Stage header row — rendered as a visual section separator.
-  if (line.category === "step-start") {
-    return (
-      <div className="flex items-center gap-2 pl-3 pr-3 py-1.5 mt-2 mb-0.5 border-l-2 border-amber-500/50 bg-amber-500/5">
-        <span className="text-[10px] text-zinc-700 font-mono shrink-0 w-[60px] select-none tabular-nums">{timeStr}</span>
-        <span className="text-[10px] text-amber-500 font-mono shrink-0">▶</span>
-        <span className="flex-1 text-[11px] text-amber-300/90 font-semibold tracking-wide">{line.message}</span>
-      </div>
-    );
-  }
-
-  const borderClass =
-    line.category === "stage-done" ? "border-l-2 border-green-600/70"
-    : line.category === "done"     ? "border-l-2 border-green-500"
-    : line.category === "init"     ? "border-l-2 border-sky-500/80"
-    : line.category === "error"    ? "border-l-2 border-red-500"
-    : "";
-
-  const bgClass = line.category === "error" ? "bg-red-950/20" : "";
-
-  const badge =
-    line.category === "init"         ? <span className="text-[10px] text-sky-400 font-mono font-semibold shrink-0 w-12">INIT</span>
-    : line.category === "progress"   ? <span className="text-[10px] text-zinc-600 font-mono shrink-0 w-12">···</span>
-    : line.category === "stage-done" ? <span className="text-[10px] text-green-400 font-mono shrink-0 w-12">OK</span>
-    : line.category === "done"       ? <span className="text-[10px] text-green-400 font-mono font-bold shrink-0 w-12">DONE</span>
-    : line.category === "error"      ? <span className="text-[10px] text-red-400 font-mono font-bold shrink-0 w-12">ERR</span>
-    :                                  <span className="text-[10px] text-zinc-700 font-mono shrink-0 w-12">—</span>;
-
-  const msgClass =
-    line.category === "stage-done" ? "text-green-300"
-    : line.category === "done"     ? "text-green-300 font-medium"
-    : line.category === "error"    ? "text-red-300 font-medium"
-    : line.category === "init"     ? "text-zinc-200 font-medium"
-    : line.category === "progress" ? "text-zinc-400"
-    : "text-zinc-500";
-
-  return (
-    <div className={`flex gap-2 items-baseline py-0.5 pl-3 pr-2 ${borderClass} ${bgClass}`}>
-      <span className="text-zinc-600 text-[10px] font-mono shrink-0 w-[60px] select-none tabular-nums">
-        {timeStr}
-      </span>
-      {badge}
-      <span className="text-zinc-600 text-[10px] font-mono shrink-0 w-[52px] truncate">
-        [{line.stage}]
-      </span>
-      <span className={`flex-1 break-words text-xs leading-relaxed ${msgClass}`}>
-        {line.message}
-      </span>
-    </div>
-  );
-}
 
 type StageStatus = "pending" | "active" | "complete" | "error";
 
@@ -297,23 +48,27 @@ function isReviewReadyStatus(status: PipelineStatus): boolean {
   ].includes(status);
 }
 
+// ---------------------------------------------------------------------------
+// Upload Page
+// ---------------------------------------------------------------------------
+
 export default function UploadPage() {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // Form state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [version, setVersion] = useState("");
   const [system, setSystem] = useState("");
   const [docType, setDocType] = useState("");
 
+  // Transfer + pipeline state
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
-  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus | null>(null);
   const [progress, setProgress] = useState(0);
-  const [currentStage, setCurrentStage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [stageStatuses, setStageStatuses] = useState<Record<string, StageStatus>>({});
   const [done, setDone] = useState(false);
@@ -337,15 +92,11 @@ export default function UploadPage() {
     setUploadWarning("Live progress stream disconnected. Monitoring pipeline status in the background...");
 
     for (let attempt = 0; attempt < 240; attempt += 1) {
-      if (pollingCancelledRef.current) {
-        return;
-      }
+      if (pollingCancelledRef.current) return;
 
       try {
         const latest = await getPipelineStatus(documentId);
-        setPipelineStatus(latest.status);
         setProgress(latest.progress);
-        setCurrentStage(toUIStage(latest.current_stage ?? latest.status));
         setStatusMessage(latest.message ?? "Pipeline is still processing...");
 
         if (latest.status === "failed") {
@@ -371,13 +122,10 @@ export default function UploadPage() {
         if (!isIngestionProcessingStatus(latest.status)) {
           setUploadWarning(null);
           setUploadError(`Unexpected pipeline status: ${latest.status}`);
-          setDone(false);
-          setUploading(false);
+          setDone(false); setUploading(false);
           return;
         }
-      } catch {
-        // keep polling transient failures
-      }
+      } catch { /* keep polling on transient failures */ }
 
       await wait(3000);
     }
@@ -388,7 +136,6 @@ export default function UploadPage() {
     setUploadError("Lost connection to live progress updates and status polling timed out. Please check the document list and retry if needed.");
   }
 
-  // Abort any in-flight SSE stream on unmount.
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
@@ -396,7 +143,6 @@ export default function UploadPage() {
     };
   }, []);
 
-  // Auto-scroll terminal to bottom when new lines arrive.
   useEffect(() => {
     if (!logScrolledUp && terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
@@ -413,24 +159,15 @@ export default function UploadPage() {
     const f = e.target.files?.[0] ?? null;
     setSelectedFile(f);
     setUploadError(null);
-    
-    // Auto-populate title from filename
-    if (f && !title) {
-      setTitle(f.name.replace(/\.[^.]+$/, ""));
-    }
-
-    // Validate file type
+    if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     if (f && !f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
       setUploadError("Only PDF files are supported");
       setSelectedFile(null);
       return;
     }
-
-    // Validate file size (100MB max)
     if (f && f.size > MAX_UPLOAD_BYTES) {
       setUploadError("File size exceeds maximum of 100MB");
       setSelectedFile(null);
-      return;
     }
   }
 
@@ -439,68 +176,46 @@ export default function UploadPage() {
     const uiStage = toUIStage(event.stage);
 
     switch (event.type) {
-      case 'job.accepted':
+      case "job.accepted":
         setStatusMessage(event.message);
         setProgress(event.progress);
-        setCurrentStage(uiStage);
-        setStageStatuses((prev) => ({ ...prev, [uiStage]: 'active' }));
+        setStageStatuses((prev) => ({ ...prev, [uiStage]: "active" }));
         break;
-
-      case 'progress':
-        setCurrentStage(uiStage);
+      case "progress":
         setProgress(event.progress);
         setStatusMessage(event.message);
         setStageStatuses((prev) => {
           const updated = { ...prev };
-          updated[uiStage] = 'active';
-          // Mark all UI stages that appear before the current one as complete.
+          updated[uiStage] = "active";
           const activeIdx = PIPELINE_STAGES.findIndex((s) => s.id === uiStage);
           PIPELINE_STAGES.forEach((stage, idx) => {
-            if (idx < activeIdx && updated[stage.id] !== 'complete') {
-              updated[stage.id] = 'complete';
-            }
+            if (idx < activeIdx && updated[stage.id] !== "complete") updated[stage.id] = "complete";
           });
           return updated;
         });
         break;
-
-      case 'stage.complete':
-        setStageStatuses((prev) => ({
-          ...prev,
-          [uiStage]: 'complete',
-        }));
+      case "stage.complete":
+        setStageStatuses((prev) => ({ ...prev, [uiStage]: "complete" }));
         setProgress(event.progress);
         setStatusMessage(event.message);
         break;
-
-      case 'complete':
+      case "complete":
         sawTerminalEventRef.current = true;
         setProgress(100);
         setStatusMessage(event.message);
         setDone(true);
         setUploading(false);
-        // Mark all stages complete.
         setStageStatuses(() => {
           const allComplete: Record<string, StageStatus> = {};
-          PIPELINE_STAGES.forEach((stage) => {
-            allComplete[stage.id] = 'complete';
-          });
+          PIPELINE_STAGES.forEach((stage) => { allComplete[stage.id] = "complete"; });
           return allComplete;
         });
         break;
-
-      case 'error':
+      case "error":
         sawTerminalEventRef.current = true;
         setUploadError(`Pipeline error: ${event.error}`);
-        setPipelineStatus('failed');
-        setUploading(false);
-        setDone(false);
-        if (uiStage) {
-          setStageStatuses((prev) => ({
-            ...prev,
-            [uiStage]: 'error',
-          }));
-        }
+        setUploading(false); setDone(false);
+        if (uiStage) setStageStatuses((prev) => ({ ...prev, [uiStage]: "error" }));
         break;
     }
   }
@@ -510,7 +225,6 @@ export default function UploadPage() {
       setUploadError("File and title are required");
       return;
     }
-
     setUploading(true);
     setUploadError(null);
     setUploadWarning(null);
@@ -518,13 +232,11 @@ export default function UploadPage() {
     pollingCancelledRef.current = false;
     sawTerminalEventRef.current = false;
 
-    // Initialize stage statuses
     const init: Record<string, StageStatus> = {};
     PIPELINE_STAGES.forEach((s) => (init[s.id] = "pending"));
     setStageStatuses(init);
 
     try {
-      // Upload document via real API
       const response = await uploadDocument({
         file: selectedFile,
         title: title.trim(),
@@ -533,90 +245,52 @@ export default function UploadPage() {
         documentType: docType || undefined,
       });
 
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('Upload successful:', response);
-      }
-
       setDocumentId(response.document_id);
-      setPipelineStatus(response.status);
       setStatusMessage(response.message);
 
-      // Persist form metadata so document detail pages can show human-readable
-      // info without PostgREST (core stack has FastAPI only).
-      if (typeof window !== 'undefined') {
+      if (typeof window !== "undefined") {
         localStorage.setItem(
           `plantiq-upload-preview-${response.document_id}`,
-          JSON.stringify({
-            title: title.trim(),
-            version: version.trim() || '1.0',
-            system: system || '—',
-            docType: docType || 'PDF',
-          })
+          JSON.stringify({ title: title.trim(), version: version.trim() || "1.0", system: system || "—", docType: docType || "PDF" })
         );
       }
 
-      // Stream ingestion progress via SSE.
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
       try {
-        for await (const event of streamIngestionEvents(
-          response.document_id,
-          abortController.signal
-        )) {
+        for await (const event of streamIngestionEvents(response.document_id, abortController.signal)) {
           if (abortController.signal.aborted) break;
           handleIngestionSSEEvent(event);
         }
       } catch (streamErr) {
         if (!abortController.signal.aborted) {
-          console.error('Ingestion SSE stream error:', streamErr);
-          setUploadError(streamErr instanceof Error ? streamErr.message : 'SSE stream error');
+          setUploadError(streamErr instanceof Error ? streamErr.message : "SSE stream error");
           setUploading(false);
         }
       } finally {
         abortControllerRef.current = null;
-        // Guard: if SSE disconnects without terminal complete/error event,
-        // do NOT mark upload as complete. Switch to status polling until terminal.
         if (!abortController.signal.aborted && !sawTerminalEventRef.current) {
           await monitorPipelineUntilTerminal(response.document_id);
         }
       }
-
     } catch (err) {
-      console.error('Upload failed:', err);
-      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
       setUploading(false);
     }
   }
 
   function handleReset() {
-    setSelectedFile(null);
-    setTitle("");
-    setVersion("");
-    setSystem("");
-    setDocType("");
-    setUploading(false);
-    setUploadError(null);
-    setUploadWarning(null);
-    setDocumentId(null);
-    setPipelineStatus(null);
-    setProgress(0);
-    setCurrentStage(null);
-    setStatusMessage("");
-    setStageStatuses({});
-    setDone(false);
-    setLogLines([]);
-    setLogScrolledUp(false);
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
+    setSelectedFile(null); setTitle(""); setVersion(""); setSystem(""); setDocType("");
+    setUploading(false); setUploadError(null); setUploadWarning(null);
+    setDocumentId(null); setProgress(0);
+    setStatusMessage(""); setStageStatuses({});
+    setDone(false); setLogLines([]); setLogScrolledUp(false);
+    if (abortControllerRef.current) { abortControllerRef.current.abort(); abortControllerRef.current = null; }
     pollingCancelledRef.current = true;
   }
 
   const canSubmit = selectedFile && title.trim() && system && docType && !uploading;
-  const completedCount = Object.values(stageStatuses).filter((s) => s === "complete").length;
   const totalProgress = progress;
 
   return (
@@ -630,234 +304,83 @@ export default function UploadPage() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Upload Document</h1>
-            <p className="text-sm text-muted-foreground">
-              Add a new technical document to the ingestion pipeline
-            </p>
+            <p className="text-sm text-muted-foreground">Add a new technical document to the ingestion pipeline</p>
           </div>
         </div>
 
-        {/* Main content */}
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-7xl mx-auto">
 
-            {/* ── Pre-processing: upload form centred, full width ── */}
+            {/* Upload form (pre-processing) */}
             {!uploading && !done && !uploadError && (
-              <div className="max-w-2xl mx-auto space-y-4">
-              <Card className="overflow-hidden border-border">
-                {/* Step 1 — File */}
-                <div className="px-6 py-4 border-b border-border bg-muted/40 flex items-center gap-3">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">1</span>
-                  <span className="font-semibold text-sm">Select File</span>
-                </div>
-                <div className="p-6">
-                  <div
-                    className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border p-8 cursor-pointer hover:border-primary/60 hover:bg-primary/5 transition-colors"
-                    onClick={() => fileRef.current?.click()}
-                  >
-                    {selectedFile ? (
-                      <>
-                        <FileText className="h-10 w-10 text-primary" />
-                        <p className="font-medium">{selectedFile.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {(selectedFile.size / 1024 / 1024).toFixed(2)} MB · Click to change
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-10 w-10 text-muted-foreground/40" />
-                        <p className="text-sm text-muted-foreground">
-                          Click or drag-and-drop a PDF document
-                        </p>
-                      </>
-                    )}
-                  </div>
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept={ALLOWED_UPLOAD_EXTENSION}
-                    className="hidden"
-                    onChange={handleFileChange}
-                  />
-                </div>
-
-                {/* Step 2 — Metadata */}
-                <div className="border-t border-border">
-                  <div className="px-6 py-4 border-b border-border bg-muted/40 flex items-center gap-3">
-                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">2</span>
-                    <span className="font-semibold text-sm">Document Metadata</span>
-                  </div>
-                  <div className="p-6 space-y-4">
-                  <div>
-                    <Label htmlFor="title" className="mb-1.5 block">Document Title</Label>
-                    <Input
-                      id="title"
-                      value={title}
-                      onChange={(e) => setTitle(e.target.value)}
-                      placeholder="e.g., Gas Turbine Maintenance Guide"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="version" className="mb-1.5 block">Version</Label>
-                      <Input
-                        id="version"
-                        value={version}
-                        onChange={(e) => setVersion(e.target.value)}
-                        placeholder="e.g., Rev 3.0"
-                      />
-                    </div>
-                    <div>
-                      <Label className="mb-1.5 block">System / Area</Label>
-                      <Select onValueChange={setSystem}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select system" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="Power Block">Power Block</SelectItem>
-                          <SelectItem value="Pre Treatment">Pre Treatment</SelectItem>
-                          <SelectItem value="Liquefaction">Liquefaction</SelectItem>
-                          <SelectItem value="OSBL (Outside Battery Limits)">OSBL (Outside Battery Limits)</SelectItem>
-                          <SelectItem value="Maintenance">Maintenance</SelectItem>
-                          <SelectItem value="Instrumentation">Instrumentation</SelectItem>
-                          <SelectItem value="DCS (Distributed Control System)">DCS (Distributed Control System)</SelectItem>
-                          <SelectItem value="Electrical">Electrical</SelectItem>
-                          <SelectItem value="Mechanical">Mechanical</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div>
-                    <Label className="mb-1.5 block">Document Type</Label>
-                    <Select onValueChange={setDocType}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select document type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Operating Manual">Operating Manual</SelectItem>
-                        <SelectItem value="Maintenance Manual">Maintenance Manual</SelectItem>
-                        <SelectItem value="Troubleshooting Guide">Troubleshooting Guide</SelectItem>
-                        <SelectItem value="Technical Manual">Technical Manual</SelectItem>
-                        <SelectItem value="Technical Standard">Technical Standard</SelectItem>
-                        <SelectItem value="P&ID Diagram">P&ID Diagram</SelectItem>
-                        <SelectItem value="Procedure">Procedure</SelectItem>
-                        <SelectItem value="Other">Other</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  </div>
-                </div>
-
-                {/* Step 3 — Submit */}
-                <div className="border-t border-border">
-                  <div className="px-6 py-4 border-b border-border bg-muted/40 flex items-center gap-3">
-                    <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shrink-0 ${
-                      canSubmit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground border border-border"
-                    }`}>3</span>
-                    <span className="font-semibold text-sm">Start Pipeline</span>
-                  </div>
-                  <div className="p-6">
-                    <div className="rounded-lg border border-border bg-muted/20 p-4 mb-4">
-                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Pipeline Stages</p>
-                      <div className="space-y-2">
-                        {PIPELINE_STAGES.map((stage, idx) => (
-                          <div key={stage.id} className="flex items-center gap-3 text-sm">
-                            <span className="flex h-5 w-5 items-center justify-center rounded-full border border-border text-xs text-muted-foreground shrink-0 font-medium">
-                              {idx + 1}
-                            </span>
-                            <span className="font-medium">{stage.label}</span>
-                            <span className="text-muted-foreground text-xs">— {stage.description}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                    <Button disabled={!canSubmit} className="w-full gap-2 font-semibold h-11" onClick={handleUpload}>
-                      <Upload className="h-4 w-4" />
-                      Start Ingestion Pipeline
-                    </Button>
-                    {!canSubmit && (
-                      <p className="text-xs text-muted-foreground text-center mt-2">
-                        Complete steps 1 and 2 to continue
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </Card>
-              </div>
+              <UploadForm
+                fileRef={fileRef}
+                selectedFile={selectedFile}
+                title={title}
+                version={version}
+                system={system}
+                docType={docType}
+                canSubmit={!!canSubmit}
+                onFileChange={handleFileChange}
+                onTitleChange={setTitle}
+                onVersionChange={setVersion}
+                onSystemChange={setSystem}
+                onDocTypeChange={setDocType}
+                onSubmit={() => void handleUpload()}
+              />
             )}
 
-            {/* ── Processing/done: pipeline stages + log terminal side by side ── */}
+            {/* Processing / done: pipeline stages + terminal log */}
             {(uploading || done || logLines.length > 0) && (
               <div className="flex flex-col lg:flex-row gap-6 items-stretch">
 
-                {/* Left — Ingestion Pipeline stages (fixed width) */}
+                {/* Left — Pipeline stages */}
                 <div className="lg:w-[420px] shrink-0">
-                <Card className="overflow-hidden border-border flex flex-col h-full">
-                <div className="px-5 py-4 border-b border-border bg-muted/40 flex items-center justify-between shrink-0">
-                  <div>
-                    <h2 className="font-semibold text-sm">Ingestion Pipeline</h2>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {statusMessage || (currentStage ? `Stage: ${currentStage}` : 'Preparing...')}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold tabular-nums text-sm">{progress}%</span>
-                    {done ? (
-                      <Badge variant="outline" className="gap-1 text-green-400 bg-green-400/10 border-green-400/30">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Complete
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="gap-1 text-amber-400 bg-amber-400/10 border-amber-400/30">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Running
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-
-                <div className="px-5 py-3 border-b border-border shrink-0">
-                  <Progress value={totalProgress} className="h-1.5" />
-                </div>
-
-                <div className="divide-y divide-border flex-1">
-                  {PIPELINE_STAGES.map((stage, idx) => {
-                    const status = stageStatuses[stage.id] ?? "pending";
-                    return (
-                      <div
-                        key={stage.id}
-                        className={`flex items-center gap-4 px-6 py-4 transition-all ${
-                          status === "active"
-                            ? "bg-primary/8"
-                            : status === "complete"
-                            ? "bg-green-400/5"
-                            : ""
-                        }`}
-                      >
-                        <div className="w-8 h-8 flex items-center justify-center shrink-0">
-                          {status === "complete" ? (
-                            <CheckCircle2 className="h-5 w-5 text-green-400" />
-                          ) : status === "active" ? (
-                            <Loader2 className="h-5 w-5 text-primary animate-spin" />
-                          ) : (
-                            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-border text-xs text-muted-foreground font-medium">
-                              {idx + 1}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex-1">
-                          <p className="font-semibold text-sm">{stage.label}</p>
-                          <p className="text-xs text-muted-foreground">{stage.description}</p>
-                        </div>
+                  <Card className="overflow-hidden border-border flex flex-col h-full">
+                    <div className="px-5 py-4 border-b border-border bg-muted/40 flex items-center justify-between shrink-0">
+                      <div>
+                        <h2 className="font-semibold text-sm">Ingestion Pipeline</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5">{statusMessage || "Preparing..."}</p>
                       </div>
-                    );
-                  })}
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold tabular-nums text-sm">{progress}%</span>
+                        {done ? (
+                          <Badge variant="outline" className="gap-1 text-green-400 bg-green-400/10 border-green-400/30">
+                            <CheckCircle2 className="h-3 w-3" />Complete
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="gap-1 text-amber-400 bg-amber-400/10 border-amber-400/30">
+                            <Loader2 className="h-3 w-3 animate-spin" />Running
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    <div className="px-5 py-3 border-b border-border shrink-0">
+                      <Progress value={totalProgress} className="h-1.5" />
+                    </div>
+                    <div className="divide-y divide-border flex-1">
+                      {PIPELINE_STAGES.map((stage, idx) => {
+                        const status = stageStatuses[stage.id] ?? "pending";
+                        return (
+                          <div key={stage.id} className={`flex items-center gap-4 px-6 py-4 transition-all ${status === "active" ? "bg-primary/8" : status === "complete" ? "bg-green-400/5" : ""}`}>
+                            <div className="w-8 h-8 flex items-center justify-center shrink-0">
+                              {status === "complete" ? <CheckCircle2 className="h-5 w-5 text-green-400" />
+                                : status === "active" ? <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                                : <span className="flex h-6 w-6 items-center justify-center rounded-full border border-border text-xs text-muted-foreground font-medium">{idx + 1}</span>}
+                            </div>
+                            <div className="flex-1">
+                              <p className="font-semibold text-sm">{stage.label}</p>
+                              <p className="text-xs text-muted-foreground">{stage.description}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </Card>
                 </div>
-              </Card>
-                </div>{/* end left col */}
 
-                {/* Right — Live log terminal */}
+                {/* Right — Terminal log */}
                 <div className="flex-1 min-w-0 flex flex-col">
-                  {/* Chrome bar */}
                   <div className="flex items-center gap-2 px-4 py-2 rounded-t-lg bg-zinc-800 border border-zinc-700 border-b-0 shrink-0">
                     <div className="flex gap-1.5" aria-hidden="true">
                       <span className="h-3 w-3 rounded-full bg-red-500/50" />
@@ -865,28 +388,14 @@ export default function UploadPage() {
                       <span className="h-3 w-3 rounded-full bg-green-500/50" />
                     </div>
                     <Terminal className="h-3.5 w-3.5 text-zinc-500 ml-1" aria-hidden="true" />
-                    <span className="text-xs text-zinc-500 font-mono flex-1 ml-1">
-                      ingestion pipeline &middot; stages 1&ndash;4
-                    </span>
-                    <span className="text-[10px] text-zinc-600 font-mono tabular-nums">
-                      {logLines.length} lines
-                    </span>
+                    <span className="text-xs text-zinc-500 font-mono flex-1 ml-1">ingestion pipeline &middot; stages 1&ndash;4</span>
+                    <span className="text-[10px] text-zinc-600 font-mono tabular-nums">{logLines.length} lines</span>
                     {logScrolledUp && (
-                      <button
-                        className="ml-2 text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600 px-2 py-0.5 rounded transition-colors"
-                        onClick={() => {
-                          setLogScrolledUp(false);
-                          if (terminalRef.current) {
-                            terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-                          }
-                        }}
-                      >
+                      <button className="ml-2 text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600 px-2 py-0.5 rounded transition-colors" onClick={() => { setLogScrolledUp(false); if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight; }}>
                         &#8595; Jump to bottom
                       </button>
                     )}
                   </div>
-
-                  {/* Log output — flex-1 so height matches left pipeline card */}
                   <div
                     ref={terminalRef}
                     onScroll={handleTerminalScroll}
@@ -896,14 +405,8 @@ export default function UploadPage() {
                     aria-live="polite"
                     aria-label="Pipeline log output"
                   >
-                    {logLines.length === 0 && (
-                      <p className="pl-4 text-xs text-zinc-600 italic">Waiting for runner output...</p>
-                    )}
-                    {logLines.map((line, idx) => (
-                      <IngestionLogEntry key={idx} line={line} />
-                    ))}
-
-                    {/* Blinking cursor while running */}
+                    {logLines.length === 0 && <p className="pl-4 text-xs text-zinc-600 italic">Waiting for runner output...</p>}
+                    {logLines.map((line, idx) => <IngestionLogEntry key={idx} line={line} />)}
                     {uploading && (
                       <div className="flex gap-2 pl-3 mt-1">
                         <span className="text-zinc-700 text-[10px] font-mono w-[60px] select-none shrink-0" />
@@ -911,11 +414,11 @@ export default function UploadPage() {
                       </div>
                     )}
                   </div>
-                </div>{/* end right col */}
-
+                </div>
               </div>
             )}
 
+            {/* Connection-interrupted warning */}
             {uploadWarning && uploading && (
               <Card className="overflow-hidden border-border mt-4">
                 <div className="px-6 py-4 bg-amber-400/5 border border-amber-400/20 rounded-md">
@@ -930,8 +433,7 @@ export default function UploadPage() {
               </Card>
             )}
 
-            {/* Error / Success cards — full width below side-by-side */}
-            {/* Error Display */}
+            {/* Error display */}
             {uploadError && !uploading && (
               <Card className="overflow-hidden border-border">
                 <div className="px-6 py-5 border-t border-border bg-red-400/5">
@@ -943,18 +445,14 @@ export default function UploadPage() {
                     </div>
                   </div>
                   <div className="flex gap-3">
-                    <Button variant="outline" onClick={handleReset} className="flex-1">
-                      Try Again
-                    </Button>
-                    <Button variant="outline" onClick={() => router.push("/admin/documents")} className="flex-1">
-                      Return to Dashboard
-                    </Button>
+                    <Button variant="outline" onClick={handleReset} className="flex-1">Try Again</Button>
+                    <Button variant="outline" onClick={() => router.push("/admin/documents")} className="flex-1">Return to Dashboard</Button>
                   </div>
                 </div>
               </Card>
             )}
 
-            {/* Success Display */}
+            {/* Success display */}
             {done && !uploadError && documentId && (
               <Card className="overflow-hidden border-border mt-4">
                 <div className="px-6 py-5 bg-green-400/5 border-b border-green-400/10">
@@ -962,9 +460,7 @@ export default function UploadPage() {
                     <CheckCircle2 className="h-5 w-5 text-green-400 shrink-0" />
                     <p className="font-semibold text-green-400">Processing complete</p>
                   </div>
-                  <p className="text-xs text-muted-foreground ml-8">
-                    Validation finished · ready for fidelity review
-                  </p>
+                  <p className="text-xs text-muted-foreground ml-8">Validation finished · ready for fidelity review</p>
                 </div>
                 <div className="px-6 py-5">
                   <div className="mb-4 rounded-lg border border-border bg-muted/50 px-4 py-3 flex items-start gap-3">
@@ -974,24 +470,16 @@ export default function UploadPage() {
                     </div>
                   </div>
                   <div className="flex gap-3">
-                    <Button
-                      className="flex-1 gap-2 font-semibold"
-                      onClick={() => router.push(`/admin/documents/${documentId}/review`)}
-                    >
+                    <Button className="flex-1 gap-2 font-semibold" onClick={() => router.push(`/admin/documents/${documentId}/review`)}>
                       <FileText className="h-4 w-4" />
                       Start Fidelity Review
                     </Button>
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      onClick={handleReset}
-                    >
-                      Upload Another
-                    </Button>
+                    <Button variant="outline" className="flex-1" onClick={handleReset}>Upload Another</Button>
                   </div>
                 </div>
               </Card>
             )}
+
           </div>
         </div>
       </div>

@@ -1,73 +1,10 @@
 "use client";
 
-/**
- * Document Review Stage - HITL Validation & Correction Workflow
- * 
- * Purpose:
- * - Display extracted content from document (text + figures/tables)
- * - Enable human reviewers to validate extraction accuracy
- * - Allow in-place corrections to extracted content
- * - Support multi-page review with navigation
- * - Approve document for next pipeline stage (optimization or QA)
- * 
- * Pipeline Stage Context:
- * - Input: Document in EXTRACTION_COMPLETE status
- * - Action: Review extracted text, correct errors, add notes
- * - Output: Document transitions to REVIEW_COMPLETE (ready for optimization)
- * 
- * Data Model:
- * - pages: Array of ReviewPage objects (extracted text + figures per page)
- * - pageContent: Editable copy of extracted text (allows in-place corrections)
- * - severity flags: Critical/high/medium/low extraction issues (annotations)
- * 
- * UI Layout:
- * - Left sidebar: Page navigation + severity indicators
- * - Main area: Extracted content with edit mode
- * - Right drawer: Extracted figures/tables with in-context preview
- * - Footer: Navigation + Approve/Reject actions
- * 
- * Review Features:
- * - Edit extracted text directly (for OCR/extraction errors)
- * - Preview figures alongside extracted content
- * - Multi-page document support with indexed navigation
- * - Severity color-coding for visual priority
- * - Notes field for reviewer comments + context
- * 
- * State Management:
- * - selectedIdx: Current page being reviewed (0-based)
- * - pageContent: Mutable copy of extracted text per page
- * - isSubmitting: Prevents duplicate submissions during async operations
- * 
- * Error Handling:
- * - Fetch failures: Show error state + retry button
- * - Validation errors: Display in-page alerts with severity codes
- * - Submission errors: Display toast notification with error details
- */
-
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
-  CheckCircle2,
-  Edit3,
-  Image as ImageIcon,
-  Info,
-  RefreshCw,
-  Save,
-  X,
-} from "lucide-react";
-
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "text-red-400 bg-red-400/10 border-red-400/30",
-  high: "text-orange-400 bg-orange-400/10 border-orange-400/30",
-  medium: "text-amber-400 bg-amber-400/10 border-amber-400/30",
-  low: "text-zinc-400 bg-zinc-400/10 border-zinc-400/20",
-};
+import { AlertTriangle, ArrowLeft, ArrowRight, Edit3, Image as ImageIcon, Info, RefreshCw, Save, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -75,20 +12,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { fastapiFetch, getDocumentFromPipeline } from "@/lib/api";
 import { isOptimizationPendingStatus } from "@/lib/document-status";
 import type { Document, DocumentPagesResponse, ReviewPage } from "@/types";
-
-// ---------------------------------------------------------------------------
-// Review Stage Runtime Notes
-// ---------------------------------------------------------------------------
-// - This stage captures human corrections before optimization/QA consumes content.
-// - Edited page content should be treated as source-of-truth for downstream stages.
-// - Severity cues prioritize operator attention for high-risk extraction defects.
-// - Navigation must preserve unsaved edits in local component state.
-// ---------------------------------------------------------------------------
-
-/** Remove HTML comments embedded by the pipeline before rendering */
-function stripHtmlComments(content: string): string {
-  return content.replace(/<!--[\s\S]*?-->/g, "").trim();
-}
+import { SEVERITY_COLORS, stripHtmlComments, MARKDOWN_COMPONENTS } from "./_helpers";
+import { PageList } from "./_components/PageList";
 
 export default function ReviewClient({ docId }: { docId: string }) {
   const router = useRouter();
@@ -103,8 +28,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
   const [pageContent, setPageContent] = useState<Record<string, string>>({});
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [editBuffer, setEditBuffer] = useState("");
-  // Backend save state per page: undefined=untouched, saving, saved, error
-  const [pageSaveState, setPageSaveState] = useState<Record<string, "saving" | "saved" | "error">>({}); 
+  const [pageSaveState, setPageSaveState] = useState<Record<string, "saving" | "saved" | "error">>({});
 
   async function approveForOptimization() {
     setIsSubmitting(true);
@@ -121,7 +45,6 @@ export default function ReviewClient({ docId }: { docId: string }) {
 
   useEffect(() => {
     let cancelled = false;
-
     async function loadDocument() {
       try {
         const loaded = await getDocumentFromPipeline(docId);
@@ -130,14 +53,12 @@ export default function ReviewClient({ docId }: { docId: string }) {
         if (!cancelled) setIsDocLoading(false);
       }
     }
-
     void loadDocument();
     return () => { cancelled = true; };
   }, [docId]);
 
   useEffect(() => {
     let cancelled = false;
-
     async function loadPages() {
       try {
         const data = await fastapiFetch<DocumentPagesResponse>(`/api/v1/documents/${docId}/pages`);
@@ -146,7 +67,6 @@ export default function ReviewClient({ docId }: { docId: string }) {
         if (!cancelled) setPagesLoading(false);
       }
     }
-
     void loadPages();
     return () => { cancelled = true; };
   }, [docId]);
@@ -156,9 +76,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
     if (pages.length === 0) return;
     setPageContent((prev) => {
       const next = { ...prev };
-      pages.forEach((p) => {
-        if (!next[p.id]) next[p.id] = p.markdown_content;
-      });
+      pages.forEach((p) => { if (!next[p.id]) next[p.id] = p.markdown_content; });
       return next;
     });
   }, [pages]);
@@ -174,8 +92,8 @@ export default function ReviewClient({ docId }: { docId: string }) {
   }
 
   async function saveEdit(pageId: string) {
-    const content = editBuffer; // capture before state reset
-    setPageContent((prev) => ({ ...prev, [pageId]: content })); // optimistic
+    const content = editBuffer;
+    setPageContent((prev) => ({ ...prev, [pageId]: content }));
     setEditingPageId(null);
     setEditBuffer("");
     setPageSaveState((prev) => ({ ...prev, [pageId]: "saving" }));
@@ -190,8 +108,6 @@ export default function ReviewClient({ docId }: { docId: string }) {
       setPageSaveState((prev) => ({ ...prev, [pageId]: "error" }));
     }
   }
-
-  // ---------- loading / error states ----------
 
   if (isDocLoading || pagesLoading) {
     return (
@@ -255,12 +171,8 @@ export default function ReviewClient({ docId }: { docId: string }) {
 
   if (["uploading", "extracting", "vlm-validating"].includes(doc.status)) {
     const statusLabel =
-      doc.status === "uploading"
-        ? "Uploading"
-        : doc.status === "extracting"
-        ? "Extracting"
-        : "Validating";
-
+      doc.status === "uploading" ? "Uploading" :
+      doc.status === "extracting" ? "Extracting" : "Validating";
     return (
       <AppLayout>
         <div className="flex-1 flex flex-col h-full min-h-0">
@@ -285,7 +197,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
                 </p>
               </div>
               <div className="flex flex-col gap-2 pt-2">
-                <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents") }>
+                <Button variant="outline" className="gap-2" onClick={() => router.push("/admin/documents")}>
                   <ArrowLeft className="h-4 w-4" />
                   Back to Documents
                 </Button>
@@ -296,8 +208,6 @@ export default function ReviewClient({ docId }: { docId: string }) {
       </AppLayout>
     );
   }
-
-  // ---------- empty state (no pages generated yet) ----------
 
   if (pages.length === 0) {
     return (
@@ -327,9 +237,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
                 <Button
                   className="gap-2 font-semibold"
                   disabled={isSubmitting}
-                  onClick={async () => {
-                    await approveForOptimization();
-                  }}
+                  onClick={async () => { await approveForOptimization(); }}
                 >
                   {isSubmitting ? "Approving…" : "Approve for Optimization"}
                   <ArrowRight className="h-4 w-4" />
@@ -338,9 +246,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
                   <ArrowLeft className="h-4 w-4" />
                   Back to Documents
                 </Button>
-                {approveError && (
-                  <p className="text-xs text-red-400">{approveError}</p>
-                )}
+                {approveError && <p className="text-xs text-red-400">{approveError}</p>}
               </div>
             </div>
           </div>
@@ -348,8 +254,6 @@ export default function ReviewClient({ docId }: { docId: string }) {
       </AppLayout>
     );
   }
-
-  // ---------- main review layout ----------
 
   const selectedPage: ReviewPage | undefined = pages[selectedIdx];
 
@@ -379,9 +283,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
               size="sm"
               className="gap-1.5 font-semibold"
               disabled={isSubmitting}
-              onClick={async () => {
-                await approveForOptimization();
-              }}
+              onClick={async () => { await approveForOptimization(); }}
             >
               {isSubmitting ? "Approving…" : "Approve for Optimization"}
               <ArrowRight className="h-4 w-4" />
@@ -403,69 +305,12 @@ export default function ReviewClient({ docId }: { docId: string }) {
         {/* 2-panel layout */}
         <div className="flex-1 grid min-h-0" style={{ gridTemplateColumns: "220px 1fr" }}>
 
-          {/* LEFT — page list */}
-          <div className="flex flex-col border-r border-border min-h-0">
-            <div className="p-3 border-b border-border">
-              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                Pages · {selectedIdx + 1} of {pages.length}
-              </p>
-            </div>
-            <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-1">
-              {pages.map((page, idx) => {
-                const isSelected = idx === selectedIdx;
-                const saveState = pageSaveState[page.id];
-                return (
-                  <button
-                    key={page.id}
-                    onClick={() => setSelectedIdx(idx)}
-                    className={`w-full text-left p-3 rounded text-sm transition-colors border-l-4 ${
-                      isSelected
-                        ? "bg-primary/12 border-l-primary"
-                        : "hover:bg-muted/40 border-l-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-0.5">
-                      <p className={`text-xs font-semibold ${isSelected ? "text-foreground" : "text-muted-foreground"}`}>
-                        Page {page.page_number}
-                      </p>
-                      <div className="flex items-center gap-1 shrink-0">
-                        {(page.validation_issues?.length ?? 0) > 0 && (
-                          <span className="text-[10px] text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded px-1 py-0.5">
-                            {page.validation_issues.length}
-                          </span>
-                        )}
-                        {saveState === "saving" && (
-                          <RefreshCw className="h-3 w-3 text-muted-foreground animate-spin" />
-                        )}
-                        {saveState === "saved" && (
-                          <CheckCircle2 className="h-3 w-3 text-green-400" />
-                        )}
-                        {saveState === "error" && (
-                          <AlertTriangle className="h-3 w-3 text-red-400" />
-                        )}
-                      </div>
-                    </div>
-                    {page.evidence?.text_preview && (
-                      <p className="text-[10px] text-muted-foreground/60 line-clamp-2 leading-snug">
-                        {page.evidence.text_preview}
-                      </p>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Scoring criteria reference */}
-            <div className="border-t border-border p-3 shrink-0 bg-muted/20">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">Fidelity Review</p>
-              <div className="space-y-1.5">
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Faithful?</span> — is extracted content materially true to the source PDF?</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Preserved?</span> — are key tables, figures, and technical statements intact?</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">No hallucinations?</span> — verify no fabricated facts or dangerous omissions</div>
-                <div className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground/70">Safe to optimize?</span> — is this page ready to enter downstream optimization?</div>
-              </div>
-            </div>
-          </div>
+          <PageList
+            pages={pages}
+            selectedIdx={selectedIdx}
+            pageSaveState={pageSaveState}
+            onSelect={setSelectedIdx}
+          />
 
           {/* RIGHT — content editor */}
           <div className="flex flex-col min-h-0 overflow-hidden">
@@ -548,34 +393,7 @@ export default function ReviewClient({ docId }: { docId: string }) {
                 ) : (
                   <div className="flex-1 overflow-y-auto min-h-0 p-6 prose prose-invert prose-sm max-w-none">
                     {pageContent[selectedPage.id] || selectedPage.markdown_content ? (
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          h1: ({ children }) => <h1 className="text-xl font-bold mt-0 mb-3 text-foreground">{children}</h1>,
-                          h2: ({ children }) => <h2 className="text-base font-semibold mt-4 mb-2">{children}</h2>,
-                          h3: ({ children }) => <h3 className="text-sm font-semibold mt-3 mb-1">{children}</h3>,
-                          p: ({ children }) => <p className="text-sm leading-relaxed mb-3 text-foreground/90">{children}</p>,
-                          ul: ({ children }) => <ul className="list-disc list-inside text-sm mb-3 space-y-1">{children}</ul>,
-                          ol: ({ children }) => <ol className="list-decimal list-inside text-sm mb-3 space-y-1">{children}</ol>,
-                          li: ({ children }) => <li className="text-sm text-foreground/90">{children}</li>,
-                          strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-                          table: ({ children }) => (
-                            <div className="overflow-x-auto my-4">
-                              <table className="w-full text-xs border-collapse border border-border">{children}</table>
-                            </div>
-                          ),
-                          th: ({ children }) => <th className="border border-border px-3 py-1.5 bg-muted text-left font-medium">{children}</th>,
-                          td: ({ children }) => <td className="border border-border px-3 py-1.5">{children}</td>,
-                          blockquote: ({ children }) => (
-                            <blockquote className="border-l-4 border-amber-400/50 pl-4 my-3 text-muted-foreground italic text-sm">
-                              {children}
-                            </blockquote>
-                          ),
-                          code: ({ children }) => (
-                            <code className="bg-muted px-1 rounded text-xs font-mono">{children}</code>
-                          ),
-                        }}
-                      >
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                         {stripHtmlComments(pageContent[selectedPage.id] ?? selectedPage.markdown_content)}
                       </ReactMarkdown>
                     ) : (
@@ -662,5 +480,3 @@ export default function ReviewClient({ docId }: { docId: string }) {
     </AppLayout>
   );
 }
-
-

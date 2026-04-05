@@ -1,52 +1,5 @@
 "use client";
 
-/**
- * QA Gates Stage - Automated Metrics & Release Gating
- * 
- * Purpose:
- * - Display automated quality metrics for the extracted + optimized document
- * - Show pass/fail criteria based on configurable thresholds
- * - Enable reviewers to approve, reject, or request re-scoring
- * - Gate document release to RAG system based on quality scores
- * 
- * Pipeline Stage Context:
- * - Input: Document in QA_READY status (after optimization, if enabled)
- * - Metrics: Pre-computed by backend (metrics.json artifact)
- * - Action: Review metrics, approve/reject, or request re-scoring
- * - Output: Document transitions to FINAL_APPROVED (ready for RAG) or REJECTED
- * 
- * Metrics Computed:
- * - citation_coverage_percent: How many chunks are cited in extracted text
- * - question_heading_compliance_percent: Headings match section structure
- * - table_to_bullets_ratio: Tables converted to readable lists
- * - figure_description_coverage_percent: All figures have captions/descriptions
- * - hallucination_risk_score: LLM-generated content fidelity to source
- * - overall_confidence_score: Composite quality metric (0-1.0)
- * 
- * Thresholds:
- * - Configurable per metric (default: 80% for most, 50% for figure descriptions)
- * - Allows flexibility in release gating policies
- * - Warnings show yellow/orange when approaching threshold
- * - Failures show red with reason codes
- * 
- * Decisions:
- * - approved: All criteria passed, document approved for RAG
- * - review: Some criteria below threshold, manual review recommended
- * - rejected: Critical failures, document flagged for re-processing
- * - re-score: Request backend re-run metrics (e.g., after manual corrections)
- * 
- * UI Components:
- * - Metrics cards: Visual progress bars + status badges (pass/fail/warning)
- * - Criteria list: Passed + failed criteria with explanations
- * - Recommendations: Actionable next steps from metrics engine
- * - Re-score button: Triggers backend metrics recalculation
- * 
- * State Management:
- * - metrics: QAPreReviewMetrics from metrics.json artifact
- * - decision: approval decision (approved|rejected|review)
- * - isRescoring: Indicates pending re-score request
- */
-
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -57,107 +10,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CheckCircle2, XCircle, AlertTriangle, ArrowLeft, FileText, Table as TableIcon, Image as ImageIcon, TrendingUp, RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { getDocumentFromPipeline } from "@/lib/api";
-import { fetchArtifactJson, fastapiFetch, ApiError } from "@/lib/api";
-import { canStartFinalApproval, canOpenOptimizedReview, isFinalizedDocumentStatus, isOptimizationPendingStatus, isQAReadyStatus } from "@/lib/document-status";
+import { getDocumentFromPipeline, fetchArtifactJson, fastapiFetch, ApiError } from "@/lib/api";
+import {
+  canStartFinalApproval,
+  canOpenOptimizedReview,
+  isFinalizedDocumentStatus,
+  isOptimizationPendingStatus,
+  isQAReadyStatus,
+} from "@/lib/document-status";
 import type { Document, QAMetric } from "@/types";
-
-// ---------------------------------------------------------------------------
-// QA Gates Runtime Notes
-// ---------------------------------------------------------------------------
-// - QA metrics are advisory plus gating; final approval remains a human decision.
-// - Re-score should be used after substantive review/optimization edits.
-// - Thresholds should stay consistent with backend policy to avoid UX mismatch.
-// - Failed critical criteria should block approval pathways in the UI.
-// ---------------------------------------------------------------------------
-
-// ---------- Backend types --------------------------------------------------
-
-interface QAPreReviewMetrics {
-  citation_coverage_percent: number;
-  question_heading_compliance_percent: number;
-  table_to_bullets_ratio: number;
-  figure_description_coverage_percent: number;
-  overall_confidence_score: number;
-  critical_issues_count: number;
-  total_issues_count: number;
-  hallucination_risk_score: number;
-}
-
-interface QAPreReviewArtifact {
-  timestamp?: string;
-  decision: "approved" | "rejected" | "review";
-  metrics: QAPreReviewMetrics;
-  passed_criteria: string[];
-  failed_criteria: string[];
-  recommendations: string[];
-}
-
-interface QARescoreResponse {
-  document_id: string;
-  decision: string;
-  passed_criteria: string[];
-  failed_criteria: string[];
-  recommendations: string[];
-  metrics: QAPreReviewMetrics;
-  timestamp: string;
-}
-
-// Map backend metric key → display label and default threshold
-const METRIC_DISPLAY: Record<
-  keyof Omit<QAPreReviewMetrics, "critical_issues_count" | "total_issues_count" | "hallucination_risk_score">,
-  { name: string; threshold: number }
-> = {
-  citation_coverage_percent:            { name: "Citation Coverage",             threshold: 90 },
-  question_heading_compliance_percent:  { name: "Question Heading Compliance",   threshold: 85 },
-  table_to_bullets_ratio:               { name: "Table Facts Extraction",        threshold: 95 },
-  figure_description_coverage_percent:  { name: "Figure Description Coverage",   threshold: 100 },
-  overall_confidence_score:             { name: "Overall Confidence Score",      threshold: 80 },
-};
-
-// Map metric name keywords → which criteria strings to look for
-const METRIC_CRITERIA_KEYWORDS: Record<string, string[]> = {
-  citation_coverage_percent:            ["citation coverage", "citation"],
-  question_heading_compliance_percent:  ["question heading", "question headings"],
-  table_to_bullets_ratio:               ["table facts", "table"],
-  figure_description_coverage_percent:  ["figure", "figures described"],
-  overall_confidence_score:             ["confidence score", "confidence"],
-};
-
-function findCriterionDescription(key: string, passed: string[], failed: string[]): string | undefined {
-  const keywords = METRIC_CRITERIA_KEYWORDS[key] ?? [];
-  const allCriteria = [...passed, ...failed];
-  for (const criterion of allCriteria) {
-    if (keywords.some((kw) => criterion.toLowerCase().includes(kw))) {
-      return criterion;
-    }
-  }
-  return undefined;
-}
-
-function mapBackendMetrics(report: QAPreReviewArtifact): QAMetric[] {
-  return (Object.entries(METRIC_DISPLAY) as Array<[keyof typeof METRIC_DISPLAY, { name: string; threshold: number }]>).map(
-    ([key, { name, threshold }]) => {
-      const score = Math.round(report.metrics[key] ?? 0);
-      const status: QAMetric["status"] =
-        score >= threshold ? "pass" : score >= threshold * 0.85 ? "warning" : "fail";
-      const details = findCriterionDescription(key, report.passed_criteria ?? [], report.failed_criteria ?? []);
-      return { name, score, threshold, status, details };
-    }
-  );
-}
-
-function decisionToRecommendation(d: string): "accept" | "reject" | "review" {
-  if (d === "approved" || d === "conditional_approval") return "accept";
-  if (d === "rejected") return "reject";
-  return "review";
-}
-
-const STATUS_CONFIG = {
-  pass:    { badgeClass: "text-green-400 bg-green-400/10 border-green-400/30", icon: <CheckCircle2 className="h-4 w-4" />, label: "PASS", barClass: "[&>div]:bg-green-400" },
-  warning: { badgeClass: "text-amber-400 bg-amber-400/10 border-amber-400/30", icon: <AlertTriangle className="h-4 w-4" />, label: "WARNING", barClass: "[&>div]:bg-amber-400" },
-  fail:    { badgeClass: "text-red-400 bg-red-400/10 border-red-400/30", icon: <XCircle className="h-4 w-4" />, label: "FAIL", barClass: "[&>div]:bg-red-400" },
-};
+import {
+  type QAPreReviewArtifact,
+  type QARescoreResponse,
+  mapBackendMetrics,
+  decisionToRecommendation,
+  STATUS_CONFIG,
+} from "./_helpers";
 
 export default function QAGatesClient({ docId }: { docId: string }) {
   const router = useRouter();
@@ -306,7 +174,13 @@ export default function QAGatesClient({ docId }: { docId: string }) {
       setRecommendation(decisionToRecommendation(result.decision));
       setQaReport((prev) =>
         prev
-          ? { ...prev, timestamp: result.timestamp, decision: result.decision as QAPreReviewArtifact["decision"], passed_criteria: result.passed_criteria, failed_criteria: result.failed_criteria }
+          ? {
+              ...prev,
+              timestamp: result.timestamp,
+              decision: result.decision as QAPreReviewArtifact["decision"],
+              passed_criteria: result.passed_criteria,
+              failed_criteria: result.failed_criteria,
+            }
           : {
               timestamp: result.timestamp,
               decision: result.decision as QAPreReviewArtifact["decision"],
@@ -316,7 +190,17 @@ export default function QAGatesClient({ docId }: { docId: string }) {
               recommendations: result.recommendations,
             }
       );
-      setDoc((prev) => (prev ? { ...prev, status: result.decision === "approved" || result.decision === "conditional_approval" ? "qa-review" : prev.status } : prev));
+      setDoc((prev) =>
+        prev
+          ? {
+              ...prev,
+              status:
+                result.decision === "approved" || result.decision === "conditional_approval"
+                  ? "qa-review"
+                  : prev.status,
+            }
+          : prev
+      );
     } catch {
       setRescoreError("Re-score failed. Please try again or contact support.");
     } finally {
@@ -600,7 +484,7 @@ export default function QAGatesClient({ docId }: { docId: string }) {
                   }}
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  {canProceedToFinalApproval ? "Proceed to Final Approval" : "Accept &amp; Proceed to Final Approval"}
+                  {canProceedToFinalApproval ? "Proceed to Final Approval" : "Accept & Proceed to Final Approval"}
                 </Button>
               </div>
             </div>
