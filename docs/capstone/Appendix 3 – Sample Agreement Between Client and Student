@@ -1,0 +1,42 @@
+# Appendix 3 — Sample Agreement Between Client and Student
+
+This is an agreement between Cove Point - BHE GT&S, the “Client”, and the Software Engineering student Syed Abed Hossain, the “Student”, from the Spring 2026 In the Software Engineering Capstone SENG 701 class, the “Class”, at the University of Maryland Baltimore County (UMBC), the “University”, with Dr. Mohammad Samarah, the “Professor”, concerning designing and building a software application for the as part of the Class project to be used by the Client in service of their own clients and patrons, the “Software”. The agreement is valid from Spring 2026, the “Start Date”, through May 25, 2026, the “End Date”. The following are the terms and conditions of this agreement:
+
+1. This agreement is exclusively between the Student of the Class and the Client and neither the Professor nor the University are party to it. The Client agrees to not hold the Professor and the University liable to any damages or loss of business, wages, or any other damages real or perceived.
+
+2. The Software is being provided free of charge to the Client by the Student.
+
+3. This Software will be given to you in its entirety, including the Software source code. You may modify, enhance, or reuse the Software for your own use. You may not redistribute the Software in any form or provide it to other entities or organizations without written permission from the Student.
+
+4. The Student holds exclusive rights to the Software, its design, and its source code. The Client may not publish the Software source code in any form.
+
+5. The Student will make every effort to provide a highly usable Software. You agree and understand that certain functions and features may not be available or missing and agree to not hold the Student liable for the completion of these functions and features.
+
+6. Security is a major consideration in designing this Software, and great efforts by the Student will be taken to minimize the risk of data leakage, including security-driven design, code reviews, and the use of best practice software engineering methods. You agree to not hold the Student liable for any damages caused by Software exploitations, security attacks or any other Software omissions, errors, or failures.
+
+7. This Software will be provided as is in beta or release candidate quality, not as a final production quality release. It may contain bugs, defects, and missing features and functions. For example, dropped events and failure to send emails and notifications. Client agrees to not hold Student liable for any losses or damages caused by Software omissions, errors, and failures.
+
+8. The Software does not include any warranties of any sort.
+
+9. No updates, support, or any other services are provided after the End Date. Further work on the Software requires a separate agreement between the Client and the Student.
+
+10. If there are disagreements or contradictions between this agreement and the UMBC intellectual property rights policy, then the later policy is in effect.
+
+---
+
+## Signatures
+
+**Client (Sponsor)**
+
+Client name (print): __________________________
+
+Client title: _________________________________
+
+Signature: _________________________________   Date: __________
+
+
+**Student**
+
+Student name (print): _________________________
+
+Signature: _________________________________   Date: __________

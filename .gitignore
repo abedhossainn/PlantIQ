@@ -111,28 +111,6 @@ frontend/tests/**/*.pyc
 tmp/
 temp/
 
-# === Working Documents (Internal Use Only) ===
-Documents/
-CHECKPOINT_STRATEGY.md
-RESTRUCTURE_PLAN.md
-RESTRUCTURE_COMPLETE.md
-PROJECT_STATUS.md
-How to write clean code.md
-T007_COMPLETION_SUMMARY.md
-T008_T009_COMPLETION_SUMMARY.md
-T010_COMPLETION_SUMMARY.md
-COMPLETION_SUMMARY_T004_T005.md
-COMPLETION_SUMMARY_T006.md
-SECURITY_FIXES_T012.md
-REGRESSION_T-015.md
-
-# === Capstone Internal Documentation ===
-docs/capstone/
-docs/operations/
-docs/security/
-docs/api
-docs/architecture
-
 # === Validation & Test Scripts (Non-Essential) ===
 validate_t006.sh
 validate_t004_t005.sh
