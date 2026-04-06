@@ -295,9 +295,10 @@ A relaxed-threshold retrieval fallback is used to reduce empty responses on spar
 
 ```text
 llm-rag-chatbot/
-├── backend/          # FastAPI APIs, services, models
-├── frontend/         # Next.js UI (admin + operator chat)
-├── pipeline/         # HITL ingestion, QA, optimization
+├── apps/
+│   ├── api/          # FastAPI APIs, services, models
+│   ├── web/          # Next.js UI (admin + operator chat)
+│   └── pipeline/     # HITL ingestion, QA, optimization
 ├── docs/             # Architecture, API, ops, security docs
 ├── tests/            # Integration and performance tests
 ├── tools/            # Utility scripts
@@ -353,6 +354,13 @@ The checkpoint-validated local flow is:
 3. Build/start containers (`make docker-build`, `make docker-up`)
 4. Run tests (`make test`)
 5. Inspect logs (`make docker-logs`)
+
+## Demo accounts
+
+| Username | Password | Role | Access |
+|---|---|---|---|
+| `demoadmin` | `demo@plantiq` | Admin | Full access — document management, pipeline, chat |
+| `demouser` | `demo@plantiq` | User | Chat and conversation history only |
 
 ## Public prototype and evidence
 
