@@ -227,6 +227,8 @@ async def update_document_page_content(
     file_path = _safe_subpath(review_dir, str(page_entry.get("file") or ""))
     manifest_path = review_dir / "page_review_manifest.json"
 
+    page_entry["markdown_content"] = payload.markdown_content
+
     try:
         file_path.write_text(payload.markdown_content, encoding="utf-8")
         manifest_path.write_text(json.dumps(page_manifest, indent=2), encoding="utf-8")

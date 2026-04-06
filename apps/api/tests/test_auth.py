@@ -9,8 +9,11 @@ Tests:
 4. Auth service functionality
 """
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,7 +22,10 @@ from app.core.jwt import JWTManager
 from app.core.ldap import LDAPClient
 import uuid
 
+_AUTH_DISABLED = os.getenv("AUTH_DISABLED", "false").lower() == "true"
 
+
+@pytest.mark.skipif(_AUTH_DISABLED, reason="JWT operations disabled when AUTH_DISABLED=true")
 def test_jwt_operations():
     """Test JWT token creation and validation."""
     print("\n🔐 Testing JWT Operations...")

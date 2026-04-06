@@ -96,7 +96,16 @@ class AuthService:
     """Authentication service for handling login, token issuance, and refresh."""
     
     REFRESH_TOKEN_LIFETIME_HOURS = 8
-    
+
+    # Maps application role (stored in users.role) → PostgREST DB role for SET ROLE.
+    # PostgREST reads the 'role' JWT claim and switches to that DB role, so it must
+    # match the PostgreSQL role name exactly.
+    ROLE_TO_DB_ROLE: dict[str, str] = {
+        "admin": "plantig_admin",
+        "reviewer": "plantig_reviewer",
+        "user": "plantig_user",
+    }
+
     # Scope mapping based on role
     ROLE_SCOPES = {
         "admin": ["chat.read", "docs.review", "docs.upload", "admin.manage"],
@@ -123,11 +132,20 @@ class AuthService:
         # Authenticate against LDAP
         ldap_user = await ldap_client.authenticate(username, password)
         if not ldap_user:
-            logger.warning(f"Authentication failed for user: {username}")
-            return None
-        
-        # Get or create user in database
-        user = await AuthService._get_or_create_user(ldap_user, db)
+            # LDAP failed — fall back to local DB password_hash authentication
+            result = await db.execute(
+                select(User).where(User.username == username)
+            )
+            db_user = result.scalar_one_or_none()
+            if db_user and db_user.password_hash and _verify_password(password, db_user.password_hash):
+                logger.info(f"Local DB authentication successful for user: {username}")
+                user = db_user
+            else:
+                logger.warning(f"Authentication failed for user: {username}")
+                return None
+        else:
+            # Get or create user in database from LDAP data
+            user = await AuthService._get_or_create_user(ldap_user, db)
         
         if user.status != "active":
             logger.warning(f"User account disabled: {username}")
@@ -139,11 +157,14 @@ class AuthService:
         
         # Get user scopes based on role
         scopes = AuthService.ROLE_SCOPES.get(user.role, [])
-        
+
+        # Map app role → PostgREST DB role (JWT 'role' claim must be the PG role name)
+        db_role = AuthService.ROLE_TO_DB_ROLE.get(user.role, "plantig_user")
+
         # Generate access token
         access_token = jwt_manager.create_access_token(
             user_id=user.id,
-            role=user.role,
+            role=db_role,
             email=user.email,
             department=user.department,
             scope=scopes,
@@ -272,11 +293,14 @@ class AuthService:
         
         # Get user scopes
         scopes = AuthService.ROLE_SCOPES.get(user.role, [])
-        
+
+        # Map app role → PostgREST DB role
+        db_role = AuthService.ROLE_TO_DB_ROLE.get(user.role, "plantig_user")
+
         # Generate new access token
         access_token = jwt_manager.create_access_token(
             user_id=user.id,
-            role=user.role,
+            role=db_role,
             email=user.email,
             department=user.department,
             scope=scopes,

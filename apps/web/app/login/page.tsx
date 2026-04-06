@@ -5,24 +5,22 @@
  *
  * Purpose:
  * - Captures user credentials and initiates authentication flow via AuthContext.
- * - Supports quick-login presets for local development and demo scenarios.
  * - Provides clear loading/error feedback during async auth attempts.
  *
  * Flow:
- * 1. User submits username/password (or quick-access account).
+ * 1. User submits username/password.
  * 2. `login()` in AuthContext performs backend/dev-mode auth logic.
  * 3. On success, router redirects to app root.
  * 4. On failure, user-facing error message is displayed.
  *
  * QA notes:
- * - Quick-login buttons should remain available in non-production environments.
  * - Loading state should disable submit controls to prevent duplicate requests.
  * - Error text should clear on subsequent attempts.
  * - Redirect should only occur after successful auth context update.
  * - Keep credential fields controlled to avoid stale form state.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -37,8 +35,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, user, isAdmin } = useAuth();
   const router = useRouter();
+
+  // If already authenticated, skip the login page.
+  useEffect(() => {
+    if (user) {
+      router.replace(isAdmin ? "/admin/documents" : "/chat");
+    }
+  }, [user, isAdmin, router]);
 
   function getPostLoginRoute(): string {
     if (typeof window === "undefined") {
@@ -70,29 +75,6 @@ export default function LoginPage() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleQuickLogin = async (quickUsername: string, quickPassword: string) => {
-    setError("");
-    setIsLoading(true);
-    try {
-      await login(quickUsername, quickPassword);
-      router.push(getPostLoginRoute());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const quickAccessAccounts = [
-    { username: "user", password: "user123", role: "user" as const, label: "Field User", color: "bg-zinc-500/10 hover:bg-zinc-500/20 border-zinc-500/40 hover:border-zinc-500/60 text-zinc-300" },
-    { username: "admin", password: "admin123", role: "admin" as const, label: "Admin", color: "bg-primary/10 hover:bg-primary/20 border-primary/40 hover:border-primary/60 text-primary" },
-  ];
-
-  const roleDot: Record<string, string> = {
-    user: "bg-zinc-400",
-    admin: "bg-primary",
   };
 
   return (
@@ -166,36 +148,6 @@ export default function LoginPage() {
               <strong className="text-foreground/70">Active Directory / LDAP (SAML 2.0)</strong>.
               Session events are audit-logged with user, role, timestamp, and IP.
             </p>
-          </div>
-
-          {/* Quick access accounts */}
-          <div className="mt-6 rounded-lg border border-border bg-muted/20 overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-border bg-muted/40">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                Quick Access Accounts
-              </p>
-            </div>
-            <div className="p-3 grid grid-cols-2 gap-2">
-              {quickAccessAccounts.map((u) => (
-                <button
-                  key={u.username}
-                  type="button"
-                  className={`rounded-lg border px-3 py-3 text-left transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${u.color}`}
-                  onClick={() => handleQuickLogin(u.username, u.password)}
-                  disabled={isLoading}
-                >
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <span className={`h-2 w-2 rounded-full ${roleDot[u.role]}`} />
-                    <span className="text-xs font-semibold">{u.username}</span>
-                  </div>
-                  <span className="text-xs opacity-75">{u.label}</span>
-                </button>
-              ))}
-            </div>
-            <div className="px-4 py-3 border-t border-border bg-muted/30 text-xs text-muted-foreground space-y-1">
-              <p><span className="font-semibold text-foreground/80">Admin:</span> admin / admin123</p>
-              <p><span className="font-semibold text-foreground/80">User:</span> user / user123</p>
-            </div>
           </div>
         </CardContent>
       </Card>

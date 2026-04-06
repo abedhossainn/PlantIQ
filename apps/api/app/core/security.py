@@ -194,7 +194,7 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         payload = _get_jwt_manager().verify_token(token)
         role = payload["role"]
         
-        if role != "admin":
+        if role not in {"admin", "plantig_admin"}:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Admin access required",
@@ -268,8 +268,8 @@ async def verify_ws_token(token: Optional[str]) -> Optional[tuple[uuid.UUID, str
         payload = _get_jwt_manager().verify_token(token)
         user_id = uuid.UUID(payload.get("sub"))
         role = payload.get("role", "user")
-        if role not in {"admin", "user"}:
-            role = "user"
+        if role not in {"admin", "user", "plantig_admin", "plantig_user", "plantig_reviewer"}:
+            role = "plantig_user"
         return (user_id, role)
     except (InvalidTokenError, ValueError):
         return None

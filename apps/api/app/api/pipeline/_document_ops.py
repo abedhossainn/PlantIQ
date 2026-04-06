@@ -3,6 +3,7 @@ Document operation helpers: optimization stage execution, RAG publishing,
 approval orchestration, metadata enrichment, and publication status normalization.
 """
 import asyncio
+import importlib
 import json
 import logging
 import sys
@@ -17,10 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import REPO_ROOT, get_artifacts_path, settings
 from ...core.optimization_log import OptimizationLogHandler, OptimizationLogManager
-from ...models.database import AsyncSessionLocal
 from ...models.pipeline import PipelineStatus, PublicationStatus
 from ...services.embedding_service import EmbeddingService
 from ...services.qdrant_service import QdrantService
+
+
+def _pipeline_pkg():
+    """Late-bound import of the pipeline package to allow test monkeypatching."""
+    return importlib.import_module(__package__)
+
+
 from ._chunks import _build_publishable_chunks
 from ._constants import _CLEAR, _SET_NOW, _UNCHANGED, pipeline_timestamp
 from ._constants import _APPROVE_FOR_OPTIMIZATION_ALLOWED_STATUSES, _APPROVE_FOR_OPTIMIZATION_BLOCKED_STATUSES
@@ -116,7 +123,7 @@ async def _execute_optimization_stage(
             update_manifest_timestamp,
         )
 
-        async with AsyncSessionLocal() as db:
+        async with _pipeline_pkg().AsyncSessionLocal() as db:
             await _set_document_status(
                 db,
                 document_id,
@@ -181,7 +188,7 @@ async def _execute_optimization_stage(
             manifest_record = update_manifest_timestamp(manifest_record, "reformatting", reviewer)
             save_manifest(manifest_record, str(manifest_path))
 
-        async with AsyncSessionLocal() as db:
+        async with _pipeline_pkg().AsyncSessionLocal() as db:
             await _set_document_status(
                 db,
                 document_id,
@@ -199,7 +206,7 @@ async def _execute_optimization_stage(
         if not closed_stream:
             OptimizationLogManager.close(document_id, "failed")
         logger.error("Optimization stage failed for %s: %s", document_id, exc, exc_info=True)
-        async with AsyncSessionLocal() as db:
+        async with _pipeline_pkg().AsyncSessionLocal() as db:
             await _set_document_status(
                 db,
                 document_id,
@@ -350,7 +357,7 @@ async def _approve_for_optimization(
             optimization_error=_CLEAR,
         )
         background_tasks.add_task(
-            _execute_optimization_stage,
+            _pipeline_pkg()._execute_optimization_stage,
             document_id=str(document_id),
             reviewer=str(current_user_id),
             work_dir=str(work_dir),

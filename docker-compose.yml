@@ -15,7 +15,7 @@ services:
     ports:
       - "8001:8000"
     environment:
-      - AUTH_DISABLED=${AUTH_DISABLED:-true}
+      - AUTH_DISABLED=${AUTH_DISABLED:-false}
       - PLANTIQ_REPO_ROOT=/workspace
       - PYTHONPATH=/workspace/apps:/workspace
       - DATABASE_URL=postgresql+asyncpg://plantiq:changeme@postgres:5432/plantiq
@@ -89,14 +89,15 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # --- TUNNEL (reviewer access) ---
-      - NEXT_PUBLIC_API_URL=https://plantiqapi.sahossain.com
-      - NEXT_PUBLIC_FASTAPI_URL=https://plantiqapi.sahossain.com
-      # --- DEV (local) — uncomment below, comment out the two lines above ---
-      #- NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
-      #- NEXT_PUBLIC_FASTAPI_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8001}
-      - NEXT_PUBLIC_POSTGREST_URL=${NEXT_PUBLIC_POSTGREST_URL:-http://localhost:3001}
+      # API: use the Cloudflare tunnel URL so both local and external browsers work
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://plantiqapi.sahossain.com}
+      - NEXT_PUBLIC_FASTAPI_URL=${NEXT_PUBLIC_FASTAPI_URL:-https://plantiqapi.sahossain.com}
+      # PostgREST: served via Next.js server-side proxy (/PlantIQ/api/postgrest/)
+      # so the browser never needs direct access to localhost:3001
+      - NEXT_PUBLIC_POSTGREST_URL=/PlantIQ/api/postgrest
+      - POSTGREST_INTERNAL_URL=http://plantiq-postgrest:3000
       - NEXT_PUBLIC_DEV_JWT=${NEXT_PUBLIC_DEV_JWT:-eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJzdWIiOiAiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwgInJvbGUiOiAicGxhbnRpZ19hZG1pbiIsICJhdWQiOiAicGxhbnRpZyIsICJpc3MiOiAicGxhbnRpZy1hdXRoIiwgImV4cCI6IDk5OTk5OTk5OTl9.IJXta4CJER43rcID5iGjjeUIEjdxqqsUhIgWc8_laU0}
+      - NEXT_PUBLIC_AUTH_DISABLED=false
       - NEXT_PUBLIC_APP_NAME=PlantIQ
     volumes:
       - ./apps/web/app:/app/app
@@ -325,7 +326,7 @@ services:
       PGRST_DB_URI: postgresql://plantig_authenticator:${POSTGREST_DB_PASSWORD:-CHANGE_ME_IMMEDIATELY}@postgres:5432/plantiq
       PGRST_DB_SCHEMA: public
       PGRST_DB_ANON_ROLE: plantig_anon
-      PGRST_JWT_SECRET: ${PGRST_JWT_SECRET:-dev-jwt-secret-plantiq-change-in-production}
+      PGRST_JWT_SECRET: '{"alg":"RS256","kty":"RSA","use":"sig","n":"kIaNEKKCeyC_W8QrnjoDiRPYC-C_XwAItYxGOFOGGkFNA3bZKVlclunTLNWIaxt_tepK4ajih1NDnMUqId355kPiklSPcd9wYqRK_tE1RXFlWlPgvM79u0Pe-ngonj4O1PXArEeWjrWaQ6tK0amV_-ue85jt37wRWaqzlZx1yLan6v3wrcp07NAd1oebtKCR6NCRVWsiJxxv8c9MjK__iXksK4f8FbD1sd85j00KEhl0CUmAJXLLbj66b-J9I3U95HwOBL1wzCUxKdXbwArh-Nor0D7TxnA1iSNaLBBqhoVWjX3ExkJxDU7-i2QgO8buXqljkz94gCXwj-Cn21qvTw","e":"AQAB","kid":"plantig-2026-v1"}'
       PGRST_JWT_AUD: plantig
       PGRST_SERVER_PORT: 3000
       PGRST_LOG_LEVEL: info

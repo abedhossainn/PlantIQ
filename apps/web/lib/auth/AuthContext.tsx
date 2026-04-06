@@ -92,6 +92,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isAdmin: boolean;
   isUser: boolean;
+  isAuthLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -109,7 +110,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (storedUser) {
         try {
           setUser(JSON.parse(storedUser));
-          if (!storedToken && process.env.NEXT_PUBLIC_DEV_JWT) {
+          // Always refresh the dev JWT so a stale stored token (e.g. after
+          // a JWT rotation or container rebuild) never silently blocks
+          // PostgREST access on subsequent page loads.
+          if (process.env.NEXT_PUBLIC_DEV_JWT) {
             localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
           }
         } catch (e) {
@@ -119,9 +123,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           localStorage.removeItem(TOKEN_STORAGE_KEY);
         }
       } else {
-        localStorage.removeItem(AUTH_STORAGE_KEY);
-        localStorage.removeItem("mockUser");
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        // No stored session — auto-login with the default dev user so PostgREST
+        // calls receive a valid JWT without requiring a manual login step.
+        const defaultUser = { ...AUTH_DISABLED_USER, lastLogin: new Date().toISOString() };
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(defaultUser));
+        localStorage.setItem("mockUser", JSON.stringify(defaultUser));
+        if (process.env.NEXT_PUBLIC_DEV_JWT) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, process.env.NEXT_PUBLIC_DEV_JWT);
+        }
+        setUser(defaultUser);
       }
 
       setIsLoading(false);
@@ -179,10 +189,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       credentials: "include",
       body: JSON.stringify({
-        request: {
-          username,
-          password,
-        },
+        username,
+        password,
       }),
     });
 
@@ -236,6 +244,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isAuthenticated: !!user,
     isAdmin: user?.role === "admin",
     isUser: user?.role === "user",
+    isAuthLoading: isLoading,
   };
 
   if (isLoading) {

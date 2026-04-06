@@ -157,7 +157,7 @@ async def publish_document(
         logger.error("Error publishing document %s to RAG: %s", document_id, exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to publish document to RAG",
+            detail=str(exc),
         )
 
 
@@ -286,7 +286,7 @@ async def get_document_artifact(
                         return _build_artifact_file_response(artifact_path)
 
                     raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
+                        status_code=status.HTTP_409_CONFLICT,
                         detail=(
                             "Post-optimization QA report not found; "
                             "run QA rescore on the optimized output first"

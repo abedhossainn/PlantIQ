@@ -120,6 +120,27 @@ class FakeAsyncSession:
                 )
             )
 
+        if "select" in sql and "from documents" in sql and "optimization_started_at" in sql:
+            document = self.documents.get(str(params["doc_id"]))
+            if not document:
+                return FakeResult(None)
+            return FakeResult(
+                (
+                    document["status"],
+                    document["created_at"],
+                    document["updated_at"],
+                    document.get("notes"),
+                    document.get("optimization_started_at"),
+                    document.get("optimization_completed_at"),
+                    document.get("optimization_error"),
+                    document.get("publication_status"),
+                    document.get("published_at"),
+                    document.get("publication_error"),
+                    document.get("indexed_chunk_count"),
+                    document.get("qdrant_collection"),
+                )
+            )
+
         raise AssertionError(f"Unexpected SQL in benchmark test double: {statement}")
 
     async def commit(self):
@@ -280,12 +301,12 @@ def test_t014_performance_benchmark(
                 r.status_code == 200 or (_ for _ in ()).throw(AssertionError(f"rag status={r.status_code}"))
             )
         )(
-            client.post("/api/v1/chat/query", json={"request": {"query": "What is LNG density?"}})
+            client.post("/api/v1/chat/query", json={"query": "What is LNG density?"})
         ),
     )
 
     def _stream_request() -> None:
-        with client.stream("POST", "/api/v1/chat/stream", json={"request": {"query": "Stream answer"}}) as response:
+        with client.stream("POST", "/api/v1/chat/stream", json={"query": "Stream answer"}) as response:
             body = "".join(response.iter_text())
             if response.status_code != 200 or "event: complete" not in body or '"event": "token"' not in body:
                 raise AssertionError("stream status/body invalid")
@@ -297,6 +318,16 @@ def test_t014_performance_benchmark(
     )
 
     ws_samples_ms: list[float] = []
+
+    async def _fake_verify_ws_token(token: str | None):
+        return (str(uuid.uuid4()), "admin") if token else None
+
+    async def _fake_check_document_access(_document_id: str, _user_id, _user_role: str) -> bool:
+        return True
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", _fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_document_access", _fake_check_document_access)
+
     with TestClient(app) as ws_client:
         with ws_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token") as websocket:
             connected = websocket.receive_json()

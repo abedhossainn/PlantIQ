@@ -15,7 +15,7 @@ from typing import Optional
 import logging
 import uuid
 
-from ..models.database import get_db
+from ..models.database import get_db, get_db_public
 from ..models.auth import (
     LoginRequest,
     TokenResponse,
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 async def login(
     request: LoginRequest,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_public),
 ):
     """
     Authenticate user via LDAP and issue JWT tokens.
@@ -87,7 +87,7 @@ async def login(
 async def refresh_token(
     response: Response,
     refresh_token: Optional[str] = Cookie(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_public),
 ):
     """
     Refresh access token using refresh token.
@@ -143,7 +143,7 @@ async def refresh_token(
 async def logout(
     response: Response,
     refresh_token: Optional[str] = Cookie(None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_public),
 ):
     """
     Logout user by revoking refresh token.

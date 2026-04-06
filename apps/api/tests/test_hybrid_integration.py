@@ -2185,8 +2185,23 @@ def test_approve_for_optimization_allows_retry_from_failed(
     assert fake_db.documents[document_id]["optimization_error"] is None
 
 
-def test_optimization_logs_replay_failed_terminal_status(client: TestClient):
+def test_optimization_logs_replay_failed_terminal_status(client: TestClient, fake_db: FakeAsyncSession):
     document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "failed",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+        "optimization_started_at": None,
+        "optimization_completed_at": None,
+        "optimization_error": None,
+        "publication_status": None,
+        "published_at": None,
+        "publication_error": None,
+        "indexed_chunk_count": None,
+        "qdrant_collection": None,
+    }
     pipeline_api.OptimizationLogManager.start(document_id)
     pipeline_api.OptimizationLogManager.publish_line(
         document_id,

@@ -355,6 +355,13 @@ The checkpoint-validated local flow is:
 4. Run tests (`make test`)
 5. Inspect logs (`make docker-logs`)
 
+## Demo accounts
+
+| Username | Password | Role | Access |
+|---|---|---|---|
+| `demoadmin` | `demo@plantiq` | Admin | Full access — document management, pipeline, chat |
+| `demouser` | `demo@plantiq` | User | Chat and conversation history only |
+
 ## Public prototype and evidence
 
 - Prototype: https://plantiq.sahossain.com/PlantIQ/

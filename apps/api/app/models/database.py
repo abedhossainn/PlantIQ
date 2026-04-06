@@ -64,23 +64,30 @@ async def _db_session(
                 role = jwt_claims.get("role", "user")
                 user_id = jwt_claims.get("sub")
                 
-                # Map JWT role to PostgreSQL role
+                # Map JWT role to PostgreSQL role.
+                # Supports both legacy short names ("admin", "user") and
+                # the current format where the JWT role IS the PG role name.
                 role_map = {
                     "admin": "plantig_admin",
                     "user": "plantig_user",
+                    "reviewer": "plantig_reviewer",
+                    "plantig_admin": "plantig_admin",
+                    "plantig_user": "plantig_user",
+                    "plantig_reviewer": "plantig_reviewer",
                 }
                 db_role = role_map.get(role, "plantig_user")
                 
-                # Set role and JWT claims for RLS
+                # Set role and JWT claims for RLS.
+                # plantig_uid() reads current_setting('request.jwt.claims')::jsonb->>'sub'
+                # so the FULL claims JSON must be stored at that single key — NOT as
+                # individual dot-notation keys like 'request.jwt.claims.sub'.
                 await session.execute(text(f"SET LOCAL ROLE {db_role}"))
                 if user_id:
+                    import json as _json
+                    claims_json = _json.dumps({"sub": str(user_id), "role": role})
                     await session.execute(
-                        text("SELECT set_config('request.jwt.claims.sub', :user_id, true)"),
-                        {"user_id": str(user_id)}
-                    )
-                    await session.execute(
-                        text("SELECT set_config('request.jwt.claims.role', :role, true)"),
-                        {"role": role}
+                        text("SELECT set_config('request.jwt.claims', :claims, true)"),
+                        {"claims": claims_json}
                     )
             
             yield session
@@ -95,6 +102,17 @@ async def _db_session(
             except Exception:
                 pass
             await session.close()
+
+
+async def get_db_public() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI dependency that provides an unauthenticated database session.
+
+    Used for public endpoints (login, refresh, logout) that must operate
+    before a JWT token has been issued or validated.
+    """
+    async for session in _db_session(None):
+        yield session
 
 
 async def get_db(

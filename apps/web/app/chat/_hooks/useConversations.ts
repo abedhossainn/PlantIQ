@@ -11,6 +11,7 @@ import {
   deleteConversation as removeConversation,
   isMessageBookmarked,
 } from "@/lib/api";
+import { getAuthToken } from "@/lib/api/client";
 import type { ChatMessage, Conversation } from "@/types";
 import {
   DEFAULT_CONVERSATION_WORKSPACE_FILTER,
@@ -22,6 +23,7 @@ import { getConversationDisplayTitle } from "../_helpers";
 
 interface UseConversationsOptions {
   user: { id: string } | null;
+  isAuthLoading?: boolean;
   onClearChat: () => void;
   onSetMessages: (messages: ChatMessage[]) => void;
   onSetSavedIds: (ids: Set<string>) => void;
@@ -29,6 +31,7 @@ interface UseConversationsOptions {
 
 export function useConversations({
   user,
+  isAuthLoading = false,
   onClearChat,
   onSetMessages,
   onSetSavedIds,

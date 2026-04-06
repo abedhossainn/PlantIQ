@@ -27,7 +27,7 @@ class JWTManager:
         public_key_path: Optional[str] = None,
         issuer: str = "plantig-auth",
         audience: str = "plantig",
-        access_token_expire_minutes: int = 15,
+        access_token_expire_minutes: int = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "480")),
     ):
         """
         Initialize JWT manager.
