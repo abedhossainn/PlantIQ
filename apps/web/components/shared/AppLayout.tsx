@@ -24,7 +24,7 @@
  * - Keeps cross-page shell concerns out of individual page components.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -32,6 +32,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { RoleBadge } from "./RoleBadge";
 import { Separator } from "@/components/ui/separator";
+import { ProfileDialog } from "./ProfileDialog";
 import {
   FileText,
   Upload,
@@ -46,10 +47,13 @@ interface AppLayoutProps {
   children: React.ReactNode;
   /** Optional sidebar content rendered below the logo for non-admin users (e.g. conversation list). When provided the standard nav items are hidden. */
   sidebarContent?: React.ReactNode;
+  /** When true, fully collapses the left sidebar container so main content spans full width. */
+  hideSidebar?: boolean;
 }
 
-export function AppLayout({ children, sidebarContent }: AppLayoutProps) {
+export function AppLayout({ children, sidebarContent, hideSidebar = false }: AppLayoutProps) {
   const { user, logout, isAuthenticated } = useAuth();
+  const [showProfileDialog, setShowProfileDialog] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -145,7 +149,13 @@ export function AppLayout({ children, sidebarContent }: AppLayoutProps) {
   return (
     <div className="flex h-screen bg-background">
       {/* Sidebar */}
-      <div className="w-64 border-r border-border bg-sidebar flex flex-col">
+      <div
+        className={`relative shrink-0 overflow-hidden transition-[width] duration-300 ease-in-out ${hideSidebar ? "w-0 border-r-0" : "w-64 border-r border-border"}`}
+      >
+      <div
+        className={`absolute inset-0 w-64 bg-sidebar flex flex-col transition-transform duration-300 ease-in-out ${hideSidebar ? "-translate-x-full pointer-events-none" : "translate-x-0"}`}
+        aria-hidden={hideSidebar}
+      >
         {/* Header */}
         <div className="p-4 border-b border-sidebar-border">
           <div className="flex flex-col items-center gap-2">
@@ -202,7 +212,7 @@ export function AppLayout({ children, sidebarContent }: AppLayoutProps) {
             <button
               type="button"
               className="w-full flex items-center gap-3 mb-3 rounded-lg p-2 -mx-2 hover:bg-sidebar-accent transition-colors text-left"
-              onClick={() => router.push("/profile")}
+              onClick={() => setShowProfileDialog(true)}
               aria-label="View your profile"
             >
               <Avatar className="h-10 w-10 border-2 border-primary shrink-0">
@@ -230,9 +240,17 @@ export function AppLayout({ children, sidebarContent }: AppLayoutProps) {
           </div>
         )}
       </div>
+      </div>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">{children}</div>
+      {user && (
+        <ProfileDialog
+          user={user}
+          open={showProfileDialog}
+          onOpenChange={setShowProfileDialog}
+        />
+      )}
     </div>
   );
 }

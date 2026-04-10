@@ -11,6 +11,7 @@ import type { Conversation } from "@/types";
 interface ConversationSidebarProps {
   conversationId: string | null;
   filteredConversations: Conversation[];
+  conversationCount: number;
   pinnedConversationCount: number;
   conversationSearch: string;
   conversationWorkspaceFilter: string;
@@ -29,11 +30,13 @@ interface ConversationSidebarProps {
   onTogglePin: (conversation: Conversation) => void;
   onDeleteConversation: (conversationId: string) => void;
   onTitleEditChange: (value: string) => void;
+  onStartNewConversation: () => void;
 }
 
 export function ConversationSidebar({
   conversationId,
   filteredConversations,
+  conversationCount,
   pinnedConversationCount,
   conversationSearch,
   conversationWorkspaceFilter,
@@ -52,14 +55,22 @@ export function ConversationSidebar({
   onTogglePin,
   onDeleteConversation,
   onTitleEditChange,
+  onStartNewConversation,
 }: ConversationSidebarProps) {
   return (
     <>
       <div className="px-3 py-3 border-b border-border space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold text-foreground/90">Conversations ({conversationCount})</p>
+          <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={onStartNewConversation}>
+            New Thread
+          </Button>
+        </div>
         <input
           value={conversationSearch}
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Search conversations"
+          aria-label="Search conversations"
           className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs"
         />
         <div className="flex items-center gap-2">
@@ -80,6 +91,7 @@ export function ConversationSidebar({
             size="sm"
             className="h-8 px-2 text-xs"
             onClick={onTogglePinnedOnly}
+            aria-label={showPinnedOnly ? "Show all conversations" : "Show only pinned conversations"}
           >
             <Pin className="h-3.5 w-3.5" />
           </Button>
@@ -90,6 +102,7 @@ export function ConversationSidebar({
             className="h-8 px-2 text-xs"
             disabled={!hasActiveConversationDiscoveryFilters}
             onClick={onResetFilters}
+            aria-label="Reset conversation filters"
           >
             Reset
           </Button>
@@ -112,8 +125,11 @@ export function ConversationSidebar({
 
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {filteredConversations.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
-            No conversations match your filter.
+          <div className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground space-y-3">
+            <p>No conversations match your filter.</p>
+            <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={onStartNewConversation}>
+              Start a new thread
+            </Button>
           </div>
         ) : (
           filteredConversations.map((conversation) => {
@@ -135,7 +151,7 @@ export function ConversationSidebar({
                   isActive
                     ? "border-primary bg-primary/5"
                     : "border-border bg-background hover:border-primary/40 hover:bg-primary/5"
-                }`}
+                } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50`}
               >
                 <div className="flex items-start gap-2">
                   <div className="flex-1 min-w-0">
@@ -170,7 +186,7 @@ export function ConversationSidebar({
                     <button
                       type="button"
                       aria-label="Save conversation title"
-                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                       onClick={(event) => {
                         event.stopPropagation();
                         onSaveTitle(conversation.id);
@@ -182,7 +198,7 @@ export function ConversationSidebar({
                     <button
                       type="button"
                       aria-label={conversation.isPinned ? "Unpin conversation" : "Pin conversation"}
-                      className={`rounded p-1 hover:bg-primary/10 ${conversation.isPinned ? "text-primary" : "text-muted-foreground hover:text-primary"}`}
+                      className={`rounded p-1 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${conversation.isPinned ? "text-primary" : "text-muted-foreground hover:text-primary"}`}
                       onClick={(event) => {
                         event.stopPropagation();
                         onTogglePin(conversation);
@@ -195,7 +211,7 @@ export function ConversationSidebar({
                     <button
                       type="button"
                       aria-label="Rename conversation"
-                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+                      className="rounded p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                       onClick={(event) => {
                         event.stopPropagation();
                         onStartEdit(conversation);
@@ -207,7 +223,7 @@ export function ConversationSidebar({
                   <button
                     type="button"
                     aria-label="Delete conversation"
-                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/60"
                     onClick={(event) => {
                       event.stopPropagation();
                       onDeleteConversation(conversation.id);

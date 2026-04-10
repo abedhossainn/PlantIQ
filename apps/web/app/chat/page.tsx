@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, FileText, MessageSquare, RotateCcw, Pin, PinOff, LogOut, ChevronDown } from "lucide-react";
+import { Send, MessageSquare, RotateCcw, Pin, PinOff, LogOut, ChevronDown, PanelLeft, Plus, Loader2 } from "lucide-react";
 import { useAuth } from "@/lib/auth/AuthContext";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useRouter } from "next/navigation";
@@ -24,13 +24,7 @@ import { SourceDrawer } from "./_components/SourceDrawer";
 import { ConversationSidebar } from "./_components/ConversationSidebar";
 import { MessageList } from "./_components/MessageList";
 import { useConversations } from "./_hooks/useConversations";
-
-const CHAT_SUGGESTIONS = [
-  "What is the density of LNG at atmospheric pressure?",
-  "How do I start up the cryogenic pump?",
-  "What actions should I take if there is an LNG spill?",
-  "What are the calibration requirements for pressure transmitters?",
-];
+import { ProfileDialog } from "@/components/shared/ProfileDialog";
 
 export default function ChatPage() {
   const { user, isAdmin, logout } = useAuth();
@@ -45,6 +39,8 @@ export default function ChatPage() {
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
   const [showColdStartNotice, setShowColdStartNotice] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showConversationSidebar, setShowConversationSidebar] = useState(true);
+  const [showProfileDialog, setShowProfileDialog] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const toggleCites = (msgId: string) =>
@@ -97,10 +93,53 @@ export default function ChatPage() {
     }
   }, [showProfileMenu]);
 
+  // Close profile menu with Escape for keyboard users
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setShowProfileMenu(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Keyboard shortcuts:
+  // - Ctrl/Cmd + B: toggle conversations sidebar
+  // - Ctrl/Cmd + Shift + N: start a new thread
+  useEffect(() => {
+    function isTypingTarget(target: EventTarget | null) {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      const tag = el.tagName?.toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (isTypingTarget(event.target)) return;
+
+      const isModifier = event.metaKey || event.ctrlKey;
+      if (!isModifier) return;
+
+      if (event.key.toLowerCase() === "b" && !event.shiftKey) {
+        event.preventDefault();
+        setShowConversationSidebar((prev) => !prev);
+      }
+
+      if (event.key.toLowerCase() === "n" && event.shiftKey) {
+        event.preventDefault();
+        newChat();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [messages.length]);
 
   function newChat() {
     clearChat();
@@ -247,6 +286,7 @@ export default function ChatPage() {
   const sidebarProps = {
     conversationId: conv.conversationId,
     filteredConversations: conv.filteredConversations,
+    conversationCount: conv.conversations.length,
     pinnedConversationCount: conv.pinnedConversationCount,
     conversationSearch: conv.conversationSearch,
     conversationWorkspaceFilter: conv.conversationWorkspaceFilter,
@@ -265,12 +305,16 @@ export default function ChatPage() {
     onTogglePin: (conversation: Conversation) => { void conv.handleToggleConversationPin(conversation); },
     onDeleteConversation: (id: string) => { void conv.handleDeleteConversation(id); },
     onTitleEditChange: conv.setEditingConversationTitle,
+    onStartNewConversation: newChat,
   };
 
   return (
-    <AppLayout sidebarContent={!isAdmin ? <ConversationSidebar {...sidebarProps} /> : undefined}>
+    <AppLayout
+      sidebarContent={!isAdmin && showConversationSidebar ? <ConversationSidebar {...sidebarProps} /> : undefined}
+      hideSidebar={!isAdmin && !showConversationSidebar}
+    >
       <div className="flex-1 flex h-full min-h-0 overflow-hidden">
-        {isAdmin && (
+        {isAdmin && showConversationSidebar && (
           <aside className="w-80 shrink-0 border-r border-border bg-card/30 hidden lg:flex lg:flex-col">
             <ConversationSidebar {...sidebarProps} />
           </aside>
@@ -278,27 +322,70 @@ export default function ChatPage() {
 
         <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
           {/* Chat header */}
-          <div className="border-b border-border px-6 py-3 flex items-center justify-between bg-card/40">
-            <div className="flex items-center gap-2">
+          <div className="border-b border-border px-4 md:px-6 py-2.5 flex items-center justify-between gap-2 bg-card/50">
+            <div className="flex items-center gap-2 min-w-0 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                onClick={() => setShowConversationSidebar((prev) => !prev)}
+                aria-label={showConversationSidebar ? "Hide conversations sidebar" : "Show conversations sidebar"}
+                title="Toggle conversations sidebar (Ctrl/Cmd+B)"
+              >
+                <PanelLeft className="h-4 w-4" />
+              </Button>
               <MessageSquare className="h-5 w-5 text-primary" />
-              <span className="font-semibold text-sm">PlantIQ Assistant</span>
-              {conv.activeConversationSummary && (
-                <Badge variant="outline" className="text-xs border-primary/30 text-primary">
-                  {getConversationDisplayTitle(conv.activeConversationSummary)}
-                </Badge>
-              )}
-              <Badge variant="outline" className={`text-xs ${llmStatus === null ? "text-muted-foreground border-muted-foreground/30" : !llmStatus.container_reachable ? "text-amber-400 border-amber-400/30 bg-amber-400/10 animate-pulse" : llmStatus.active_requests > 0 ? "text-amber-400 border-amber-400/30 bg-amber-400/10" : "text-green-400 border-green-400/30 bg-green-400/10"}`}>
-                {llmStatus === null ? "LLM Offline" : !llmStatus.container_reachable ? "LLM Starting..." : llmStatus.active_requests > 0 ? "Generating..." : "LLM Ready"}
-              </Badge>
+              <span className="font-semibold text-sm tracking-tight">PlantIQ Assistant</span>
             </div>
-            <div className="flex items-center gap-2">
-              {messages.length > 0 && (
-                <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={newChat}>
-                  <RotateCcw className="h-3.5 w-3.5" /> New Chat
+
+            <div className="hidden xl:flex items-center gap-2 flex-1 justify-center min-w-0 px-3">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground ml-1">Scope</span>
+              <Select value={conv.selectedWorkspace} onValueChange={conv.setSelectedWorkspace}>
+                <SelectTrigger className="h-8 w-[180px] text-[11px] rounded-full bg-background/80 border-border/80">
+                  <SelectValue placeholder="Workspace scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  {WORKSPACE_OPTIONS.map((ws) => <SelectItem key={ws} value={ws}>{ws}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={conv.selectedDocumentType} onValueChange={conv.setSelectedDocumentType}>
+                <SelectTrigger className="h-8 w-[190px] text-[11px] rounded-full bg-background/80 border-border/80">
+                  <SelectValue placeholder="Document type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All document types</SelectItem>
+                  {CHAT_DOCUMENT_TYPE_OPTIONS.map((dt) => <SelectItem key={dt} value={dt}>{dt}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                size="sm"
+                variant={conv.includeSharedDocuments ? "default" : "outline"}
+                className="h-8 rounded-full px-3 text-[11px] font-medium"
+                onClick={() => conv.setIncludeSharedDocuments((p) => !p)}
+              >
+                {conv.includeSharedDocuments ? "Extended" : "Focused"}
+              </Button>
+              {conv.conversationId && (
+                <Button
+                  type="button"
+                  variant={conv.scopeIsDirty ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 rounded-full px-3 text-[11px] font-medium"
+                  disabled={!conv.scopeIsDirty}
+                  onClick={() => { void conv.persistConversationScope(); }}
+                >
+                  Save scope
                 </Button>
               )}
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <Button variant="outline" size="sm" className="h-8 rounded-full gap-1.5 px-3 text-xs font-medium" onClick={newChat} aria-label="Start a new thread">
+                {messages.length > 0 ? <RotateCcw className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />} New Thread
+              </Button>
               <div className="relative" data-profile-menu>
-                <Button variant="ghost" size="sm" className="gap-2 h-9" onClick={() => setShowProfileMenu(!showProfileMenu)}>
+                <Button variant="ghost" size="sm" className="gap-2 h-8 rounded-full border border-border/70 bg-background/40 hover:bg-background/70" onClick={() => setShowProfileMenu(!showProfileMenu)}>
                   <Avatar className="h-6 w-6 border border-primary/30">
                     <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">
                       {user ? getInitials(user.fullName) : "?"}
@@ -308,19 +395,22 @@ export default function ChatPage() {
                   <ChevronDown className="h-3 w-3 text-muted-foreground" />
                 </Button>
                 {showProfileMenu && (
-                  <div className="absolute right-0 mt-2 w-48 rounded-lg border border-border bg-card shadow-lg z-50 overflow-hidden">
+                  <div className="absolute right-0 mt-2 w-52 rounded-lg border border-border/80 bg-card/95 backdrop-blur shadow-lg z-50 overflow-hidden">
                     <div className="px-4 py-3 border-b border-border bg-muted/40">
                       <p className="text-xs font-semibold text-foreground">{user?.fullName}</p>
                       <p className="text-xs text-muted-foreground">{user?.email}</p>
                     </div>
                     <button
-                      className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-muted/50 transition-colors flex items-center gap-2 text-foreground"
-                      onClick={() => { router.push("/profile"); setShowProfileMenu(false); }}
+                      className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-muted/50 transition-colors flex items-center gap-2 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      onClick={() => {
+                        setShowProfileDialog(true);
+                        setShowProfileMenu(false);
+                      }}
                     >
                       👤 View Profile
                     </button>
                     <button
-                      className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-destructive/10 transition-colors flex items-center gap-2 text-destructive border-t border-border"
+                      className="w-full px-4 py-2 text-left text-xs font-medium hover:bg-destructive/10 transition-colors flex items-center gap-2 text-destructive border-t border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/60"
                       onClick={handleLogout}
                     >
                       <LogOut className="h-3 w-3" /> Sign Out
@@ -332,16 +422,17 @@ export default function ChatPage() {
           </div>
 
           {/* Mobile search panel */}
-          <div className="border-b border-border px-6 py-3 bg-card/10 lg:hidden">
+          <div className="border-b border-border px-4 md:px-6 py-3 bg-card/10 lg:hidden">
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <input
                   value={conv.conversationSearch}
                   onChange={(e) => conv.setConversationSearch(e.target.value)}
                   placeholder="Search conversations"
-                  className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs"
+                  aria-label="Search conversations"
+                  className="w-full rounded border border-border/80 bg-background px-2.5 py-1.5 text-xs"
                 />
-                <Button variant="outline" size="sm" className="h-9" onClick={newChat}>New</Button>
+                <Button variant="outline" size="sm" className="h-9" onClick={newChat} aria-label="Start a new thread">New</Button>
               </div>
               <div className="flex items-center gap-2">
                 <Select value={conv.conversationWorkspaceFilter} onValueChange={conv.setConversationWorkspaceFilter}>
@@ -380,6 +471,52 @@ export default function ChatPage() {
                   <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Search: {conv.conversationSearch.trim()}</Badge>
                 )}
               </div>
+
+              <div className="pt-1 border-t border-border/60 mt-1 space-y-2 xl:hidden">
+                <p className="text-[11px] text-muted-foreground">Conversation scope</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <Select value={conv.selectedWorkspace} onValueChange={conv.setSelectedWorkspace}>
+                    <SelectTrigger className="h-9 text-xs rounded-full bg-background/80 border-border/80">
+                      <SelectValue placeholder="Workspace scope" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {WORKSPACE_OPTIONS.map((ws) => <SelectItem key={ws} value={ws}>{ws}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Select value={conv.selectedDocumentType} onValueChange={conv.setSelectedDocumentType}>
+                    <SelectTrigger className="h-9 text-xs rounded-full bg-background/80 border-border/80">
+                      <SelectValue placeholder="Document type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All document types</SelectItem>
+                      {CHAT_DOCUMENT_TYPE_OPTIONS.map((dt) => <SelectItem key={dt} value={dt}>{dt}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={conv.includeSharedDocuments ? "default" : "outline"}
+                    className="h-8 rounded-full px-3 text-xs"
+                    onClick={() => conv.setIncludeSharedDocuments((p) => !p)}
+                  >
+                    {conv.includeSharedDocuments ? "Extended" : "Focused"}
+                  </Button>
+                  {conv.conversationId && (
+                    <Button
+                      type="button"
+                      variant={conv.scopeIsDirty ? "default" : "outline"}
+                      size="sm"
+                      className="h-8 rounded-full px-3 text-xs"
+                      disabled={!conv.scopeIsDirty}
+                      onClick={() => { void conv.persistConversationScope(); }}
+                    >
+                      Save scope
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
             <div className="flex items-center gap-2 mt-2">
               <Select value={conv.conversationId || "new"} onValueChange={(value) => {
@@ -398,64 +535,16 @@ export default function ChatPage() {
             </div>
           </div>
 
-          {/* Scope settings */}
-          <div className="border-b border-border px-6 py-3 bg-card/20">
-            <div className="max-w-3xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-2">
-              <div>
-                <p className="text-[11px] text-muted-foreground mb-1">Workspace (default scope)</p>
-                <Select value={conv.selectedWorkspace} onValueChange={conv.setSelectedWorkspace}>
-                  <SelectTrigger className="h-9"><SelectValue placeholder="Select workspace" /></SelectTrigger>
-                  <SelectContent>
-                    {WORKSPACE_OPTIONS.map((ws) => <SelectItem key={ws} value={ws}>{ws}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <p className="text-[11px] text-muted-foreground mb-1">Document type (subfilter)</p>
-                <Select value={conv.selectedDocumentType} onValueChange={conv.setSelectedDocumentType}>
-                  <SelectTrigger className="h-9"><SelectValue placeholder="All document types" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All document types</SelectItem>
-                    {CHAT_DOCUMENT_TYPE_OPTIONS.map((dt) => <SelectItem key={dt} value={dt}>{dt}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <p className="text-[11px] text-muted-foreground mb-1">Shared docs</p>
-                <Button type="button" variant={conv.includeSharedDocuments ? "default" : "outline"} size="sm" className="h-9 w-full"
-                  onClick={() => conv.setIncludeSharedDocuments((p) => !p)}>
-                  {conv.includeSharedDocuments ? "Included" : "Excluded"}
-                </Button>
-              </div>
-            </div>
-            <div className="max-w-3xl mx-auto mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="font-medium">Conversation scope:</span>
-              <Badge variant="outline" className="text-[11px] px-2 py-0 h-5">{conv.selectedWorkspace}</Badge>
-              {conv.selectedDocumentType !== "all" && (
-                <Badge variant="outline" className="text-[11px] px-2 py-0 h-5">{conv.selectedDocumentType}</Badge>
-              )}
-              {conv.conversationId && (
-                <Button type="button" variant={conv.scopeIsDirty ? "default" : "outline"} size="sm"
-                  className="h-6 text-[11px] px-2 py-0" disabled={!conv.scopeIsDirty}
-                  onClick={() => { void conv.persistConversationScope(); }}>
-                  Save scope
-                </Button>
-              )}
-            </div>
-          </div>
-
           {/* Messages */}
           <MessageList
             messages={messages}
             isStreaming={isStreaming}
             expandedCites={expandedCites}
             savedIds={savedIds}
-            suggestions={CHAT_SUGGESTIONS}
             bottomRef={bottomRef}
             onToggleCites={toggleCites}
             onSetActiveCite={setActiveCite}
             onToggleSave={(msgId) => { void toggleSave(msgId); }}
-            onSelectSuggestion={setQuery}
           />
 
           {/* Cold-start notice */}
@@ -467,22 +556,32 @@ export default function ChatPage() {
           )}
 
           {/* Input */}
-          <div className="border-t border-border p-4 bg-card/30">
+          <div className="border-t border-border p-4 md:p-5 bg-card/40">
             <form onSubmit={handleSubmit} className="max-w-3xl mx-auto">
+              <span className="sr-only" aria-live="polite">
+                {isStreaming ? "Assistant is generating a response." : "Assistant is ready for your next question."}
+              </span>
               <div className="flex gap-2 items-end">
                 <Textarea
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Ask about equipment, procedures, or safety..."
-                  className="min-h-[52px] max-h-[200px] resize-none bg-card border-border"
+                  aria-label="Chat message input"
+                  className="min-h-[56px] max-h-[220px] resize-none bg-card border-border/80 rounded-xl leading-relaxed"
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
                 />
-                <Button type="submit" size="icon" disabled={!query.trim() || isStreaming} className="shrink-0 h-12 w-12">
-                  <Send className="h-4 w-4" />
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={!query.trim() || isStreaming}
+                  className="shrink-0 h-12 w-12"
+                  aria-label={isStreaming ? "Generating response" : "Send message"}
+                >
+                  {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground mt-2 text-center">
-                Responses generated from approved facility documents only &middot; Press Enter to send
+              <p className="text-[11px] text-muted-foreground mt-2 text-center">
+                Responses generated from approved facility documents only &middot; Press Enter to send &middot; Ctrl/Cmd+B toggles sidebar &middot; Ctrl/Cmd+Shift+N starts a new thread
               </p>
             </form>
           </div>
@@ -491,6 +590,13 @@ export default function ChatPage() {
 
       {/* Source drawer overlay */}
       {activeCite && <SourceDrawer cite={activeCite} onClose={() => setActiveCite(null)} />}
+      {user && (
+        <ProfileDialog
+          user={user}
+          open={showProfileDialog}
+          onOpenChange={setShowProfileDialog}
+        />
+      )}
     </AppLayout>
   );
 }

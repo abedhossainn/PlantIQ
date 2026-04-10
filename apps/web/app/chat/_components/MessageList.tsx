@@ -13,12 +13,10 @@ interface MessageListProps {
   isStreaming: boolean;
   expandedCites: Set<string>;
   savedIds: Set<string>;
-  suggestions: string[];
   bottomRef: RefObject<HTMLDivElement | null>;
   onToggleCites: (msgId: string) => void;
   onSetActiveCite: (cite: Citation) => void;
   onToggleSave: (msgId: string) => void;
-  onSelectSuggestion: (text: string) => void;
 }
 
 export function MessageList({
@@ -26,39 +24,25 @@ export function MessageList({
   isStreaming,
   expandedCites,
   savedIds,
-  suggestions,
   bottomRef,
   onToggleCites,
   onSetActiveCite,
   onToggleSave,
-  onSelectSuggestion,
 }: MessageListProps) {
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 p-6">
+    <div className="flex-1 overflow-y-auto min-h-0 p-4 md:p-6">
       {messages.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-full text-center px-4">
           <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 border border-primary/20">
             <MessageSquare className="h-8 w-8 text-primary" />
           </div>
-          <h2 className="text-xl font-bold mb-2">How can I help you today?</h2>
+          <h2 className="text-xl font-bold tracking-tight mb-2">How can I help you today?</h2>
           <p className="text-muted-foreground mb-8 max-w-md text-sm">
             Ask questions about equipment procedures, troubleshooting steps, safety requirements, or operating parameters
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl w-full">
-            {suggestions.map((s) => (
-              <button
-                key={s}
-                className="text-left rounded-lg border border-border bg-card hover:border-primary/50 hover:bg-primary/5 p-4 text-sm transition-all leading-snug text-muted-foreground hover:text-foreground"
-                onClick={() => onSelectSuggestion(s)}
-              >
-                <FileText className="h-3.5 w-3.5 text-primary mb-2" />
-                {s}
-              </button>
-            ))}
-          </div>
         </div>
       ) : (
-        <div className="max-w-3xl mx-auto space-y-6">
+        <div className="max-w-3xl mx-auto space-y-6 md:space-y-7">
           {messages.map((message) => (
             <div
               key={message.id}
@@ -71,14 +55,14 @@ export function MessageList({
               )}
               <div className={`max-w-[80%] space-y-3 ${message.role === "user" ? "items-end" : "items-start"} flex flex-col`}>
                 <div
-                  className={`rounded-2xl px-4 py-3 ${
+                  className={`rounded-2xl px-4 py-3 shadow-sm ${
                     message.role === "user"
                       ? "bg-primary text-primary-foreground font-medium"
                       : "bg-card border border-border"
                   }`}
                 >
                   {message.role === "assistant" ? (
-                    <div className="text-sm text-foreground/90 prose prose-sm dark:prose-invert max-w-none">
+                    <div className="text-sm leading-6 text-foreground/90 prose prose-sm dark:prose-invert max-w-none">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
                         components={{
