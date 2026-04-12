@@ -13,7 +13,7 @@ from pathlib import Path
 import os
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 ROOT_ENV_PATH = REPO_ROOT / ".env"
 DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B"
 DEFAULT_VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"

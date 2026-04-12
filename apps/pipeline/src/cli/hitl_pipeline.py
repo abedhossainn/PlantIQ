@@ -492,14 +492,17 @@ class HITLPipeline:
 
         _emit_event("stage_start", "extraction", "Stage 0: PDF → Markdown Extraction", 5,
                     step="Stage 0: PDF → Markdown Extraction")
+        _emit_event("progress", "extraction", "Stage 0a: Sending PDF to Docling for conversion...", 6)
         markdown_path = self._ensure_docling_markdown(pdf_path, markdown_path)
         _emit_event(
             "progress",
             "extraction",
             "PDF extracted. Reusing canonical markdown for page-aligned validation slices.",
-            18,
+            14,
         )
+        _emit_event("progress", "extraction", "Stage 0b: Building per-page markdown alignment map...", 16)
         page_markdown_map = self._build_validation_page_markdown_map(pdf_path)
+        _emit_event("progress", "extraction", "Stage 0c: Per-page markdown map ready.", 18)
         
         doc_name = Path(pdf_path).stem
         results = {"document": doc_name, "stages": {}}

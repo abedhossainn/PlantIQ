@@ -232,9 +232,13 @@ async def stream_optimization_logs(
 
     async def log_generator():
         buffer, queue = OptimizationLogManager.subscribe(doc_id)
+        latest_progress = OptimizationLogManager.get_progress_snapshot(doc_id)
 
         for entry in buffer:
             yield encode_sse_event({"event": "log", **entry})
+
+        if latest_progress is not None:
+            yield encode_sse_event(latest_progress)
 
         if queue is None:
             yield encode_sse_event(
@@ -283,6 +287,8 @@ async def stream_optimization_logs(
 
                 if kind == "log":
                     yield encode_sse_event({"event": "log", **payload})
+                elif kind == "progress":
+                    yield encode_sse_event(payload)
                 elif kind == "done":
                     yield encode_sse_event({"event": "done", **payload})
                     return

@@ -160,7 +160,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_csv_to_list(os.getenv(
         "CORS_ALLOW_ORIGINS",
-        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://10.1.10.181:3000",
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://10.1.10.181:3000,https://plantiq.sahossain.com,https://api.plantiq.sahossain.com,https://plantiqapi.sahossain.com",
     )),
     allow_credentials=True,
     allow_methods=["*"],

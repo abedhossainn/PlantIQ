@@ -5,7 +5,10 @@
  * for real-time LLM optimization run monitoring.
  *
  * SSE Event Contract:
- *   log (INFO|WARNING|ERROR) | done (optimization-complete|failed) | heartbeat (comment, ignored)
+ *   log (INFO|WARNING|ERROR)
+ *   progress (structured segment-generation snapshot)
+ *   done (optimization-complete|failed)
+ *   heartbeat (comment, ignored)
  */
 
 import { getAuthToken, getFastApiBaseUrl } from '../client';
@@ -27,7 +30,25 @@ export interface OptimizationDoneEvent {
   status: 'optimization-complete' | 'failed';
 }
 
-export type OptimizationSSEEvent = OptimizationLogEvent | OptimizationDoneEvent;
+export interface OptimizationProgressEvent {
+  type: 'progress';
+  timestamp: string;
+  document_id: string;
+  phase: 'segment-generation';
+  current_segment: number | null;
+  total_segments: number | null;
+  segment_progress_percent: number;
+  overall_progress_percent: number;
+  tokens_generated: number | null;
+  tokens_target: number | null;
+  elapsed_seconds: number | null;
+  label: string;
+}
+
+export type OptimizationSSEEvent =
+  | OptimizationLogEvent
+  | OptimizationProgressEvent
+  | OptimizationDoneEvent;
 
 // ============================================================================
 // Optimization Log SSE Streaming
@@ -38,6 +59,7 @@ export type OptimizationSSEEvent = OptimizationLogEvent | OptimizationDoneEvent;
  *
  * Backend format:
  *   event: log\ndata: { "event": "log", "timestamp": "ISO", "level": "INFO|WARNING|ERROR", "message": "..." }
+ *   event: progress\ndata: { "event": "progress", "phase": "segment-generation", ... }
  *   event: done\ndata: { "event": "done", "status": "optimization-complete"|"failed" }
  *   : heartbeat   (SSE comment — ignored)
  */
@@ -83,6 +105,35 @@ function parseOptimizationSSEBlock(block: string): OptimizationSSEEvent | null {
     };
   }
 
+  if (resolvedEvent === 'progress') {
+    const segmentPercent = Number(parsed.segment_progress_percent ?? 0);
+    const overallPercent = Number(parsed.overall_progress_percent ?? 0);
+    const toNullableNumber = (value: unknown): number | null => {
+      if (value === null || value === undefined) return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    return {
+      type: 'progress',
+      timestamp: String(parsed.timestamp ?? new Date().toISOString()),
+      document_id: String(parsed.document_id ?? ''),
+      phase: 'segment-generation',
+      current_segment: toNullableNumber(parsed.current_segment),
+      total_segments: toNullableNumber(parsed.total_segments),
+      segment_progress_percent: Number.isFinite(segmentPercent)
+        ? Math.max(0, Math.min(100, Math.round(segmentPercent)))
+        : 0,
+      overall_progress_percent: Number.isFinite(overallPercent)
+        ? Math.max(0, Math.min(100, Math.round(overallPercent)))
+        : 0,
+      tokens_generated: toNullableNumber(parsed.tokens_generated),
+      tokens_target: toNullableNumber(parsed.tokens_target),
+      elapsed_seconds: toNullableNumber(parsed.elapsed_seconds),
+      label: String(parsed.label ?? 'Segment generation'),
+    };
+  }
+
   return null;
 }
 
@@ -114,12 +165,11 @@ export async function* streamOptimizationLogs(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
+  const streamUrl = `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs`;
+
   let response: Response;
   try {
-    response = await fetch(
-      `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs`,
-      { headers, signal }
-    );
+    response = await fetch(streamUrl, { headers, signal });
   } catch (err) {
     if (signal?.aborted) return;
     const errMsg = err instanceof Error ? err.message : 'Failed to connect to optimization log stream';
@@ -127,7 +177,7 @@ export async function* streamOptimizationLogs(
       type: 'log',
       timestamp: new Date().toISOString(),
       level: 'ERROR',
-      message: `Connection error: ${errMsg}`,
+      message: `Connection error: ${errMsg} (stream: ${streamUrl})`,
     };
     return;
   }

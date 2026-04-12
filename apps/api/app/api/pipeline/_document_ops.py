@@ -135,6 +135,7 @@ async def _execute_optimization_stage(
             )
 
         _emit_optimization_log(document_id, "INFO", "Optimization started")
+        _emit_optimization_log(document_id, "INFO", "Stage 1: Model Initialization")
 
         logger.info("Starting Stage 10 reformatting for %s in thread pool", document_id)
         pipeline_runner = HITLPipeline(str(work_root))
@@ -149,6 +150,7 @@ async def _execute_optimization_stage(
         for _lname in _opt_logger_names:
             logging.getLogger(_lname).addHandler(_opt_handler)
 
+        _emit_optimization_log(document_id, "INFO", "Stage 2: Text Generation")
         result = None
         try:
             result = await asyncio.to_thread(
@@ -172,6 +174,7 @@ async def _execute_optimization_stage(
             closed_stream = True
             raise RuntimeError(result.get("message") or "Optimization stage failed")
 
+        _emit_optimization_log(document_id, "INFO", "Stage 3: Output Validation")
         from ._chunks import _load_validated_optimized_output  # local import to avoid top-level cycle
 
         _load_validated_optimized_output(work_root)
@@ -183,6 +186,7 @@ async def _execute_optimization_stage(
             f"Optimization completed in {duration_seconds}s",
         )
 
+        _emit_optimization_log(document_id, "INFO", "Stage 4: Artifact Export")
         if manifest_path and manifest_path.exists():
             manifest_record = load_manifest(str(manifest_path))
             manifest_record = update_manifest_timestamp(manifest_record, "reformatting", reviewer)

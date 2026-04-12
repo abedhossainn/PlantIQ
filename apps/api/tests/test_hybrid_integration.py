@@ -416,6 +416,21 @@ def _write_empty_checklist(path: Path) -> None:
     _write_json(path, checklist)
 
 
+def _parse_sse_events(body: str) -> list[tuple[str, dict[str, Any]]]:
+    parsed_events: list[tuple[str, dict[str, Any]]] = []
+    for raw_event in [chunk for chunk in body.split("\n\n") if chunk.strip()]:
+        event_name: str | None = None
+        payload: dict[str, Any] | None = None
+        for line in raw_event.splitlines():
+            if line.startswith("event: "):
+                event_name = line[7:]
+            elif line.startswith("data: "):
+                payload = json.loads(line[6:])
+        if event_name is not None and payload is not None:
+            parsed_events.append((event_name, payload))
+    return parsed_events
+
+
 def test_chat_query_returns_citations_and_persists_messages(client: TestClient, fake_db: FakeAsyncSession, monkeypatch: pytest.MonkeyPatch):
     async def fake_embed_query(_query: str):
         return [0.1, 0.2, 0.3]
@@ -2221,6 +2236,135 @@ def test_optimization_logs_replay_failed_terminal_status(client: TestClient, fak
     assert '"message": "▶️ Text Reformatting (model=mistral-7b-instruct)"' in body
     assert 'event: done' in body
     assert '"status": "failed"' in body
+
+
+def test_optimization_logs_emit_structured_progress_events_for_segment_generation(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimizing",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+        "optimization_started_at": None,
+        "optimization_completed_at": None,
+        "optimization_error": None,
+        "publication_status": None,
+        "published_at": None,
+        "publication_error": None,
+        "indexed_chunk_count": None,
+        "qdrant_collection": None,
+    }
+
+    pipeline_api.OptimizationLogManager.start(document_id)
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": "2026-04-11T01:00:00Z",
+            "level": "INFO",
+            "message": "Prepare generation request (chars=17452, segment=segment 2/5 chars)",
+        },
+    )
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": "2026-04-11T01:00:05Z",
+            "level": "INFO",
+            "message": "Generate output: 58% (4717/8000 tokens, 01:21 elapsed)",
+        },
+    )
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": "2026-04-11T01:00:11Z",
+            "level": "INFO",
+            "message": "Generation complete for segment 2/5 (8000 tokens in 86.7s)",
+        },
+    )
+    pipeline_api.OptimizationLogManager.close(document_id, "optimization-complete")
+
+    response = client.get(f"/api/v1/documents/{document_id}/optimization/logs")
+
+    assert response.status_code == 200
+    parsed_events = _parse_sse_events(response.text)
+    progress_events = [payload for event_name, payload in parsed_events if event_name == "progress"]
+    assert len(progress_events) >= 1
+
+    first_progress = progress_events[0]
+    assert first_progress["event"] == "progress"
+    assert first_progress["document_id"] == document_id
+    assert first_progress["phase"] == "segment-generation"
+    assert first_progress["current_segment"] == 2
+    assert first_progress["total_segments"] == 5
+    assert first_progress["segment_progress_percent"] == 100
+    assert first_progress["overall_progress_percent"] == 40
+    assert first_progress["tokens_generated"] == 8000
+    assert first_progress["tokens_target"] == 8000
+    assert first_progress["elapsed_seconds"] == 87
+    assert first_progress["label"] == "Segment 2/5"
+
+    done_events = [payload for event_name, payload in parsed_events if event_name == "done"]
+    assert done_events == [{"event": "done", "status": "optimization-complete"}]
+
+
+def test_optimization_progress_fields_are_clamped_and_replayed_to_new_subscribers(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimizing",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+        "optimization_started_at": None,
+        "optimization_completed_at": None,
+        "optimization_error": None,
+        "publication_status": None,
+        "published_at": None,
+        "publication_error": None,
+        "indexed_chunk_count": None,
+        "qdrant_collection": None,
+    }
+
+    pipeline_api.OptimizationLogManager.start(document_id)
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": "2026-04-11T02:10:00Z",
+            "level": "INFO",
+            "message": "Prepare generation request (chars=1000, segment=segment 12/8 chars)",
+        },
+    )
+    pipeline_api.OptimizationLogManager.publish_line(
+        document_id,
+        {
+            "timestamp": "2026-04-11T02:10:03Z",
+            "level": "INFO",
+            "message": "Generate output: 140% (9000/8000 tokens, 10:70 elapsed)",
+        },
+    )
+
+    response = client.get(f"/api/v1/documents/{document_id}/optimization/logs")
+    assert response.status_code == 200
+
+    parsed_events = _parse_sse_events(response.text)
+    progress_events = [payload for event_name, payload in parsed_events if event_name == "progress"]
+    assert progress_events
+
+    snapshot = progress_events[0]
+    assert snapshot["current_segment"] == 12
+    assert snapshot["total_segments"] == 8
+    assert snapshot["segment_progress_percent"] == 100
+    assert snapshot["overall_progress_percent"] == 100
+    assert snapshot["tokens_generated"] == 9000
+    assert snapshot["tokens_target"] == 8000
+    assert snapshot["elapsed_seconds"] == 670
+    assert snapshot["label"] == "Segment 12/8"
 
 
 def test_status_endpoint_returns_optimization_timing_fields(

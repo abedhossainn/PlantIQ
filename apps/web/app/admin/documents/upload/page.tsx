@@ -4,17 +4,17 @@
  * Document Upload & Ingestion Monitoring Interface
  *
  * Accepts PDF uploads with metadata, streams ingestion progress via SSE,
- * displays pipeline stage progression with terminal logs, and supports
+ * displays pipeline stage progression with step-grouped logs, and supports
  * artifact browsing upon completion.
  */
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, Terminal, FileText, Upload } from "lucide-react";
+import { CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, FileText } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
 import {
@@ -23,8 +23,9 @@ import {
   ALLOWED_UPLOAD_EXTENSION,
   toUIStage,
 } from "./_constants";
-import { IngestionLogEntry, toLogLine, type PipelineLogLine } from "./_components/IngestionLogEntry";
+import { toLogLine, groupIngestionLines, type PipelineLogLine } from "./_components/IngestionLogEntry";
 import { UploadForm } from "./_components/UploadForm";
+import { PipelineJobLog } from "@/components/shared/PipelineJobLog";
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -293,6 +294,9 @@ export default function UploadPage() {
   const canSubmit = selectedFile && title.trim() && system && docType && !uploading;
   const totalProgress = progress;
 
+  // Derive collapsible step groups from the flat SSE log stream.
+  const pipelineSteps = useMemo(() => groupIngestionLines(logLines), [logLines]);
+
   return (
     <AppLayout>
       <div className="flex-1 flex flex-col h-full min-h-0">
@@ -379,40 +383,42 @@ export default function UploadPage() {
                   </Card>
                 </div>
 
-                {/* Right — Terminal log */}
+                {/* Right — Step-grouped log viewer */}
                 <div className="flex-1 min-w-0 flex flex-col">
-                  <div className="flex items-center gap-2 px-4 py-2 rounded-t-lg bg-zinc-800 border border-zinc-700 border-b-0 shrink-0">
-                    <div className="flex gap-1.5" aria-hidden="true">
-                      <span className="h-3 w-3 rounded-full bg-red-500/50" />
-                      <span className="h-3 w-3 rounded-full bg-yellow-500/50" />
-                      <span className="h-3 w-3 rounded-full bg-green-500/50" />
-                    </div>
-                    <Terminal className="h-3.5 w-3.5 text-zinc-500 ml-1" aria-hidden="true" />
-                    <span className="text-xs text-zinc-500 font-mono flex-1 ml-1">ingestion pipeline &middot; stages 1&ndash;4</span>
-                    <span className="text-[10px] text-zinc-600 font-mono tabular-nums">{logLines.length} lines</span>
+                  {/* Log panel header */}
+                  <div className="flex items-center gap-3 px-4 py-2 bg-[#161b22] border border-[#21262d] rounded-t-lg border-b-0 shrink-0">
+                    <span className="text-xs text-[#8b949e] font-medium flex-1">Ingestion Log</span>
+                    {logLines.length > 0 && (
+                      <span className="text-[10px] text-[#6e7681] tabular-nums">{logLines.length} lines</span>
+                    )}
                     {logScrolledUp && (
-                      <button className="ml-2 text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600 px-2 py-0.5 rounded transition-colors" onClick={() => { setLogScrolledUp(false); if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight; }}>
-                        &#8595; Jump to bottom
+                      <button
+                        type="button"
+                        className="text-[11px] text-[#e6edf3] bg-[#21262d] hover:bg-[#30363d] px-2 py-0.5 rounded transition-colors"
+                        onClick={() => {
+                          setLogScrolledUp(false);
+                          if (terminalRef.current) terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+                        }}
+                      >
+                        ↓ Jump to latest
                       </button>
                     )}
                   </div>
+                  {/* Scrollable log body */}
                   <div
                     ref={terminalRef}
                     onScroll={handleTerminalScroll}
-                    className="flex-1 overflow-y-auto py-3 font-mono bg-zinc-950 rounded-b-lg border border-zinc-700"
+                    className="overflow-y-auto border border-[#21262d] border-t-0 rounded-b-lg"
                     style={{ minHeight: "260px", maxHeight: "560px" }}
                     role="log"
                     aria-live="polite"
                     aria-label="Pipeline log output"
                   >
-                    {logLines.length === 0 && <p className="pl-4 text-xs text-zinc-600 italic">Waiting for runner output...</p>}
-                    {logLines.map((line, idx) => <IngestionLogEntry key={idx} line={line} />)}
-                    {uploading && (
-                      <div className="flex gap-2 pl-3 mt-1">
-                        <span className="text-zinc-700 text-[10px] font-mono w-[60px] select-none shrink-0" />
-                        <span className="text-zinc-500 font-mono text-xs animate-pulse">&#9608;</span>
-                      </div>
-                    )}
+                    <PipelineJobLog
+                      steps={pipelineSteps}
+                      isActive={uploading}
+                      className="rounded-none"
+                    />
                   </div>
                 </div>
               </div>

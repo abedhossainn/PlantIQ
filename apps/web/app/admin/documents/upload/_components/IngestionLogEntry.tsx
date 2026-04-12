@@ -1,11 +1,17 @@
 "use client";
 
 /**
- * Terminal log entry component for the document ingestion pipeline.
- * Renders structured pipeline log lines with colour-coded categories.
+ * Ingestion pipeline log processing utilities.
+ *
+ * toLogLine   — converts a raw SSE event into a structured PipelineLogLine.
+ * groupIngestionLines — groups a flat PipelineLogLine[] into PipelineStep[]
+ *                       suitable for the PipelineJobLog viewer.
+ * IngestionLogEntry   — legacy per-line renderer (kept for reference).
  */
 
 import type { IngestionSSEEvent } from "@/lib/api";
+import type { PipelineStep, StepLogLine } from "@/components/shared/PipelineJobLog";
+import { computeDurationLabel } from "@/components/shared/PipelineJobLog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +48,7 @@ export function toLogLine(event: IngestionSSEEvent): PipelineLogLine {
     case "job.accepted":
       return { timestamp: ts, level: "INFO", category: "init", stage, message: event.message || "Pipeline job accepted" };
     case "progress": {
-      const isStepHeader = /^Stage \d+:/.test(event.message);
+      const isStepHeader = /^Stage \d+[a-z]?:/i.test(event.message);
       return { timestamp: ts, level: "INFO", category: isStepHeader ? "step-start" : "progress", stage, message: event.message };
     }
     case "stage.complete":
@@ -114,4 +120,120 @@ export function IngestionLogEntry({ line }: { line: PipelineLogLine }) {
       </span>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Step grouping — converts flat log lines into collapsible PipelineStep[]
+// ---------------------------------------------------------------------------
+
+/**
+ * Groups a flat PipelineLogLine array into PipelineStep[] for the
+ * PipelineJobLog viewer. Grouping rules:
+ *
+ * - "init"       → implicit "Initialize" step (first lines before any stage opens)
+ * - "step-start" → opens a new named step (message is the step title)
+ * - "progress"   → appended to the current open step
+ * - "stage-done" → appends the completion message and closes the step as success
+ * - "done"       → closes the current step as success
+ * - "error"      → closes the current step as failed
+ */
+export function groupIngestionLines(lines: PipelineLogLine[]): PipelineStep[] {
+  const steps: PipelineStep[] = [];
+
+  // Internal mutable build state
+  let curName = "";
+  let curStatus: PipelineStep["status"] = "running";
+  let curLines: StepLogLine[] = [];
+  let curId = "";
+  let curFirstTs: string | undefined;
+  let stepIdx = 0;
+  let isOpen = false;
+
+  function openStep(id: string, name: string, ts?: string) {
+    curId = id;
+    curName = name;
+    curStatus = "running";
+    curLines = [];
+    curFirstTs = ts;
+    isOpen = true;
+  }
+
+  function closeStep(status: PipelineStep["status"], lastTs?: string) {
+    if (!isOpen) return;
+    steps.push({
+      id: curId,
+      name: curName,
+      status,
+      durationLabel: computeDurationLabel(curFirstTs, lastTs),
+      lines: [...curLines],
+    });
+    isOpen = false;
+  }
+
+  for (const line of lines) {
+    switch (line.category) {
+      case "init": {
+        if (!isOpen) openStep(`step-${stepIdx++}`, "Initialize", line.timestamp);
+        curLines.push({ text: line.message, level: "info" });
+        break;
+      }
+      case "step-start": {
+        if (isOpen) closeStep("success", line.timestamp);
+        openStep(`step-${stepIdx++}`, line.message, line.timestamp);
+        break;
+      }
+      case "progress": {
+        if (!isOpen) openStep(`step-${stepIdx++}`, "Running", line.timestamp);
+        curLines.push({ text: line.message, level: "info" });
+        break;
+      }
+      case "stage-done": {
+        if (isOpen) {
+          curLines.push({ text: line.message, level: "info" });
+          closeStep("success", line.timestamp);
+        }
+        break;
+      }
+      case "done": {
+        if (isOpen) {
+          curLines.push({ text: line.message, level: "info" });
+          closeStep("success", line.timestamp);
+        } else {
+          steps.push({
+            id: `step-${stepIdx++}`,
+            name: "Complete",
+            status: "success",
+            lines: [{ text: line.message, level: "info" }],
+          });
+        }
+        break;
+      }
+      case "error": {
+        if (isOpen) {
+          curLines.push({ text: line.message, level: "error" });
+          closeStep("failed", line.timestamp);
+        } else {
+          steps.push({
+            id: `step-${stepIdx++}`,
+            name: "Pipeline Error",
+            status: "failed",
+            lines: [{ text: line.message, level: "error" }],
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  // Flush any step still open (pipeline still running)
+  if (isOpen) {
+    steps.push({
+      id: curId,
+      name: curName,
+      status: "running",
+      lines: [...curLines],
+    });
+  }
+
+  return steps;
 }

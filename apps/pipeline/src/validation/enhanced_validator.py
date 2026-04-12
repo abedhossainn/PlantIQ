@@ -158,6 +158,109 @@ class DocumentValidation:
     metadata: Dict
 
 
+def _build_page_markdown_map_from_previews(
+    markdown_content: str,
+    page_evidences: List["PageEvidence"],
+) -> Dict[int, str]:
+    """Build stable page-aligned markdown slices without a second Docling pass.
+
+    Root-cause mitigation: the legacy per-page fallback searched the whole markdown
+    for every page independently, so repeated boilerplate text could map many pages
+    to the same anchor. This builder enforces forward progression through markdown
+    while still using preview anchors, which keeps slices page-local and prevents
+    repeated identical sections across multiple page numbers.
+    """
+    lines = markdown_content.splitlines()
+    if not lines or not page_evidences:
+        return {}
+
+    normalized_lines = [_normalize_text_for_match(line) for line in lines]
+    total_pages = max(1, len(page_evidences))
+    search_floor = 0
+    previous_hash = None
+    seen_hashes: set[int] = set()
+    page_map: Dict[int, str] = {}
+
+    for idx, evidence in enumerate(sorted(page_evidences, key=lambda item: item.page_number), start=1):
+        anchors = _preview_anchor_candidates(evidence.text_preview or "")
+        expected_center = int((idx - 0.5) * len(lines) / total_pages)
+        window_start = max(0, min(search_floor, len(lines) - 1))
+        next_expected = (
+            int((idx + 0.5) * len(lines) / total_pages)
+            if idx < total_pages
+            else len(lines) - 1
+        )
+        window_end = min(len(lines), max(window_start + 160, next_expected + 120))
+
+        candidates: List[tuple[int, int]] = []
+        if anchors:
+            for line_index in range(window_start, window_end):
+                normalized_line = normalized_lines[line_index]
+                if not normalized_line:
+                    continue
+                score = sum(
+                    1
+                    for anchor in anchors
+                    if anchor and (anchor in normalized_line or normalized_line in anchor)
+                )
+                if score > 0:
+                    candidates.append((line_index, score))
+
+        has_candidates = bool(candidates)
+        if has_candidates:
+            candidates.sort(key=lambda item: (-item[1], abs(item[0] - expected_center), item[0]))
+            candidate_indices = [candidate_index for candidate_index, _ in candidates]
+        else:
+            candidate_indices = [max(0, min(expected_center, len(lines) - 1))]
+
+        selected_start = None
+        selected_end = None
+        selected_section = ""
+        selected_hash = None
+        for candidate_index in candidate_indices[:8]:
+            if has_candidates:
+                start_line = max(window_start, candidate_index - 40)
+            else:
+                start_line = max(0, candidate_index - 40)
+            end_line = min(len(lines), start_line + 160)
+            section = "\n".join(lines[start_line:end_line]).strip()
+            if not section:
+                continue
+            section_hash = hash(section)
+            selected_start = start_line
+            selected_end = end_line
+            selected_section = section
+            selected_hash = section_hash
+            if section_hash != previous_hash:
+                previous_hash = section_hash
+                break
+
+        if not selected_section:
+            fallback = _fallback_markdown_section(markdown_content, evidence.page_number, total_pages).strip()
+            if not fallback:
+                fallback = ""
+            selected_section = fallback
+            selected_start = max(window_start, min(expected_center, len(lines) - 1))
+            selected_end = min(len(lines), selected_start + 160)
+            selected_hash = hash(selected_section)
+            previous_hash = selected_hash
+
+        if selected_hash in seen_hashes:
+            fallback = _fallback_markdown_section(markdown_content, evidence.page_number, total_pages).strip()
+            if fallback:
+                selected_section = fallback
+                selected_hash = hash(selected_section)
+
+        seen_hashes.add(selected_hash if selected_hash is not None else hash(selected_section))
+
+        page_map[evidence.page_number] = selected_section
+
+        progression_step = max(1, int((selected_end - selected_start) * 0.35))
+        search_floor = min(len(lines) - 1, max(search_floor, selected_start + progression_step))
+
+    return page_map
+
+
 def extract_page_evidence(pdf_path: str) -> List[PageEvidence]:
     """
     Extract evidence snapshots from each PDF page
@@ -314,6 +417,12 @@ def create_validation_report(
     with open(markdown_path, 'r', encoding='utf-8') as f:
         markdown_content = f.read()
     
+    # Build deterministic page-level markdown mapping when exact page map is unavailable.
+    resolved_page_markdown_map = page_markdown_map or _build_page_markdown_map_from_previews(
+        markdown_content,
+        page_evidences,
+    )
+
     # Validate each page
     page_validations = []
     total_pages = len(page_evidences)
@@ -323,7 +432,7 @@ def create_validation_report(
             markdown_content,
             vlm_model=None,  # Will integrate VLM in next iteration
             total_pages=total_pages,
-            page_markdown_map=page_markdown_map,
+            page_markdown_map=resolved_page_markdown_map,
         )
         page_validations.append(validation)
         logger.info(f"✅ Validated page {evidence.page_number}: {len(validation.issues)} issues found")
