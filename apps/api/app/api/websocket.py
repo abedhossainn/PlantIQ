@@ -47,9 +47,17 @@ async def check_document_access(document_id: str, user_id: uuid.UUID, user_role:
             role_map = {
                 "admin": "plantig_admin",
                 "user": "plantig_user",
+                "plantig_admin": "plantig_admin",
+                "plantig_user": "plantig_user",
+                "plantig_reviewer": "plantig_reviewer",
             }
             db_role = role_map.get(user_role, "plantig_user")
             await session.execute(text(f"SET LOCAL ROLE {db_role}"))
+            claims_json = json.dumps({"sub": str(user_id), "role": user_role})
+            await session.execute(
+                text("SELECT set_config('request.jwt.claims', :claims, true)"),
+                {"claims": claims_json},
+            )
             
             # Check if document exists and user has access (RLS will filter)
             result = await session.execute(
@@ -121,7 +129,7 @@ async def pipeline_status_websocket(
     
     user_id, user_role = auth_result
 
-    if user_role != "admin":
+    if user_role not in {"admin", "plantig_admin"}:
         await websocket.close(code=403, reason="Forbidden: Pipeline updates require admin access")
         return
 

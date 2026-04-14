@@ -1333,6 +1333,19 @@ def test_reprocess_document_accepts_flat_request_body_and_triggers_pipeline(
     assert captured["reviewer"] == str(TEST_USER_ID)
 
 
+def test_openapi_request_contract_does_not_expose_jwt_claims_in_request_body():
+    """Regression guard: get_db JWT claims must never appear as a client body field."""
+    schema = app.openapi()
+
+    reprocess_operation = schema["paths"]["/api/v1/documents/{document_id}/reprocess"]["post"]
+    reprocess_body_json = json.dumps(reprocess_operation.get("requestBody", {}))
+    assert "jwt_claims" not in reprocess_body_json
+
+    chat_query_operation = schema["paths"]["/api/v1/chat/query"]["post"]
+    chat_query_body_json = json.dumps(chat_query_operation.get("requestBody", {}))
+    assert "jwt_claims" not in chat_query_body_json
+
+
 def test_get_document_status_maps_progress_and_stage(client: TestClient, fake_db: FakeAsyncSession):
     document_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
@@ -3265,6 +3278,42 @@ def test_pipeline_websocket_rejects_non_admin_users(monkeypatch: pytest.MonkeyPa
     with TestClient(app) as test_client:
         with pytest.raises(WebSocketDisconnect) as exc_info:
             with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token"):
+                pass
+
+        assert exc_info.value.code == 403
+
+
+def test_pipeline_websocket_allows_plantig_admin_role(monkeypatch: pytest.MonkeyPatch):
+    async def fake_verify_ws_token(token: str | None):
+        return (TEST_USER_ID, "plantig_admin") if token == "valid-token" else None
+
+    async def fake_check_document_access(_document_id: str, _user_id, _user_role: str) -> bool:
+        return True
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_document_access", fake_check_document_access)
+
+    with TestClient(app) as test_client:
+        with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token") as websocket:
+            connected = websocket.receive_json()
+            assert connected["type"] == "connected"
+            websocket.send_json({"type": "ping"})
+            assert websocket.receive_json() == {"type": "pong"}
+
+
+def test_chat_websocket_rejects_when_conversation_access_check_fails(monkeypatch: pytest.MonkeyPatch):
+    async def fake_verify_ws_token(token: str | None):
+        return (TEST_USER_ID, "plantig_user") if token == "valid-token" else None
+
+    async def fake_check_conversation_access(_conversation_id: str, _user_id) -> bool:
+        return False
+
+    monkeypatch.setattr(websocket_api, "verify_ws_token", fake_verify_ws_token)
+    monkeypatch.setattr(websocket_api, "check_conversation_access", fake_check_conversation_access)
+
+    with TestClient(app) as test_client:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with test_client.websocket_connect("/ws/chat/conv-123?token=valid-token"):
                 pass
 
         assert exc_info.value.code == 403

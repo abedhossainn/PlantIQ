@@ -15,11 +15,16 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import shutil
+import re
 
 from ..utils.vlm_options import get_text_model_id, get_vision_model_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+MAX_RETAINED_MARKDOWN_VERSIONS = 2
+_VERSION_FILENAME_PATTERN = re.compile(r"_v(\d+)\.md$")
 
 
 @dataclass
@@ -218,10 +223,83 @@ def create_version(
     # Update manifest
     manifest.markdown_versions.append(str(version_file.absolute()))
     manifest.current_version = version_num + 1
+
+    pruned_versions = _prune_markdown_versions(
+        manifest,
+        max_versions=MAX_RETAINED_MARKDOWN_VERSIONS,
+    )
+    _update_retention_metadata(
+        manifest,
+        created_version_path=str(version_file.absolute()),
+        pruned_versions=pruned_versions,
+    )
     
     logger.info(f"💾 Version {version_num} saved: {version_file}")
     
     return manifest
+
+
+def _extract_version_number(version_path: str) -> Optional[int]:
+    match = _VERSION_FILENAME_PATTERN.search(Path(version_path).name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _version_sort_key(version_path: str) -> tuple:
+    parsed_version = _extract_version_number(version_path)
+    if parsed_version is not None:
+        return (0, parsed_version, Path(version_path).name)
+
+    version_file = Path(version_path)
+    modified_at = version_file.stat().st_mtime if version_file.exists() else float("inf")
+    return (1, modified_at, version_file.name)
+
+
+def _prune_markdown_versions(
+    manifest: DocumentManifest,
+    *,
+    max_versions: int,
+) -> List[str]:
+    normalized_versions: List[str] = []
+    seen_versions: set[str] = set()
+
+    for raw_path in manifest.markdown_versions:
+        normalized = str(Path(raw_path).expanduser().resolve())
+        if normalized in seen_versions:
+            continue
+        seen_versions.add(normalized)
+        normalized_versions.append(normalized)
+
+    ordered_versions = sorted(normalized_versions, key=_version_sort_key)
+    versions_to_prune_count = max(0, len(ordered_versions) - max_versions)
+    if versions_to_prune_count == 0:
+        manifest.markdown_versions = ordered_versions
+        return []
+
+    versions_to_prune = ordered_versions[:versions_to_prune_count]
+    retained_versions = ordered_versions[versions_to_prune_count:]
+
+    for version_path in versions_to_prune:
+        Path(version_path).unlink(missing_ok=True)
+
+    manifest.markdown_versions = retained_versions
+    return versions_to_prune
+
+
+def _update_retention_metadata(
+    manifest: DocumentManifest,
+    *,
+    created_version_path: str,
+    pruned_versions: List[str],
+) -> None:
+    manifest.metadata["max_retained_markdown_versions"] = MAX_RETAINED_MARKDOWN_VERSIONS
+    manifest.metadata["retained_markdown_versions"] = len(manifest.markdown_versions)
+    manifest.metadata["last_version_created"] = created_version_path
+
+    if pruned_versions:
+        manifest.metadata["last_pruned_versions"] = pruned_versions
+        manifest.metadata["last_pruned_at"] = datetime.utcnow().isoformat() + "Z"
 
 
 def rollback_to_version(
