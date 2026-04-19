@@ -70,8 +70,9 @@ Thumbs.db
 
 # === Logs ===
 *.log
-logs/
 logs.txt
+# logs/ directory is NOT ignored — it contains test evidence files referenced in the capstone report
+# Individual .log files within logs/ are covered by the *.log pattern above
 
 # === Testing & Coverage ===
 .coverage

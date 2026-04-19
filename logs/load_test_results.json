@@ -1,0 +1,3549 @@
+{
+  "meta": {
+    "suite": "PlantIQ Comprehensive Load Test",
+    "date_utc": "2026-04-18T02:56:07.020892+00:00",
+    "base_url": "http://localhost:8001"
+  },
+  "T3_ramp_up": {
+    "test": "T3_ramp_up",
+    "timestamp_utc": "2026-04-18T02:53:41.111619+00:00",
+    "steps": [
+      {
+        "total": 1,
+        "success": 1,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 471.03,
+        "p50_ms": 471.03,
+        "p95_ms": 471.03,
+        "p99_ms": 471.03,
+        "min_ms": 471.03,
+        "max_ms": 471.03,
+        "errors": {},
+        "users": 1
+      },
+      {
+        "total": 3,
+        "success": 3,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 840.47,
+        "p50_ms": 779.21,
+        "p95_ms": 1100.62,
+        "p99_ms": 1129.19,
+        "min_ms": 605.88,
+        "max_ms": 1136.33,
+        "errors": {},
+        "users": 3
+      },
+      {
+        "total": 5,
+        "success": 5,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 5525.5,
+        "p50_ms": 5851.84,
+        "p95_ms": 8188.31,
+        "p99_ms": 8343.31,
+        "min_ms": 2162.9,
+        "max_ms": 8382.06,
+        "errors": {},
+        "users": 5
+      },
+      {
+        "total": 7,
+        "success": 7,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 2394.63,
+        "p50_ms": 2455.65,
+        "p95_ms": 3800.5,
+        "p99_ms": 3934.81,
+        "min_ms": 788.13,
+        "max_ms": 3968.38,
+        "errors": {},
+        "users": 7
+      },
+      {
+        "total": 9,
+        "success": 9,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 2216.48,
+        "p50_ms": 2248.12,
+        "p95_ms": 3307.69,
+        "p99_ms": 3420.01,
+        "min_ms": 896.64,
+        "max_ms": 3448.09,
+        "errors": {},
+        "users": 9
+      },
+      {
+        "total": 11,
+        "success": 11,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 4284.9,
+        "p50_ms": 4464.62,
+        "p95_ms": 7146.78,
+        "p99_ms": 7372.84,
+        "min_ms": 1041.74,
+        "max_ms": 7429.35,
+        "errors": {},
+        "users": 11
+      },
+      {
+        "total": 13,
+        "success": 13,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 1811.9,
+        "p50_ms": 1765.45,
+        "p95_ms": 2909.16,
+        "p99_ms": 2996.33,
+        "min_ms": 626.45,
+        "max_ms": 3018.13,
+        "errors": {},
+        "users": 13
+      },
+      {
+        "total": 15,
+        "success": 15,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 5811.5,
+        "p50_ms": 5629.05,
+        "p95_ms": 10096.0,
+        "p99_ms": 10790.73,
+        "min_ms": 1204.33,
+        "max_ms": 10964.41,
+        "errors": {},
+        "users": 15
+      },
+      {
+        "total": 17,
+        "success": 17,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 3052.04,
+        "p50_ms": 2991.0,
+        "p95_ms": 4902.65,
+        "p99_ms": 5026.51,
+        "min_ms": 1380.36,
+        "max_ms": 5057.47,
+        "errors": {},
+        "users": 17
+      },
+      {
+        "total": 19,
+        "success": 19,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 5372.17,
+        "p50_ms": 5346.15,
+        "p95_ms": 9437.63,
+        "p99_ms": 9747.82,
+        "min_ms": 1338.72,
+        "max_ms": 9825.37,
+        "errors": {},
+        "users": 19
+      },
+      {
+        "total": 21,
+        "success": 21,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 4204.8,
+        "p50_ms": 4236.98,
+        "p95_ms": 6625.94,
+        "p99_ms": 6852.99,
+        "min_ms": 1520.6,
+        "max_ms": 6909.76,
+        "errors": {},
+        "users": 21
+      },
+      {
+        "total": 23,
+        "success": 23,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 4648.65,
+        "p50_ms": 4590.98,
+        "p95_ms": 7029.14,
+        "p99_ms": 7314.8,
+        "min_ms": 2183.65,
+        "max_ms": 7390.3,
+        "errors": {},
+        "users": 23
+      },
+      {
+        "total": 25,
+        "success": 25,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 16484.56,
+        "p50_ms": 15060.75,
+        "p95_ms": 31191.98,
+        "p99_ms": 32988.84,
+        "min_ms": 3224.09,
+        "max_ms": 33437.56,
+        "errors": {},
+        "users": 25
+      }
+    ]
+  },
+  "T4_spike_recovery": {
+    "test": "T4_spike_recovery",
+    "timestamp_utc": "2026-04-18T02:54:18.987330+00:00",
+    "phases": [
+      {
+        "total": 6,
+        "success": 6,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 2249.0,
+        "p50_ms": 2317.89,
+        "p95_ms": 3452.49,
+        "p99_ms": 3525.66,
+        "min_ms": 744.83,
+        "max_ms": 3543.95,
+        "errors": {},
+        "phase": "baseline_1",
+        "concurrent_users": 3,
+        "n_requests": 6
+      },
+      {
+        "total": 20,
+        "success": 20,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 6359.51,
+        "p50_ms": 6101.76,
+        "p95_ms": 11932.65,
+        "p99_ms": 12130.97,
+        "min_ms": 1183.97,
+        "max_ms": 12180.55,
+        "errors": {},
+        "phase": "spike_1",
+        "concurrent_users": 20,
+        "n_requests": 20
+      },
+      {
+        "total": 6,
+        "success": 6,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 2435.95,
+        "p50_ms": 2032.11,
+        "p95_ms": 4678.8,
+        "p99_ms": 5029.17,
+        "min_ms": 838.61,
+        "max_ms": 5116.77,
+        "errors": {},
+        "phase": "recovery_1",
+        "concurrent_users": 3,
+        "n_requests": 6
+      },
+      {
+        "total": 20,
+        "success": 20,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 5452.96,
+        "p50_ms": 4214.93,
+        "p95_ms": 11636.23,
+        "p99_ms": 12008.67,
+        "min_ms": 1127.13,
+        "max_ms": 12101.78,
+        "errors": {},
+        "phase": "spike_2",
+        "concurrent_users": 20,
+        "n_requests": 20
+      },
+      {
+        "total": 6,
+        "success": 6,
+        "error_count": 0,
+        "success_rate": 100.0,
+        "mean_ms": 2501.94,
+        "p50_ms": 2139.08,
+        "p95_ms": 4661.22,
+        "p99_ms": 4856.93,
+        "min_ms": 821.22,
+        "max_ms": 4905.86,
+        "errors": {},
+        "phase": "recovery_2",
+        "concurrent_users": 3,
+        "n_requests": 6
+      }
+    ]
+  },
+  "T5_sse_streaming": {
+    "test": "T5_sse_streaming",
+    "timestamp_utc": "2026-04-18T02:54:35.149070+00:00",
+    "levels": [
+      {
+        "load_level": 1,
+        "total": 1,
+        "success": 1,
+        "success_rate": 100.0,
+        "mean_total_ms": 589.15,
+        "p95_total_ms": 589.15,
+        "mean_ttft_ms": 226.24,
+        "p95_ttft_ms": 226.24,
+        "avg_chunks": 144,
+        "error_count": 0,
+        "requests": [
+          {
+            "success": true,
+            "latency_ms": 589.1494620591402,
+            "ttft_ms": 226.23822698369622,
+            "chunks": 144,
+            "status_code": 200,
+            "error": null,
+            "load_level": 1,
+            "slot": 0
+          }
+        ]
+      },
+      {
+        "load_level": 3,
+        "total": 3,
+        "success": 3,
+        "success_rate": 100.0,
+        "mean_total_ms": 1017.92,
+        "p95_total_ms": 1346.55,
+        "mean_ttft_ms": 710.46,
+        "p95_ttft_ms": 1008.02,
+        "avg_chunks": 122.7,
+        "error_count": 0,
+        "requests": [
+          {
+            "success": true,
+            "latency_ms": 990.1267248205841,
+            "ttft_ms": 727.4427241645753,
+            "chunks": 106,
+            "status_code": 200,
+            "error": null,
+            "load_level": 3,
+            "slot": 0
+          },
+          {
+            "success": true,
+            "latency_ms": 1386.1527531407773,
+            "ttft_ms": 1039.1969573684037,
+            "chunks": 138,
+            "status_code": 200,
+            "error": null,
+            "load_level": 3,
+            "slot": 1
+          },
+          {
+            "success": true,
+            "latency_ms": 677.4773299694061,
+            "ttft_ms": 364.7376010194421,
+            "chunks": 124,
+            "status_code": 200,
+            "error": null,
+            "load_level": 3,
+            "slot": 2
+          }
+        ]
+      },
+      {
+        "load_level": 5,
+        "total": 5,
+        "success": 5,
+        "success_rate": 100.0,
+        "mean_total_ms": 1890.67,
+        "p95_total_ms": 2920.96,
+        "mean_ttft_ms": 1417.79,
+        "p95_ttft_ms": 2367.89,
+        "avg_chunks": 185.2,
+        "error_count": 0,
+        "requests": [
+          {
+            "success": true,
+            "latency_ms": 1693.6920480802655,
+            "ttft_ms": 1524.016855750233,
+            "chunks": 72,
+            "status_code": 200,
+            "error": null,
+            "load_level": 5,
+            "slot": 0
+          },
+          {
+            "success": true,
+            "latency_ms": 778.5737407393754,
+            "ttft_ms": 446.2086916901171,
+            "chunks": 134,
+            "status_code": 200,
+            "error": null,
+            "load_level": 5,
+            "slot": 1
+          },
+          {
+            "success": true,
+            "latency_ms": 2478.853258769959,
+            "ttft_ms": 1748.8565319217741,
+            "chunks": 280,
+            "status_code": 200,
+            "error": null,
+            "load_level": 5,
+            "slot": 2
+          },
+          {
+            "success": true,
+            "latency_ms": 1470.7489707507193,
+            "ttft_ms": 847.2353620454669,
+            "chunks": 240,
+            "status_code": 200,
+            "error": null,
+            "load_level": 5,
+            "slot": 3
+          },
+          {
+            "success": true,
+            "latency_ms": 3031.489683780819,
+            "ttft_ms": 2522.6527308113873,
+            "chunks": 200,
+            "status_code": 200,
+            "error": null,
+            "load_level": 5,
+            "slot": 4
+          }
+        ]
+      },
+      {
+        "load_level": 8,
+        "total": 8,
+        "success": 8,
+        "success_rate": 100.0,
+        "mean_total_ms": 3647.46,
+        "p95_total_ms": 5271.25,
+        "mean_ttft_ms": 3095.15,
+        "p95_ttft_ms": 4701.31,
+        "avg_chunks": 216,
+        "error_count": 0,
+        "requests": [
+          {
+            "success": true,
+            "latency_ms": 3639.3462158739567,
+            "ttft_ms": 3382.1975090540946,
+            "chunks": 102,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 0
+          },
+          {
+            "success": true,
+            "latency_ms": 820.8962581120431,
+            "ttft_ms": 659.1686881147325,
+            "chunks": 70,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 1
+          },
+          {
+            "success": true,
+            "latency_ms": 5495.24217704311,
+            "ttft_ms": 4910.694039426744,
+            "chunks": 226,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 2
+          },
+          {
+            "success": true,
+            "latency_ms": 3330.695376265794,
+            "ttft_ms": 2845.3953843563795,
+            "chunks": 188,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 3
+          },
+          {
+            "success": true,
+            "latency_ms": 4000.389547087252,
+            "ttft_ms": 3681.796166114509,
+            "chunks": 128,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 4
+          },
+          {
+            "success": true,
+            "latency_ms": 2776.7603620886803,
+            "ttft_ms": 886.9889038614929,
+            "chunks": 726,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 5
+          },
+          {
+            "success": true,
+            "latency_ms": 4261.081870179623,
+            "ttft_ms": 4082.5172401964664,
+            "chunks": 76,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 6
+          },
+          {
+            "success": true,
+            "latency_ms": 4855.273677036166,
+            "ttft_ms": 4312.441408634186,
+            "chunks": 212,
+            "status_code": 200,
+            "error": null,
+            "load_level": 8,
+            "slot": 7
+          }
+        ]
+      },
+      {
+        "load_level": 10,
+        "total": 10,
+        "success": 10,
+        "success_rate": 100.0,
+        "mean_total_ms": 3710.59,
+        "p95_total_ms": 5440.11,
+        "mean_ttft_ms": 3285.26,
+        "p95_ttft_ms": 5228.69,
+        "avg_chunks": 166.8,
+        "error_count": 0,
+        "requests": [
+          {
+            "success": true,
+            "latency_ms": 4275.997178163379,
+            "ttft_ms": 3959.6989043056965,
+            "chunks": 126,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 0
+          },
+          {
+            "success": true,
+            "latency_ms": 5570.158842019737,
+            "ttft_ms": 5333.033611066639,
+            "chunks": 96,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 1
+          },
+          {
+            "success": true,
+            "latency_ms": 3909.5146199688315,
+            "ttft_ms": 2814.9050818756223,
+            "chunks": 412,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 2
+          },
+          {
+            "success": true,
+            "latency_ms": 1560.839171987027,
+            "ttft_ms": 811.6867085918784,
+            "chunks": 286,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 3
+          },
+          {
+            "success": true,
+            "latency_ms": 4541.56130598858,
+            "ttft_ms": 4316.058786120266,
+            "chunks": 92,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 4
+          },
+          {
+            "success": true,
+            "latency_ms": 2762.5948479399085,
+            "ttft_ms": 2335.7062870636582,
+            "chunks": 172,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 5
+          },
+          {
+            "success": true,
+            "latency_ms": 5281.157624907792,
+            "ttft_ms": 5101.159045938402,
+            "chunks": 76,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 6
+          },
+          {
+            "success": true,
+            "latency_ms": 5020.552196074277,
+            "ttft_ms": 4588.21079088375,
+            "chunks": 168,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 7
+          },
+          {
+            "success": true,
+            "latency_ms": 2270.3664898872375,
+            "ttft_ms": 1978.9374419488013,
+            "chunks": 116,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 8
+          },
+          {
+            "success": true,
+            "latency_ms": 1913.122421130538,
+            "ttft_ms": 1613.2030724547803,
+            "chunks": 124,
+            "status_code": 200,
+            "error": null,
+            "load_level": 10,
+            "slot": 9
+          }
+        ]
+      }
+    ]
+  },
+  "T6_mixed_workload": {
+    "test": "T6_mixed_workload",
+    "timestamp_utc": "2026-04-18T02:56:07.020859+00:00",
+    "config": {
+      "workers": 10,
+      "requests_per_worker": 30,
+      "chat_probability": 0.5,
+      "sla_light_ms": 500.0
+    },
+    "chat_summary": {
+      "total": 139,
+      "success": 139,
+      "error_count": 0,
+      "success_rate": 100.0,
+      "mean_ms": 5950.25,
+      "p50_ms": 6156.25,
+      "p95_ms": 8998.84,
+      "p99_ms": 10873.79,
+      "min_ms": 785.79,
+      "max_ms": 10959.49,
+      "errors": {}
+    },
+    "light_summary": {
+      "total": 161,
+      "success": 161,
+      "error_count": 0,
+      "success_rate": 100.0,
+      "mean_ms": 15.99,
+      "p50_ms": 4.51,
+      "p95_ms": 31.69,
+      "p99_ms": 383.96,
+      "min_ms": 1.16,
+      "max_ms": 452.28,
+      "errors": {}
+    },
+    "endpoint_breakdown": {
+      "/api/v1/llm/status": {
+        "count": 42,
+        "mean_ms": 21.74,
+        "p95_ms": 15.18
+      },
+      "/api/v1/documents": {
+        "count": 42,
+        "mean_ms": 28.03,
+        "p95_ms": 92.21
+      },
+      "/health": {
+        "count": 38,
+        "mean_ms": 2.15,
+        "p95_ms": 3.9
+      },
+      "/api/v1/auth/me": {
+        "count": 39,
+        "mean_ms": 10.33,
+        "p95_ms": 32.85
+      }
+    },
+    "sla_light_passed": true,
+    "all_requests": [
+      {
+        "success": true,
+        "latency_ms": 785.7947079464793,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 0,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.000968214124441,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 0,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3229.8781350255013,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 2,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.172290209680796,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 0,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2844810262322426,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 0,
+        "req": 4,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.421383056789637,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 0,
+        "req": 5,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8977.63742133975,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.177055787295103,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 0,
+        "req": 7,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2318608351051807,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 0,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6558.331539854407,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 9,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3782.4750975705683,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8577.239024918526,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 11,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.619535196572542,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 0,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7386.963376309723,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 13,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4046.1534545756876,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 14,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.719212185591459,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 0,
+        "req": 15,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10739.79909485206,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 16,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7430.741639342159,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 17,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.071882925927639,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 0,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.794961143285036,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 0,
+        "req": 19,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.164392102509737,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 0,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5585.123331751674,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 21,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6328.072944656014,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 22,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5165.60655971989,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 23,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4312.57603969425,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 24,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4171.306480187923,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1865.1603469625115,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2844.4013418629766,
+        "status_code": 200,
+        "error": null,
+        "worker": 0,
+        "req": 27,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.574571244418621,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 0,
+        "req": 28,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 13.763472903519869,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 0,
+        "req": 29,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 32.96997305005789,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 1,
+        "req": 0,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2357.2879880666733,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 1,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7943.250907119364,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 2,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.959820054471493,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 1,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.201807711273432,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 1,
+        "req": 4,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7521.549263037741,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 5,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3997.579773887992,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8589.53965594992,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7089.381831232458,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 8,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.171095788478851,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 1,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4136.663029901683,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8691.638213116676,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 11,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7335.698121227324,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 12,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.801520146429539,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 1,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.051339019089937,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 1,
+        "req": 14,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.897015385329723,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 1,
+        "req": 15,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.016258917748928,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 1,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.983262926340103,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 1,
+        "req": 17,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.18233822286129,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 1,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.344437021762133,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 1,
+        "req": 19,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6033.970914781094,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 20,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.505645018070936,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 1,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.8243109807372093,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 1,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6513.14672967419,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 23,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.189061000943184,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 1,
+        "req": 24,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6663.56415534392,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4998.081246390939,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.910009663552046,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 1,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4205.431939102709,
+        "status_code": 200,
+        "error": null,
+        "worker": 1,
+        "req": 28,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6.165840663015842,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 1,
+        "req": 29,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1477.2840072400868,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 0,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.51707163080573,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 2,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6027.5791003368795,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 2,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.5399898663163185,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 2,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.571423839777708,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 2,
+        "req": 4,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.317961849272251,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 2,
+        "req": 5,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.246976390480995,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 2,
+        "req": 6,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6.234290078282356,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 2,
+        "req": 7,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6554.599981755018,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 8,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.490197852253914,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 2,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6178.69281815365,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.436549264937639,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 2,
+        "req": 11,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.4138231053948402,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 2,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4144.206589087844,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 13,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.82927805185318,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 2,
+        "req": 14,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8223.881712183356,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7379.198492970318,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 16,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6748.634920921177,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 17,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.746897913515568,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 2,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8251.199752092361,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 19,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7341.477435082197,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 20,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.558185797184706,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 2,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.327316001057625,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 2,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5832.414353266358,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 23,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.5357499942183495,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 2,
+        "req": 24,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7517.003663815558,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.9975750260055065,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 2,
+        "req": 26,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5220.09857185185,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 27,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.2191787138581276,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 2,
+        "req": 28,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2638.8034159317613,
+        "status_code": 200,
+        "error": null,
+        "worker": 2,
+        "req": 29,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 31.01696027442813,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 3,
+        "req": 0,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2191.3103093393147,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 1,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.4335778541862965,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 3,
+        "req": 2,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.171447113156319,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 3,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6030.349817126989,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8431.864578742534,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 5,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4916.142330039293,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8392.248091753572,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.8589807227253914,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 3,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7213.909063953906,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 9,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.9388929940760136,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 3,
+        "req": 10,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3959.7919047810137,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 11,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8977.567289024591,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 12,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.335416946560144,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 3,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.182581763714552,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 3,
+        "req": 14,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6776.1592250317335,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6392.832305748016,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 16,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6156.2520558945835,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 17,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.535159070044756,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 3,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.809543870389462,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 3,
+        "req": 19,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6946.695846971124,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 20,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5236.988428980112,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 21,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.9633183255791664,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 3,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.60319009795785,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 3,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.3050919882953167,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 3,
+        "req": 24,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4238.480152096599,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2324.5182018727064,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 13.18200770765543,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 3,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1286.3588826730847,
+        "status_code": 200,
+        "error": null,
+        "worker": 3,
+        "req": 28,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.717422183603048,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 3,
+        "req": 29,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1810.566507279873,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 0,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.001014314591885,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.324122168123722,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 4,
+        "req": 2,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.058484151959419,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 4,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5925.723080057651,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6856.189796701074,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 5,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7.057194132357836,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 4,
+        "req": 6,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6536.332295741886,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.4213300310075283,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 4,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 13.08154035359621,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.7988070398569107,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 4,
+        "req": 10,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.6762780509889126,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 4,
+        "req": 11,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5440.622124820948,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 12,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.181548867374659,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.16747310757637,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 4,
+        "req": 14,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8397.701833862811,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.647057943046093,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 4,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5595.471193082631,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 17,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6577.26888731122,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 18,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8502.133323810995,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 19,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.061852253973484,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 4,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.635012924671173,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.354982636868954,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 4,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.668526653200388,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 4,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.3486230745911598,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 4,
+        "req": 24,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.999629136174917,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 25,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6912.425951566547,
+        "status_code": 200,
+        "error": null,
+        "worker": 4,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6.027427967637777,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 4,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.1752920001745224,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 4,
+        "req": 28,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 15.24550886824727,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 4,
+        "req": 29,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 32.83294104039669,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 5,
+        "req": 0,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 451.2437703087926,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 5,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6.643296685069799,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 5,
+        "req": 2,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 89.76960182189941,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 5,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2752.2015781141818,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 9227.0688386634,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 5,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6198.877678252757,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4144.998932257295,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8033.561559859663,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 8,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.0232550129294395,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 5,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2471489608287811,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 5,
+        "req": 10,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.154877953231335,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 5,
+        "req": 11,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.063035827130079,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 5,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.58930928632617,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 5,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7110.946846194565,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 14,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4462.326210923493,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.2265321351587772,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 5,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10959.494011942297,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 17,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.4947610907256603,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 5,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5053.939261939377,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 19,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.668059758841991,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 5,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7714.082717895508,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 21,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.9322438165545464,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 5,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.627184692770243,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 5,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5144.85265687108,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 24,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.469117149710655,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 5,
+        "req": 25,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6017.673077061772,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4894.378991797566,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 27,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4029.436776880175,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 28,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2362.0118987746537,
+        "status_code": 200,
+        "error": null,
+        "worker": 5,
+        "req": 29,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.703132186084986,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 6,
+        "req": 0,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 339.1040819697082,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 130.67229883745313,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 6,
+        "req": 2,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 96.73044178634882,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 6,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3046.4211772195995,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.580397073179483,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 5,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 9189.702607225627,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.561289679259062,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 6,
+        "req": 7,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.3474998995661736,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 6,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.657875962555408,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6342.3846727237105,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3955.808657221496,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 11,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.6148310862481594,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 6,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8387.01768219471,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 13,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6851.203381083906,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 14,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4585.320665966719,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.5782198645174503,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 6,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.439383029937744,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 17,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10874.18406503275,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 18,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5158.59137987718,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 19,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7725.949312094599,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 20,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.523149907588959,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.5362388007342815,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 6,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.9389911107718945,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 6,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4968.381293118,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 24,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.832418851554394,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 6,
+        "req": 25,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.848708398640156,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 6,
+        "req": 26,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.6843507550656796,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 6,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5962.225784081966,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 28,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5005.574374925345,
+        "status_code": 200,
+        "error": null,
+        "worker": 6,
+        "req": 29,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1206.8209643475711,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 0,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.27500594034791,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4523.608227726072,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 2,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8002.125423867255,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 3,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6113.827296998352,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.459901247173548,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 5,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.4142457880079746,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 7,
+        "req": 6,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4039.0996346250176,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8286.955175921321,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 8,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.3537793681025505,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7514.94604209438,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.4631331525743,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 7,
+        "req": 11,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.5918736830353737,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 7,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.4497040323913097,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3914.6419488824904,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 14,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.726298067718744,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 7,
+        "req": 15,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.690414294600487,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 7,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.8955272175371647,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 17,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10873.151478357613,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 18,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.97765488177538,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 7,
+        "req": 19,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.115730989724398,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 7,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.822284914553165,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2507601641118526,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 7,
+        "req": 22,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10.798913892358541,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 7,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7380.577019881457,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 24,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.64572075381875,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 25,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5542.043026071042,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6556.186071131378,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 27,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4935.674434993416,
+        "status_code": 200,
+        "error": null,
+        "worker": 7,
+        "req": 28,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.09273586794734,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 7,
+        "req": 29,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2006.489188876003,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 0,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5978.8593160919845,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 1,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.5356669686734676,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 8,
+        "req": 2,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.65760612860322,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 8,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7080.968230031431,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.005464173853397,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 8,
+        "req": 5,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 6336.757119279355,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 6,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6693.977571092546,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 7,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.451064996421337,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 8,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.336449068039656,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 8,
+        "req": 9,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.5623321309685707,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 8,
+        "req": 10,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.438668791204691,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 8,
+        "req": 11,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 8323.534821160138,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 12,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 11.626601219177246,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 8,
+        "req": 13,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4484.581866301596,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 14,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8182.136345189065,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6835.29756590724,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 16,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 14.020024798810482,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 8,
+        "req": 17,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.013638943433762,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 8,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.607940092682838,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 8,
+        "req": 19,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2614340521395206,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 8,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7066.640479955822,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 21,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5994.363811798394,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 22,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7165.036095771939,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 23,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 5060.822772793472,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 24,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2787.0687670074403,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.390479065477848,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 8,
+        "req": 26,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.024852998554707,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 8,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.2520351447165012,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 8,
+        "req": 28,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3927.069508936256,
+        "status_code": 200,
+        "error": null,
+        "worker": 8,
+        "req": 29,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 31.690357252955437,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 0,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 452.2836790420115,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 9,
+        "req": 1,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2425.337462220341,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 2,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.481624260544777,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 9,
+        "req": 3,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7725.015528965741,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 4,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7845.4580581746995,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 5,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.6150080375373363,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 9,
+        "req": 6,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.03051395714283,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 9,
+        "req": 7,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.6798017099499702,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 8,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3894.7915830649436,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 9,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 8281.453337986022,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 10,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 7088.703424204141,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 11,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.062999971210957,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 12,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4263.200728222728,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 13,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 1.3820319436490536,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 9,
+        "req": 14,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 10260.92353509739,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 15,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.306144081056118,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 16,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.191869102418423,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 9,
+        "req": 17,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 2.2590388543903828,
+        "status_code": 200,
+        "error": null,
+        "path": "/health",
+        "worker": 9,
+        "req": 18,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5911.93575039506,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 19,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.054444842040539,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 20,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.195617977529764,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 9,
+        "req": 21,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 7806.532831862569,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 22,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.383368331938982,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 9,
+        "req": 23,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4.738373681902885,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 24,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 4797.501937951893,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 25,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 6387.08853488788,
+        "status_code": 200,
+        "error": null,
+        "worker": 9,
+        "req": 26,
+        "type": "chat"
+      },
+      {
+        "success": true,
+        "latency_ms": 12.343838810920715,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/llm/status",
+        "worker": 9,
+        "req": 27,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 3.2923268154263496,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/auth/me",
+        "worker": 9,
+        "req": 28,
+        "type": "light"
+      },
+      {
+        "success": true,
+        "latency_ms": 5.359176080673933,
+        "status_code": 200,
+        "error": null,
+        "path": "/api/v1/documents",
+        "worker": 9,
+        "req": 29,
+        "type": "light"
+      }
+    ]
+  }
+}

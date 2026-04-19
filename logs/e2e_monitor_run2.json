@@ -1,0 +1,246 @@
+{
+  "base_url": "http://localhost:8001",
+  "pdf": "/home/cpdcs/Projects/llm-rag-chatbot/Documents/COMMON Module 3 Characteristics of LNG.pdf",
+  "document_id": "2dc1e519-bfb3-4fc6-916d-acce60bb07ca",
+  "uploaded": {
+    "document_id": "2dc1e519-bfb3-4fc6-916d-acce60bb07ca",
+    "status": "extracting",
+    "file_path": "/workspace/data/raw/2dc1e519-bfb3-4fc6-916d-acce60bb07ca_COMMON Module 3 Characteristics of LNG.pdf",
+    "message": "Document uploaded successfully. Pipeline job bb4e5e5c-067d-46d0-9d0f-e67de088075c started."
+  },
+  "samples": [
+    {
+      "timestamp": "2026-03-28T03:54:31.512210Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "container_stats=195.83%|2.167GiB / 14.87GiB|14.57%"
+    },
+    {
+      "timestamp": "2026-03-28T03:54:38.122393Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "container_stats=0.22%|2.216GiB / 14.87GiB|14.90%"
+    },
+    {
+      "timestamp": "2026-03-28T03:54:44.722327Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "container_stats=0.24%|2.216GiB / 14.87GiB|14.90%"
+    },
+    {
+      "timestamp": "2026-03-28T03:54:51.354953Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8690",
+      "top_cpu": "container_stats=83.87%|2.87GiB / 14.87GiB|19.30%"
+    },
+    {
+      "timestamp": "2026-03-28T03:54:58.023278Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8836",
+      "top_cpu": "container_stats=100.31%|3.105GiB / 14.87GiB|20.88%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:04.644120Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8836",
+      "top_cpu": "container_stats=100.72%|3.106GiB / 14.87GiB|20.89%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:11.256672Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8836",
+      "top_cpu": "container_stats=100.71%|3.106GiB / 14.87GiB|20.89%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:17.871612Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8836",
+      "top_cpu": "container_stats=100.56%|3.112GiB / 14.87GiB|20.93%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:24.509658Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 8986",
+      "top_cpu": "container_stats=100.69%|3.147GiB / 14.87GiB|21.16%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:31.126223Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9000",
+      "top_cpu": "container_stats=100.82%|3.141GiB / 14.87GiB|21.12%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:37.740911Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9000",
+      "top_cpu": "container_stats=100.57%|3.141GiB / 14.87GiB|21.12%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:44.356349Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9394",
+      "top_cpu": "container_stats=98.45%|4.122GiB / 14.87GiB|27.72%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:50.972907Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9960",
+      "top_cpu": "container_stats=100.71%|4.328GiB / 14.87GiB|29.10%"
+    },
+    {
+      "timestamp": "2026-03-28T03:55:57.585510Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9960",
+      "top_cpu": "container_stats=100.61%|4.329GiB / 14.87GiB|29.11%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:04.206057Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9960",
+      "top_cpu": "container_stats=100.53%|4.339GiB / 14.87GiB|29.17%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:10.822930Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9960",
+      "top_cpu": "container_stats=100.83%|4.359GiB / 14.87GiB|29.31%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:17.447814Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9964",
+      "top_cpu": "container_stats=100.71%|4.36GiB / 14.87GiB|29.32%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:24.059588Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9978",
+      "top_cpu": "container_stats=100.89%|4.419GiB / 14.87GiB|29.71%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:30.675683Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.69%|4.415GiB / 14.87GiB|29.69%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:37.291946Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.74%|4.416GiB / 14.87GiB|29.69%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:43.919049Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.89%|4.415GiB / 14.87GiB|29.69%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:50.530936Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.55%|4.419GiB / 14.87GiB|29.72%"
+    },
+    {
+      "timestamp": "2026-03-28T03:56:57.139699Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.54%|4.426GiB / 14.87GiB|29.76%"
+    },
+    {
+      "timestamp": "2026-03-28T03:57:03.752564Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.62%|4.434GiB / 14.87GiB|29.82%"
+    },
+    {
+      "timestamp": "2026-03-28T03:57:10.363458Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 9988",
+      "top_cpu": "container_stats=100.70%|4.436GiB / 14.87GiB|29.83%"
+    },
+    {
+      "timestamp": "2026-03-28T03:57:17.139115Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 14940",
+      "top_cpu": "container_stats=85.67%|3.536GiB / 14.87GiB|23.78%"
+    },
+    {
+      "timestamp": "2026-03-28T03:57:23.792876Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1647150, /usr/local/bin/python, 16172",
+      "top_cpu": "container_stats=61.22%|5.049GiB / 14.87GiB|33.95%"
+    },
+    {
+      "timestamp": "2026-03-28T03:57:30.411358Z",
+      "status": "validation-complete",
+      "stage": "validation",
+      "progress": 100,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "container_stats=0.15%|2.27GiB / 14.87GiB|15.27%"
+    }
+  ],
+  "last_sample": {
+    "timestamp": "2026-03-28T03:57:30.411358Z",
+    "status": "validation-complete",
+    "stage": "validation",
+    "progress": 100,
+    "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+    "top_cpu": "container_stats=0.15%|2.27GiB / 14.87GiB|15.27%"
+  },
+  "duration_seconds": 180
+}

@@ -1,0 +1,310 @@
+{
+  "base_url": "http://localhost:8001",
+  "pdf": "/home/cpdcs/Projects/llm-rag-chatbot/Documents/COMMON Module 3 Characteristics of LNG.pdf",
+  "document_id": "75f1a74e-0643-41e8-a707-8d703e919053",
+  "uploaded": {
+    "document_id": "75f1a74e-0643-41e8-a707-8d703e919053",
+    "status": "extracting",
+    "file_path": "/workspace/data/raw/75f1a74e-0643-41e8-a707-8d703e919053_COMMON Module 3 Characteristics of LNG.pdf",
+    "message": "Document uploaded successfully. Pipeline job 14c0438a-e112-4322-850d-cb99eada0365 started."
+  },
+  "samples": [
+    {
+      "timestamp": "2026-03-28T03:50:41.013192Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:50:46.101735Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:50:51.200250Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:50:56.294105Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:01.522113Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8690",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:06.694121Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8814",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:11.795832Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8836",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:16.894392Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8836",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:21.991879Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8836",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:27.086013Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8836",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:32.199686Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 8986",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:37.294029Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9000",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:42.390740Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9000",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:47.483637Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9000",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:52.577057Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9000",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:51:57.677431Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9960",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:02.770317Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9960",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:07.867906Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9960",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:12.965580Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9960",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:18.052940Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9960",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:23.165897Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9962",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:28.271217Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9970",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:33.365837Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:38.464705Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:43.582962Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:48.682079Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:53.779955Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:52:58.878422Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:03.975733Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:09.073200Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:14.175781Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9988",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:19.270330Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 9208",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:24.429861Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 16172",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:29.532810Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 16172",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:34.631179Z",
+      "status": "extracting",
+      "stage": "extraction",
+      "progress": 30,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782 | 1638947, /usr/local/bin/python, 16172",
+      "top_cpu": "no-ps-output"
+    },
+    {
+      "timestamp": "2026-03-28T03:53:39.745379Z",
+      "status": "validation-complete",
+      "stage": "validation",
+      "progress": 100,
+      "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+      "top_cpu": "no-ps-output"
+    }
+  ],
+  "last_sample": {
+    "timestamp": "2026-03-28T03:53:39.745379Z",
+    "status": "validation-complete",
+    "stage": "validation",
+    "progress": 100,
+    "gpu_apps": "384431, /opt/app-root/bin/python3, 7782",
+    "top_cpu": "no-ps-output"
+  },
+  "duration_seconds": 178
+}
