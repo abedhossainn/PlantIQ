@@ -115,6 +115,9 @@ temp/
 # === Validation & Test Scripts (Non-Essential) ===
 validate_t006.sh
 validate_t004_t005.sh
+test_docling.py
+test_docling_diagnose.py
+test_docling_v1.py
 
 # === Development Documentation & Tooling ===
 # These aid development but add no value for deployment consumers

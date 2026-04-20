@@ -85,7 +85,10 @@ PLACEHOLDER_MARKDOWN_SENTINELS = (
     "Replace with Docling-extracted markdown for full-quality pipeline results.",
 )
 
-DOCLING_IMAGE_MODE = "descriptions"
+# Use "placeholder" mode instead of "descriptions" to avoid expensive VLM inference on every image
+# This significantly speeds up Docling PDF conversion. Images are replaced with simple [Figure N: alt-text]
+# Future enhancement: implement async/batch VLM description generation as an optional post-processing step
+DOCLING_IMAGE_MODE = "placeholder"
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:

@@ -26,8 +26,12 @@ import hashlib
 import logging
 from pathlib import Path
 from PIL import Image
+from typing import Optional
 
-DEFAULT_IMAGE_MODE = "descriptions"
+# Use "placeholder" mode by default to avoid expensive VLM inference on every image in PDFs
+# This significantly speeds up Docling PDF conversion. For production image analysis,
+# consider implementing async batch VLM description as a separate post-processing stage.
+DEFAULT_IMAGE_MODE = "placeholder"
 
 # Import VLM infrastructure
 try:
@@ -56,6 +60,9 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DOCLING_CHUNK_PAGES = 4
+DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS = 300
 
 # Load the configured vision-language model for image descriptions
 def _load_qwen_model(vlm_options: 'VLMOptions' = None):
@@ -545,6 +552,115 @@ def export_page_markdown_map(
     return page_markdown_map
 
 
+def _get_pdf_page_count(pdf_path: str) -> int:
+    """Return the total page count for a PDF."""
+    try:
+        import pdfplumber
+    except ImportError as exc:
+        raise RuntimeError("pdfplumber is required to process Docling page chunks") from exc
+
+    with pdfplumber.open(pdf_path) as pdf:
+        return len(pdf.pages)
+
+
+def _build_docling_form_data(options: dict, page_range: Optional[tuple[int, int]] = None) -> list[tuple[str, str]]:
+    """Build multipart form fields for Docling Serve endpoints."""
+    form_data: list[tuple[str, str]] = []
+
+    for key, value in options.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            form_data.append((key, "true" if value else "false"))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                form_data.append((key, str(item)))
+        else:
+            form_data.append((key, str(value)))
+
+    if page_range is not None:
+        form_data.append(("page_range", str(page_range[0])))
+        form_data.append(("page_range", str(page_range[1])))
+
+    return form_data
+
+
+def _convert_pdf_with_docling_sync_chunks(
+    *,
+    pdf_path: str,
+    docling_url: str,
+    options: dict,
+    pages_per_chunk: int,
+    connect_timeout: int,
+    read_timeout: int,
+) -> dict:
+    """Convert a PDF using bounded synchronous page-range chunks.
+
+    This avoids the original hang caused by requesting one massive full-document
+    response body, while also avoiding the unstable async queue path in the
+    current Docling server version.
+    """
+    total_pages = _get_pdf_page_count(pdf_path)
+    page_ranges = [
+        (start, min(start + pages_per_chunk - 1, total_pages))
+        for start in range(1, total_pages + 1, pages_per_chunk)
+    ]
+
+    print(
+        f"📚 Large PDF detected ({total_pages} pages). "
+        f"Using Docling sequential chunking with {len(page_ranges)} chunk(s) of up to {pages_per_chunk} pages."
+    )
+
+    chunk_results: list[dict] = []
+    for index, page_range in enumerate(page_ranges, start=1):
+        print(f"   ⏳ Converting chunk {index}/{len(page_ranges)} (pages {page_range[0]}-{page_range[1]})...")
+        with open(pdf_path, "rb") as pdf_handle:
+            response = requests.post(
+                f"{docling_url}/v1/convert/file",
+                files={"files": (Path(pdf_path).name, pdf_handle, "application/pdf")},
+                data=_build_docling_form_data(options, page_range=page_range),
+                timeout=(connect_timeout, read_timeout),
+            )
+        response.raise_for_status()
+        chunk_payload = response.json()
+        chunk_results.append(chunk_payload)
+
+    md_chunks: list[str] = []
+    total_processing_time = 0.0
+    aggregated_errors: list = []
+
+    for chunk_payload in chunk_results:
+        if chunk_payload.get("status") != "success":
+            raise RuntimeError(f"Docling chunk conversion failed: {chunk_payload}")
+
+        document = chunk_payload.get("document", {}) or {}
+        md_content = str(document.get("md_content") or "").strip()
+        if not md_content:
+            raise RuntimeError(f"Docling chunk returned no markdown content: {chunk_payload}")
+        md_chunks.append(md_content)
+
+        try:
+            total_processing_time += float(chunk_payload.get("processing_time") or 0.0)
+        except (TypeError, ValueError):
+            pass
+
+        chunk_errors = chunk_payload.get("errors") or []
+        if isinstance(chunk_errors, list):
+            aggregated_errors.extend(chunk_errors)
+
+    merged_markdown = "\n\n".join(chunk.strip() for chunk in md_chunks if chunk.strip())
+    return {
+        "status": "success",
+        "processing_time": total_processing_time,
+        "errors": aggregated_errors,
+        "document": {
+            "md_content": merged_markdown,
+            "pages": [{"page_range": [start, end]} for start, end in page_ranges],
+            "elements": [],
+        },
+    }
+
+
 def convert_pdf_with_qwen(
     pdf_path: str,
     output_path: str,
@@ -588,57 +704,74 @@ def convert_pdf_with_qwen(
                 "Local Docling serializer extras are unavailable, but description mode will proceed via the Docling service and Qwen image description generation."
             )
         
-        # Settings - focus on pipeline options for richer structured data
+        pages_per_chunk = int(os.getenv("DOCLING_CHUNK_PAGES", str(DEFAULT_DOCLING_CHUNK_PAGES)))
+        connect_timeout = 10
+        read_timeout = int(os.getenv("DOCLING_CHUNK_READ_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS)))
+
+        # Align server-side processing with the current image strategy.
+        # Large PDFs were hanging partly because we were asking Docling to do a single,
+        # synchronous, image-heavy conversion for the entire document.
+        image_export_mode = "embedded" if image_mode in {"embedded", "referenced", "descriptions"} else "placeholder"
+
+        # Settings - focus on accurate extraction while avoiding redundant heavy image/VLM work.
+        # Root-cause note: Docling Serve 1.12.0 returns a server-side 404
+        # ("Task result not found") for synchronous chunked requests when
+        # formula enrichment is enabled, so keep that disabled here.
         options = {
-            "to_formats": ["markdown"],  # Request markdown format
-            "pipeline_type": "standard",
+            "to_formats": ["md"],
             "do_ocr": True,
-            "ocr_engine": "auto",
             "pdf_backend": "dlparse_v4",
-            "table_mode": "accurate",  # Use accurate mode for better table extraction
-            "do_formula_enrichment": True,
-            "do_picture_description": True,
+            "table_mode": "accurate",
+            "do_table_structure": True,
+            "do_formula_enrichment": False,
+            "do_picture_description": False,
             "do_code_enrichment": False,
             "do_picture_classification": False,
-            # Request structured data for better post-processing
-            "generate_page_images": False,
-            "generate_picture_images": True,
+            "abort_on_error": True,
+            "image_export_mode": image_export_mode,
+            "include_images": image_export_mode == "embedded",
+            "images_scale": 1.0,
         }
 
-        # Send PDF to Docling
-        with open(pdf_file, "rb") as f:
-            files = {"files": f}
-            data = {"options": json.dumps(options)}
-            try:
-                response = requests.post(
-                    f"{docling_url}/v1/convert/file",
-                    files=files,
-                    data=data,
-                    timeout=900  # 15 minute timeout for large PDFs
-                )
-                response.raise_for_status()
-            except requests.exceptions.ConnectionError:
-                print(f"❌ Error: Cannot connect to Docling at {docling_url}")
-                print("   Make sure docling-serve is running: docker ps | grep docling-serve")
-                sys.exit(1)
-            except requests.exceptions.Timeout:
-                print(f"❌ Error: Timeout converting PDF (took > 15 min). Try with smaller PDF.")
-                sys.exit(1)
-            except Exception as e:
-                print(f"❌ Error during conversion: {e}")
-                sys.exit(1)
-
-        # Parse response
         try:
-            result = response.json()
-        except json.JSONDecodeError:
-            print(f"❌ Error: Invalid response from Docling")
-            print(f"   Status: {response.status_code}")
-            print(f"   Response: {response.text[:500]}")
+            # Use bounded synchronous page-range chunks so large PDFs do not hang on a
+            # single giant response body.
+            result = _convert_pdf_with_docling_sync_chunks(
+                pdf_path=str(pdf_file),
+                docling_url=docling_url,
+                options=options,
+                pages_per_chunk=pages_per_chunk,
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
+            )
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Cannot connect to Docling at {docling_url}: {e}"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            print(f"❌ Error: {error_msg}")
+            print("   Make sure docling-serve is running: docker ps | grep docling-serve")
+            sys.exit(1)
+        except requests.exceptions.Timeout as e:
+            error_msg = f"Timeout converting PDF with chunked processing: {e}"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            print(f"❌ Error: {error_msg}")
+            print("   This may indicate the Docling service is overloaded or stuck.")
+            sys.exit(1)
+        except requests.exceptions.ChunkedEncodingError as e:
+            error_msg = f"Docling response was incomplete or corrupted: {e}"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            print(f"❌ Error: {error_msg}")
+            print("   This may indicate a network issue or Docling service problem.")
+            sys.exit(1)
+        except Exception as e:
+            error_msg = f"Error during PDF conversion: {type(e).__name__}: {e}"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            print(f"❌ Error: {error_msg}")
             sys.exit(1)
 
         # Check for conversion errors
         if result.get("status") != "success":
+            error_msg = f"Docling conversion failed: {result.get('errors', 'Unknown error')}"
+            print(f"❌ {error_msg}", file=sys.stderr)
             print(f"❌ Conversion failed: {result.get('errors', 'Unknown error')}")
             sys.exit(1)
 
@@ -647,7 +780,9 @@ def convert_pdf_with_qwen(
         md_content = document.get("md_content", "")
 
         if not md_content:
-            print("❌ Error: No markdown content in response")
+            error_msg = "No markdown content in Docling response"
+            print(f"❌ Error: {error_msg}", file=sys.stderr)
+            print(f"❌ Error: {error_msg}")
             sys.exit(1)
         
         # Instrumentation: Log document structure for debugging
