@@ -57,7 +57,7 @@ export const STATUS_CONFIG: Record<
     label: "Optimizing",
     badgeClass: "text-purple-400 bg-purple-400/10 border-purple-400/30",
     icon: <Loader2 className="h-3 w-3 animate-spin" />,
-    action: "qa-gates",
+    action: "optimizing",
     actionLabel: "Track Optimization",
   },
   "optimization-complete": {
@@ -106,5 +106,12 @@ export const STATUS_CONFIG: Record<
     badgeClass: "text-zinc-400 bg-zinc-400/10 border-zinc-400/30",
     icon: <AlertCircle className="h-3 w-3" />,
     actionLabel: "Awaiting Validation",
+  },
+  failed: {
+    label: "Failed",
+    badgeClass: "text-red-400 bg-red-400/10 border-red-400/30",
+    icon: <XCircle className="h-3 w-3" />,
+    action: "optimizing",
+    actionLabel: "View Failure",
   },
 };
