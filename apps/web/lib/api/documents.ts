@@ -45,18 +45,41 @@ export async function getDocuments(filters?: {
     title: string;
     version: string;
     system: string;
-    documentType: string;
+    documentType?: string;
+    document_type?: string;
     status: string;
-    uploadedBy: string;
-    uploadedAt: string | null;
+    uploadedBy?: string;
+    uploaded_by?: string;
+    uploadedAt?: string | null;
+    uploaded_at?: string | null;
     notes?: string;
+
     totalPages?: number | null;
+    total_pages?: number | null;
     totalSections?: number | null;
+    total_sections?: number | null;
     reviewProgress?: number | null;
+    review_progress?: number | null;
     qaScore?: number | null;
+    qa_score?: number | null;
     approvedBy?: string | null;
+    approved_by?: string | null;
     approvedAt?: string | null;
+    approved_at?: string | null;
   }
+
+  const toSafeNumber = (value: number | string | null | undefined): number => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return 0;
+  };
 
   const rows = await fastapiFetch<FastAPIDocument[]>('/api/v1/documents');
 
@@ -65,16 +88,16 @@ export async function getDocuments(filters?: {
     title: row.title,
     version: row.version,
     system: row.system,
-    documentType: row.documentType,
+    documentType: row.documentType ?? row.document_type ?? 'PDF',
     status: row.status as Document['status'],
-    totalPages: row.totalPages ?? 0,
-    totalSections: row.totalSections ?? 0,
-    reviewProgress: row.reviewProgress ?? 0,
-    qaScore: row.qaScore ?? undefined,
-    uploadedBy: row.uploadedBy,
-    uploadedAt: row.uploadedAt ?? new Date().toISOString(),
-    approvedBy: row.approvedBy ?? undefined,
-    approvedAt: row.approvedAt ?? undefined,
+    totalPages: toSafeNumber(row.totalPages ?? row.total_pages),
+    totalSections: toSafeNumber(row.totalSections ?? row.total_sections),
+    reviewProgress: toSafeNumber(row.reviewProgress ?? row.review_progress),
+    qaScore: row.qaScore ?? row.qa_score ?? undefined,
+    uploadedBy: row.uploadedBy ?? row.uploaded_by ?? '—',
+    uploadedAt: row.uploadedAt ?? row.uploaded_at ?? new Date().toISOString(),
+    approvedBy: row.approvedBy ?? row.approved_by ?? undefined,
+    approvedAt: row.approvedAt ?? row.approved_at ?? undefined,
     notes: row.notes,
   }));
 

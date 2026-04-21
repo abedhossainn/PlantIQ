@@ -81,6 +81,10 @@ function classifyLine(line: LogLine): LineKind {
   return "detail";
 }
 
+function stripStageNumberingPrefix(message: string): string {
+  return message.replace(/^Stage\s+\d+[a-z]?:\s*/i, "").trim();
+}
+
 // ---------------------------------------------------------------------------
 // Log entry component
 // ---------------------------------------------------------------------------
@@ -310,14 +314,14 @@ export function groupOptimizationLines(
     const stageMatch = /^Stage \d+[a-z]?:\s*(.+)$/i.exec(msg);
     if (stageMatch) {
       if (isOpen) flushStep(curStatus === "failed" ? "failed" : "success", line.timestamp);
-      openStep(`step-${stepIdx++}`, stageMatch[1].trim(), line.timestamp);
+      openStep(`step-${stepIdx++}`, stripStageNumberingPrefix(stageMatch[1].trim()), line.timestamp);
       continue;
     }
 
     // 2. Legacy `🤖`-prefixed stage marker.
     if (kind === "stage") {
       if (isOpen) flushStep(curStatus === "failed" ? "failed" : "success", line.timestamp);
-      openStep(`step-${stepIdx++}`, stripPrefix(msg), line.timestamp);
+      openStep(`step-${stepIdx++}`, stripStageNumberingPrefix(stripPrefix(msg)), line.timestamp);
       continue;
     }
 
