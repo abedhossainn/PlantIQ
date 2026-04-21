@@ -160,6 +160,10 @@ function DocumentsContent() {
   function handleAction(doc: Document) {
     const cfg = STATUS_CONFIG[doc.status];
     if (cfg?.action) {
+      if (cfg.action === "ingestion") {
+        router.push(`/admin/documents/upload?documentId=${encodeURIComponent(doc.id)}`);
+        return;
+      }
       router.push(`/admin/documents/${doc.id}/${cfg.action}`);
     }
   }

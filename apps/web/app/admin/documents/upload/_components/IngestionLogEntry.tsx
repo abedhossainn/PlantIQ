@@ -41,10 +41,16 @@ const STAGE_LABEL: Record<string, string> = {
   monitoring: "monitor",
 };
 
+function stripStageNumberingPrefix(message: string): string {
+  return message.replace(/^Stage\s+\d+[a-z]?:\s*/i, "").trim();
+}
+
 export function toLogLine(event: IngestionSSEEvent): PipelineLogLine {
   const stage = STAGE_LABEL[event.stage] ?? event.stage;
   const ts = event.timestamp;
   switch (event.type) {
+    case "ping":
+      return { timestamp: ts, level: "INFO", category: "progress", stage, message: event.message || "Waiting for runner output..." };
     case "job.accepted":
       return { timestamp: ts, level: "INFO", category: "init", stage, message: event.message || "Pipeline job accepted" };
     case "progress": {
@@ -179,7 +185,7 @@ export function groupIngestionLines(lines: PipelineLogLine[]): PipelineStep[] {
       }
       case "step-start": {
         if (isOpen) closeStep("success", line.timestamp);
-        openStep(`step-${stepIdx++}`, line.message, line.timestamp);
+        openStep(`step-${stepIdx++}`, stripStageNumberingPrefix(line.message), line.timestamp);
         break;
       }
       case "progress": {

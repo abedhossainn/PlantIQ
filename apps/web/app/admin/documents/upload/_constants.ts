@@ -54,5 +54,8 @@ export function toUIStage(backendStage: string): string {
 // Upload validation limits
 // ---------------------------------------------------------------------------
 
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
+// Keep a small multipart overhead headroom below Cloudflare's 100MB edge limit.
+// A raw 100MB file plus multipart boundaries can exceed the edge cap and fail
+// in-browser with opaque HTTP/2 protocol errors.
+export const MAX_UPLOAD_BYTES = 95 * 1024 * 1024; // 95 MB safe payload
 export const ALLOWED_UPLOAD_EXTENSION = ".pdf";

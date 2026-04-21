@@ -18,6 +18,27 @@ export const STATUS_CONFIG: Record<
   string,
   { label: string; badgeClass: string; icon: React.ReactNode; action?: string; actionLabel?: string }
 > = {
+  pending: {
+    label: "Queued",
+    badgeClass: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    icon: <Clock className="h-3 w-3" />,
+    action: "ingestion",
+    actionLabel: "Track Ingestion",
+  },
+  uploading: {
+    label: "Uploading",
+    badgeClass: "text-sky-400 bg-sky-400/10 border-sky-400/30",
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    action: "ingestion",
+    actionLabel: "Track Ingestion",
+  },
+  extracting: {
+    label: "Extracting",
+    badgeClass: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    icon: <Loader2 className="h-3 w-3 animate-spin" />,
+    action: "ingestion",
+    actionLabel: "Track Ingestion",
+  },
   approved: {
     label: "Approved",
     badgeClass: "text-green-400 bg-green-400/10 border-green-400/30",
@@ -99,13 +120,15 @@ export const STATUS_CONFIG: Record<
     label: "Validating",
     badgeClass: "text-purple-400 bg-purple-400/10 border-purple-400/30",
     icon: <Loader2 className="h-3 w-3 animate-spin" />,
-    actionLabel: "Processing…",
+    action: "ingestion",
+    actionLabel: "Track Ingestion",
   },
   uploaded: {
     label: "Uploaded",
     badgeClass: "text-zinc-400 bg-zinc-400/10 border-zinc-400/30",
     icon: <AlertCircle className="h-3 w-3" />,
-    actionLabel: "Awaiting Validation",
+    action: "ingestion",
+    actionLabel: "Track Ingestion",
   },
   failed: {
     label: "Failed",

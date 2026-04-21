@@ -5,6 +5,7 @@
  * Pure presentational component — all state lives in the parent UploadPage.
  */
 
+import { useState } from "react";
 import { FileText, Upload } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
@@ -29,6 +30,7 @@ interface UploadFormProps {
   docType: string;
   canSubmit: boolean;
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onFileDrop: (file: File) => void;
   onTitleChange: (v: string) => void;
   onVersionChange: (v: string) => void;
   onSystemChange: (v: string) => void;
@@ -42,8 +44,39 @@ interface UploadFormProps {
 
 export function UploadForm({
   fileRef, selectedFile, title, version, system, docType, canSubmit,
-  onFileChange, onTitleChange, onVersionChange, onSystemChange, onDocTypeChange, onSubmit,
+  onFileChange, onFileDrop, onTitleChange, onVersionChange, onSystemChange, onDocTypeChange, onSubmit,
 }: UploadFormProps) {
+  const [isDragging, setIsDragging] = useState(false);
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  }
+
+  function handleDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only clear when leaving the drop zone itself, not a child element
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) onFileDrop(file);
+  }
+
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <Card className="overflow-hidden border-border">
@@ -56,7 +89,16 @@ export function UploadForm({
         <div className="p-6">
           <div
             className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border p-8 cursor-pointer hover:border-primary/60 hover:bg-primary/5 transition-colors"
+            className={`flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-8 cursor-pointer transition-colors ${
+              isDragging
+                ? "border-primary bg-primary/10"
+                : "border-border hover:border-primary/60 hover:bg-primary/5"
+            }`}
             onClick={() => fileRef.current?.click()}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
           >
             {selectedFile ? (
               <>

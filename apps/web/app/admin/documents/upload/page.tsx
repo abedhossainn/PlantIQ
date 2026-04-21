@@ -15,8 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, FileText } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ApiError, getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
 import {
   PIPELINE_STAGES,
   MAX_UPLOAD_BYTES,
@@ -32,6 +32,8 @@ import { PipelineJobLog } from "@/components/shared/PipelineJobLog";
 // ---------------------------------------------------------------------------
 
 type StageStatus = "pending" | "active" | "complete" | "error";
+
+const MAX_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024));
 
 function isReviewReadyStatus(status: PipelineStatus): boolean {
   return [
@@ -49,13 +51,37 @@ function isReviewReadyStatus(status: PipelineStatus): boolean {
   ].includes(status);
 }
 
+function toUploadErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 413) {
+      return `Upload rejected by the edge proxy (413 Payload Too Large). Keep files under ${MAX_UPLOAD_MB}MB.`;
+    }
+    if (error.status === 0) {
+      return "Network/proxy upload failure (often surfaced as ERR_HTTP2_PROTOCOL_ERROR). Retry with a smaller file or check tunnel/proxy health.";
+    }
+    if (typeof error.data === "string" && error.data.trim()) {
+      return error.data;
+    }
+    return error.message;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Upload failed";
+}
+
 // ---------------------------------------------------------------------------
 // Upload Page
 // ---------------------------------------------------------------------------
 
 export default function UploadPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const fileRef = useRef<HTMLInputElement>(null);
+  const resumeDocumentId = searchParams?.get("documentId")?.trim() || null;
+  const isResumeMode = Boolean(resumeDocumentId);
 
   // Form state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -145,6 +171,89 @@ export default function UploadPage() {
   }, []);
 
   useEffect(() => {
+    if (!resumeDocumentId) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function resumeMonitoring(targetDocumentId: string) {
+      setUploading(true);
+      setUploadError(null);
+      setUploadWarning(null);
+      setDone(false);
+      setDocumentId(targetDocumentId);
+      pollingCancelledRef.current = false;
+      sawTerminalEventRef.current = false;
+
+      const init: Record<string, StageStatus> = {};
+      PIPELINE_STAGES.forEach((s) => (init[s.id] = "pending"));
+      setStageStatuses(init);
+
+      try {
+        const latest = await getPipelineStatus(targetDocumentId);
+        if (cancelled) {
+          return;
+        }
+
+        setProgress(latest.progress);
+        setStatusMessage(latest.message ?? "Resuming ingestion monitor...");
+
+        if (latest.status === "failed") {
+          setUploadError(latest.error || "Pipeline failed before completion.");
+          setUploading(false);
+          return;
+        }
+
+        if (isReviewReadyStatus(latest.status)) {
+          setDone(true);
+          setUploading(false);
+          setStageStatuses(() => {
+            const allComplete: Record<string, StageStatus> = {};
+            PIPELINE_STAGES.forEach((s) => { allComplete[s.id] = "complete"; });
+            return allComplete;
+          });
+          return;
+        }
+
+        const abortController = new AbortController();
+        abortControllerRef.current = abortController;
+
+        try {
+          for await (const event of streamIngestionEvents(targetDocumentId, abortController.signal)) {
+            if (abortController.signal.aborted || cancelled) break;
+            handleIngestionSSEEvent(event);
+          }
+        } catch (streamErr) {
+          if (!abortController.signal.aborted && !cancelled) {
+            setUploadError(streamErr instanceof Error ? streamErr.message : "SSE stream error");
+            setUploading(false);
+          }
+        } finally {
+          abortControllerRef.current = null;
+          if (!abortController.signal.aborted && !sawTerminalEventRef.current && !cancelled) {
+            await monitorPipelineUntilTerminal(targetDocumentId);
+          }
+        }
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        setUploadError(err instanceof Error ? err.message : "Failed to resume pipeline monitoring");
+        setUploading(false);
+      }
+    }
+
+    void resumeMonitoring(resumeDocumentId);
+
+    return () => {
+      cancelled = true;
+      pollingCancelledRef.current = true;
+      abortControllerRef.current?.abort();
+    };
+  }, [resumeDocumentId]);
+
+  useEffect(() => {
     if (!logScrolledUp && terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
@@ -167,16 +276,36 @@ export default function UploadPage() {
       return;
     }
     if (f && f.size > MAX_UPLOAD_BYTES) {
-      setUploadError("File size exceeds maximum of 100MB");
+      setUploadError(`File size exceeds maximum of ${MAX_UPLOAD_MB}MB`);
+      setSelectedFile(null);
+    }
+  }
+
+  function handleFileDrop(f: File) {
+    setSelectedFile(f);
+    setUploadError(null);
+    if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
+    if (!f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
+      setUploadError("Only PDF files are supported");
+      setSelectedFile(null);
+      return;
+    }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      setUploadError(`File size exceeds maximum of ${MAX_UPLOAD_MB}MB`);
       setSelectedFile(null);
     }
   }
 
   function handleIngestionSSEEvent(event: IngestionSSEEvent) {
-    setLogLines((prev) => [...prev, toLogLine(event)]);
+    if (event.type !== "ping") {
+      setLogLines((prev) => [...prev, toLogLine(event)]);
+    }
     const uiStage = toUIStage(event.stage);
 
     switch (event.type) {
+      case "ping":
+        setStatusMessage(event.message || "Waiting for runner output...");
+        break;
       case "job.accepted":
         setStatusMessage(event.message);
         setProgress(event.progress);
@@ -276,7 +405,7 @@ export default function UploadPage() {
         }
       }
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed");
+      setUploadError(toUploadErrorMessage(err));
       setUploading(false);
     }
   }
@@ -316,7 +445,7 @@ export default function UploadPage() {
           <div className="p-6 max-w-7xl mx-auto">
 
             {/* Upload form (pre-processing) */}
-            {!uploading && !done && !uploadError && (
+            {!isResumeMode && !uploading && !done && !uploadError && (
               <UploadForm
                 fileRef={fileRef}
                 selectedFile={selectedFile}
@@ -326,6 +455,7 @@ export default function UploadPage() {
                 docType={docType}
                 canSubmit={!!canSubmit}
                 onFileChange={handleFileChange}
+                onFileDrop={handleFileDrop}
                 onTitleChange={setTitle}
                 onVersionChange={setVersion}
                 onSystemChange={setSystem}
@@ -451,7 +581,19 @@ export default function UploadPage() {
                     </div>
                   </div>
                   <div className="flex gap-3">
-                    <Button variant="outline" onClick={handleReset} className="flex-1">Try Again</Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (isResumeMode) {
+                          router.replace("/admin/documents/upload");
+                          return;
+                        }
+                        handleReset();
+                      }}
+                      className="flex-1"
+                    >
+                      Try Again
+                    </Button>
                     <Button variant="outline" onClick={() => router.push("/admin/documents")} className="flex-1">Return to Dashboard</Button>
                   </div>
                 </div>
