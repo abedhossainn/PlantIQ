@@ -284,6 +284,11 @@ class OptimizationLogManager:
         return buffer, q
 
     @classmethod
+    def is_active(cls, document_id: str) -> bool:
+        """Return True when optimization is currently active for a document."""
+        return document_id in cls._buffers and cls._done.get(document_id) is False
+
+    @classmethod
     def unsubscribe(cls, document_id: str, q: asyncio.Queue) -> None:
         queues = cls._queues.get(document_id, [])
         try:

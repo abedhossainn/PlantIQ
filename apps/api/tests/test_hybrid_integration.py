@@ -252,6 +252,7 @@ class FakeAsyncSession:
                     "title": document.get("title"),
                     "file_path": document.get("file_path"),
                     "status": document.get("status"),
+                    "updated_at": document.get("updated_at"),
                 }
             )
 
@@ -1430,6 +1431,106 @@ def test_list_documents_marks_stale_ingestion_without_live_process_as_failed(
     assert stale_row["status"] == "failed"
     assert "stopped unexpectedly" in stale_row["notes"]
     assert fake_db.documents[stale_document_id]["status"] == "failed"
+
+
+def test_list_documents_marks_stale_optimizing_without_active_optimization_as_failed(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stale_document_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    stale_updated_at = now.replace(year=max(2000, now.year - 1))
+    fake_db.documents[stale_document_id] = {
+        "id": stale_document_id,
+        "title": "Stale Optimizing",
+        "version": "1.0",
+        "system": "Liquefaction",
+        "document_type": "Technical Standard",
+        "status": "optimizing",
+        "file_path": "/tmp/stale-opt.pdf",
+        "uploaded_by": str(TEST_USER_ID),
+        "notes": None,
+        "uploaded_at": stale_updated_at,
+        "created_at": stale_updated_at,
+        "updated_at": stale_updated_at,
+        "optimization_started_at": stale_updated_at,
+        "optimization_completed_at": None,
+        "optimization_error": None,
+    }
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_STALLED_GRACE_SECONDS", 1)
+    monkeypatch.setattr(PipelineService, "_job_ids_by_document", {})
+    monkeypatch.setattr(PipelineService, "_active_processes", {})
+    pipeline_api.OptimizationLogManager.clear_document(stale_document_id)
+
+    response = client.get("/api/v1/documents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    stale_row = next(item for item in payload if item["id"] == stale_document_id)
+    assert stale_row["status"] == "failed"
+    assert "optimization appears to have stopped unexpectedly" in stale_row["notes"].lower()
+    assert fake_db.documents[stale_document_id]["status"] == "failed"
+
+
+def test_list_documents_reconciles_stale_optimizing_to_optimization_complete_when_artifacts_exist(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    stale_updated_at = now.replace(year=max(2000, now.year - 1))
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Reconcilable Optimizing",
+        "version": "1.0",
+        "system": "Liquefaction",
+        "document_type": "Technical Standard",
+        "status": "optimizing",
+        "file_path": "/tmp/recon-opt.pdf",
+        "uploaded_by": str(TEST_USER_ID),
+        "notes": None,
+        "uploaded_at": stale_updated_at,
+        "created_at": stale_updated_at,
+        "updated_at": stale_updated_at,
+        "optimization_started_at": stale_updated_at,
+        "optimization_completed_at": None,
+        "optimization_error": "previous timeout",
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    optimized_path = work_dir / "sample_document_rag_optimized.json"
+    _write_json(
+        optimized_path,
+        {
+            "document_name": "sample_document",
+            "chunks": [
+                {
+                    "heading": "What is LNG?",
+                    "content": "## What is LNG?\n\nLNG is a cryogenic fuel.",
+                }
+            ],
+        },
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_STALLED_GRACE_SECONDS", 1)
+    monkeypatch.setattr(PipelineService, "_job_ids_by_document", {})
+    monkeypatch.setattr(PipelineService, "_active_processes", {})
+    pipeline_api.OptimizationLogManager.clear_document(document_id)
+
+    response = client.get("/api/v1/documents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    row = next(item for item in payload if item["id"] == document_id)
+    assert row["status"] == "optimization-complete"
+    assert fake_db.documents[document_id]["status"] == "optimization-complete"
+    assert fake_db.documents[document_id]["optimization_error"] is None
 
 
 def test_document_pages_endpoint_generates_page_review_units_from_validation(
@@ -3249,6 +3350,45 @@ def test_delete_document_blocks_active_pipeline_statuses(
 
     assert response.status_code == 409
     assert "still running" in response.json()["detail"]
+
+
+def test_delete_document_allows_stale_optimizing_status_without_active_optimization(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    stale_updated_at = datetime.now(timezone.utc).replace(year=max(2000, datetime.now(timezone.utc).year - 1))
+    pdf_path = tmp_path / f"{document_id}_stale_optimization.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 stale optimization")
+
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": "Stale Optimizing Doc",
+        "status": "optimizing",
+        "file_path": str(pdf_path),
+        "created_at": stale_updated_at,
+        "updated_at": stale_updated_at,
+        "uploaded_at": stale_updated_at,
+        "notes": None,
+    }
+
+    async def fake_delete_document_chunks(_doc_id: str):
+        return True
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_api.settings, "ARTIFACTS_DIR", str(tmp_path / "legacy_artifacts"))
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_STALLED_GRACE_SECONDS", 1)
+    monkeypatch.setattr(pipeline_api.QdrantService, "delete_document_chunks", fake_delete_document_chunks)
+    monkeypatch.setattr(PipelineService, "_job_ids_by_document", {})
+    monkeypatch.setattr(PipelineService, "_active_processes", {})
+    pipeline_api.OptimizationLogManager.clear_document(document_id)
+
+    response = client.delete(f"/api/v1/documents/{document_id}")
+
+    assert response.status_code == 200
+    assert document_id not in fake_db.documents
 
 
 def test_pipeline_websocket_authenticates_and_replies_to_ping(monkeypatch: pytest.MonkeyPatch):
