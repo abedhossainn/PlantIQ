@@ -4,7 +4,7 @@ import { consumeStreamingResponse, streamChatQuery, submitChatQuery } from '../l
 import type { Citation as ApiCitation } from '../lib/api/chat';
 import { getActiveConversation, getConversations, updateConversationPin, updateConversationScope, updateConversationTitle } from '../lib/api/conversations';
 import { fastapiFetch, from, getFastApiBaseUrl, postgrestFetch } from '../lib/api/client';
-import { deleteDocument } from '../lib/api/documents';
+import { deleteDocument, getDocuments } from '../lib/api/documents';
 import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus } from '../lib/document-status';
 import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
 import { getDocumentOptimizedChunks, updateOptimizedChunk } from '../lib/api/optimized-review';
@@ -753,6 +753,62 @@ describe('frontend hybrid API integration contracts', () => {
     expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
   });
 
+  it('maps snake_case document counters into frontend totalPages and totalSections', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'doc-1',
+          title: 'COMMON Module 4 Electrical Distribution System',
+          version: '1',
+          system: 'Electrical',
+          document_type: 'Technical Manual',
+          status: 'final-approved',
+          uploaded_by: 'admin',
+          uploaded_at: '2026-04-21T00:00:00Z',
+          total_pages: 235,
+          total_sections: 51,
+          review_progress: 100,
+          qa_score: 99,
+        },
+      ])
+    );
+
+    const docs = await getDocuments();
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0].totalPages).toBe(235);
+    expect(docs[0].totalSections).toBe(51);
+    expect(docs[0].documentType).toBe('Technical Manual');
+  });
+
+  it('maps camelCase document counters into frontend totalPages and totalSections', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: 'doc-2',
+          title: 'COMMON Module 3 Characteristics of LNG',
+          version: '1',
+          system: 'Mechanical',
+          documentType: 'Technical Standard',
+          status: 'final-approved',
+          uploadedBy: 'admin',
+          uploadedAt: '2026-04-04T00:00:00Z',
+          totalPages: 30,
+          totalSections: 12,
+          reviewProgress: 100,
+          qaScore: 100,
+        },
+      ])
+    );
+
+    const docs = await getDocuments();
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0].totalPages).toBe(30);
+    expect(docs[0].totalSections).toBe(12);
+    expect(docs[0].documentType).toBe('Technical Standard');
+  });
+
   it('supports direct PostgREST fetch prefer headers', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse([]));
 
@@ -842,8 +898,26 @@ describe('frontend hybrid API integration contracts', () => {
     }
 
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-auth/events');
+    expect(url).toBe('http://localhost:8000/api/v1/documents/doc-auth/events/');
     expect((options.headers as Record<string, string>).Authorization).toBe('Bearer test-token');
+  });
+
+  it('parses ingestion SSE events delimited with CRLF separators', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: progress\r\ndata: {"event":"progress","document_id":"doc-crlf","job_id":"job-1","stage":"extraction","progress":33,"message":"Extracting"}\r\n\r\n',
+        'event: complete\r\ndata: {"event":"complete","document_id":"doc-crlf","job_id":"job-1","stage":"completed","progress":100,"message":"Done"}\r\n\r\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-crlf')) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'progress', progress: 33, stage: 'extraction' });
+    expect(events[1]).toMatchObject({ type: 'complete', progress: 100, stage: 'completed' });
   });
 
   it('parses ingestion SSE blocks split across chunk boundaries', async () => {
@@ -862,6 +936,24 @@ describe('frontend hybrid API integration contracts', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ type: 'progress', progress: 40, stage: 'extraction' });
     expect(events[1]).toMatchObject({ type: 'complete', progress: 100, stage: 'completed' });
+  });
+
+  it('parses ingestion SSE ping heartbeat events', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: ping\ndata: {"event":"ping","document_id":"doc-ping","stage":"monitoring","progress":56,"message":"Waiting for runner output..."}\n\n',
+        'event: complete\ndata: {"event":"complete","document_id":"doc-ping","job_id":"job-1","stage":"completed","progress":100,"message":"Done"}\n\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamIngestionEvents('doc-ping')) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'ping', stage: 'heartbeat', progress: 56 });
+    expect(events[1]).toMatchObject({ type: 'complete', progress: 100 });
   });
 
   it('treats optimization stream aborts during reader.read as normal shutdown', async () => {
@@ -886,6 +978,24 @@ describe('frontend hybrid API integration contracts', () => {
     expect(events).toEqual([]);
     expect(read).toHaveBeenCalledTimes(1);
     expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('parses optimization SSE events delimited with CRLF separators', async () => {
+    fetchMock.mockResolvedValueOnce(
+      sseResponse([
+        'event: log\r\ndata: {"event":"log","timestamp":"2026-04-21T00:00:00Z","level":"INFO","message":"Starting"}\r\n\r\n',
+        'event: done\r\ndata: {"event":"done","status":"optimization-complete"}\r\n\r\n',
+      ])
+    );
+
+    const events = [];
+    for await (const event of streamOptimizationLogs('doc-opt-crlf')) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'log', level: 'INFO', message: 'Starting' });
+    expect(events[1]).toMatchObject({ type: 'done', status: 'optimization-complete' });
   });
 
   // -------------------------------------------------------------------------
