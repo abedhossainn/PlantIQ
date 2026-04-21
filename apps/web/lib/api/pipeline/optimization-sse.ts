@@ -67,7 +67,7 @@ function parseOptimizationSSEBlock(block: string): OptimizationSSEEvent | null {
   let eventName = '';
   let dataLine = '';
 
-  for (const line of block.split('\n')) {
+  for (const line of block.split(/\r?\n/)) {
     if (line.startsWith('event: ')) {
       eventName = line.slice(7).trim();
     } else if (line.startsWith('data: ')) {
@@ -165,7 +165,7 @@ export async function* streamOptimizationLogs(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const streamUrl = `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs`;
+  const streamUrl = `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/optimization/logs/`;
 
   let response: Response;
   try {
@@ -218,10 +218,12 @@ export async function* streamOptimizationLogs(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.indexOf('\n\n');
-      while (separatorIndex !== -1) {
+      let separatorMatch = buffer.match(/\r?\n\r?\n/);
+      while (separatorMatch && separatorMatch.index !== undefined) {
+        const separatorIndex = separatorMatch.index;
+        const separatorLength = separatorMatch[0].length;
         const block = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + 2);
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
         if (block.trim()) {
           const event = parseOptimizationSSEBlock(block);
@@ -233,7 +235,7 @@ export async function* streamOptimizationLogs(
           }
         }
 
-        separatorIndex = buffer.indexOf('\n\n');
+        separatorMatch = buffer.match(/\r?\n\r?\n/);
       }
     }
 

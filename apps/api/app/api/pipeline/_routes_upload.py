@@ -161,6 +161,7 @@ async def get_document_status(
 
 
 @router.get("/documents/{document_id}/events")
+@router.get("/documents/{document_id}/events/")
 async def stream_document_events(
     document_id: UUID4,
     request: Request,
@@ -205,6 +206,7 @@ async def stream_document_events(
 
 
 @router.get("/documents/{document_id}/optimization/logs")
+@router.get("/documents/{document_id}/optimization/logs/")
 async def stream_optimization_logs(
     document_id: UUID4,
     request: Request,
@@ -241,31 +243,82 @@ async def stream_optimization_logs(
             yield encode_sse_event(latest_progress)
 
         if queue is None:
-            yield encode_sse_event(
-                {
-                    "event": "done",
-                    "status": OptimizationLogManager.get_final_status(doc_id) or "optimization-complete",
-                }
-            )
-            return
+            # The log manager has no active stream for this document.
+            # Before concluding the job is finished, check the live DB status.
+            # The SSE may have connected during the brief window between a
+            # previous run's close() and the new BackgroundTask's start().
+            status_info = await PipelineService.get_pipeline_status(document_id=doc_id, db=db)
+            current_status = status_info.status.value
 
-        status_info = await PipelineService.get_pipeline_status(document_id=doc_id, db=db)
-        current_status = status_info.status.value
-        if not buffer and current_status in {
-            PipelineStatus.OPTIMIZATION_COMPLETE.value,
-            PipelineStatus.FAILED.value,
-        }:
-            yield encode_sse_event(
-                {
-                    "event": "done",
-                    "status": (
-                        "failed"
-                        if current_status == PipelineStatus.FAILED.value
-                        else "optimization-complete"
-                    ),
-                }
-            )
-            return
+            if current_status in {
+                PipelineStatus.OPTIMIZING.value,
+                PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            }:
+                # Job is running or about to run — wait up to 30 s for
+                # OptimizationLogManager.start() to register the new run.
+                yield encode_sse_event(
+                    {"event": "ping", "document_id": doc_id, "timestamp": pipeline_timestamp()}
+                )
+                deadline = asyncio.get_event_loop().time() + 30.0
+                while asyncio.get_event_loop().time() < deadline:
+                    if await request.is_disconnected():
+                        return
+                    await asyncio.sleep(1.0)
+                    new_buffer, queue = OptimizationLogManager.subscribe(doc_id)
+                    if queue is not None:
+                        # Log manager is now active — replay new buffer entries
+                        # (skip any already yielded from the earlier snapshot).
+                        already_seen = len(buffer)
+                        for entry in new_buffer[already_seen:]:
+                            yield encode_sse_event({"event": "log", **entry})
+                        buffer = new_buffer
+                        break
+                else:
+                    # Timed out waiting for the job to register with the log manager.
+                    logger.warning(
+                        "Timed out waiting for OptimizationLogManager.start() for %s", doc_id
+                    )
+                    yield encode_sse_event({"event": "done", "status": "failed"})
+                    return
+
+                if queue is None:
+                    # Still no queue after the wait — treat as failure.
+                    yield encode_sse_event({"event": "done", "status": "failed"})
+                    return
+            else:
+                # Job is in a terminal state — send the final status.
+                yield encode_sse_event(
+                    {
+                        "event": "done",
+                        "status": OptimizationLogManager.get_final_status(doc_id)
+                        or (
+                            "failed"
+                            if current_status == PipelineStatus.FAILED.value
+                            else "optimization-complete"
+                        ),
+                    }
+                )
+                return
+        else:
+            # queue is not None — verify DB status for the empty-buffer+terminal edge case.
+            status_info = await PipelineService.get_pipeline_status(document_id=doc_id, db=db)
+            current_status = status_info.status.value
+            if not buffer and current_status in {
+                PipelineStatus.OPTIMIZATION_COMPLETE.value,
+                PipelineStatus.FAILED.value,
+            }:
+                OptimizationLogManager.unsubscribe(doc_id, queue)
+                yield encode_sse_event(
+                    {
+                        "event": "done",
+                        "status": (
+                            "failed"
+                            if current_status == PipelineStatus.FAILED.value
+                            else "optimization-complete"
+                        ),
+                    }
+                )
+                return
 
         try:
             while True:

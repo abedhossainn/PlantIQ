@@ -12,7 +12,8 @@ from pydantic import BaseModel
 
 SSE_MEDIA_TYPE = "text/event-stream"
 SSE_HEADERS = {
-    "Cache-Control": "no-cache",
+    "Cache-Control": "no-cache, no-transform",
+    "Pragma": "no-cache",
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
@@ -43,8 +44,17 @@ def encode_sse_event(payload: BaseModel | dict[str, Any], *, event_id: str | Non
 
 def create_sse_response(event_stream: AsyncIterator[str]) -> StreamingResponse:
     """Create a StreamingResponse configured for SSE delivery."""
+
+    async def _with_prelude() -> AsyncIterator[str]:
+        # Initial comment + padding helps certain proxies flush immediately
+        # instead of buffering the first small chunks until stream completion.
+        yield ": stream-open\n"
+        yield ":" + (" " * 2048) + "\n\n"
+        async for chunk in event_stream:
+            yield chunk
+
     return StreamingResponse(
-        event_stream,
+        _with_prelude(),
         media_type=SSE_MEDIA_TYPE,
         headers=SSE_HEADERS,
     )

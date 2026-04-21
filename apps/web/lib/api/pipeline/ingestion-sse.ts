@@ -70,12 +70,22 @@ export interface IngestionErrorSSEEvent {
   timestamp: string;
 }
 
+export interface IngestionPingSSEEvent {
+  type: 'ping';
+  document_id: string;
+  stage: 'heartbeat';
+  progress: number;
+  message: string;
+  timestamp: string;
+}
+
 export type IngestionSSEEvent =
   | IngestionJobAcceptedSSEEvent
   | IngestionProgressSSEEvent
   | IngestionStageCompleteSSEEvent
   | IngestionCompleteSSEEvent
-  | IngestionErrorSSEEvent;
+  | IngestionErrorSSEEvent
+  | IngestionPingSSEEvent;
 
 // ============================================================================
 // Ingestion SSE Streaming
@@ -94,7 +104,7 @@ function parseIngestionSSEBlock(
   let eventName = 'message';
   let dataLine = '';
 
-  for (const line of block.split('\n')) {
+  for (const line of block.split(/\r?\n/)) {
     if (line.startsWith('event: ')) {
       eventName = line.slice(7).trim();
     } else if (line.startsWith('data: ')) {
@@ -160,6 +170,15 @@ function parseIngestionSSEBlock(
         ...common,
         error: String(parsed.error ?? 'Unknown ingestion error'),
       };
+    case 'ping':
+      return {
+        type: 'ping',
+        document_id: String(parsed.document_id ?? documentId),
+        stage: 'heartbeat',
+        progress: Number(parsed.progress ?? 0),
+        message: String(parsed.message ?? 'Waiting for runner output...'),
+        timestamp: String(parsed.timestamp ?? new Date().toISOString()),
+      };
     default:
       return null;
   }
@@ -193,7 +212,7 @@ export async function* streamIngestionEvents(
   let response: Response;
   try {
     response = await fetch(
-      `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/events`,
+      `${getFastApiBaseUrl()}/api/v1/documents/${encodeURIComponent(documentId)}/events/`,
       { headers, signal }
     );
   } catch (err) {
@@ -262,10 +281,13 @@ export async function* streamIngestionEvents(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let separatorIndex = buffer.indexOf('\n\n');
-      while (separatorIndex !== -1) {
+      // Support both LF and CRLF SSE block delimiters.
+      let separatorMatch = buffer.match(/\r?\n\r?\n/);
+      while (separatorMatch && separatorMatch.index !== undefined) {
+        const separatorIndex = separatorMatch.index;
+        const separatorLength = separatorMatch[0].length;
         const block = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + 2);
+        buffer = buffer.slice(separatorIndex + separatorLength);
 
         if (block.trim()) {
           const event = parseIngestionSSEBlock(block, documentId);
@@ -277,7 +299,7 @@ export async function* streamIngestionEvents(
           }
         }
 
-        separatorIndex = buffer.indexOf('\n\n');
+        separatorMatch = buffer.match(/\r?\n\r?\n/);
       }
     }
 

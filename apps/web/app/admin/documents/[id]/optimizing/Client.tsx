@@ -98,7 +98,6 @@ export default function OptimizingClient({ docId }: { docId: string }) {
   // -------------------------------------------------------------------------
   // Document title + initial status check
   // -------------------------------------------------------------------------
-
   useEffect(() => {
     let cancelled = false;
     async function loadTitleAndInitialStatus() {
@@ -189,16 +188,27 @@ export default function OptimizingClient({ docId }: { docId: string }) {
   }, [startedAt, doneStatus]);
 
   // -------------------------------------------------------------------------
-  // SSE stream
+  // SSE stream — with automatic reconnection
+  //
+  // The backend optimization SSE generator may close early (e.g. before the
+  // BackgroundTask has called OptimizationLogManager.start, or if the proxy
+  // resets the connection). When the stream ends without a "done" event and
+  // the job is not yet terminal, reconnect after SSE_RECONNECT_DELAY_MS so
+  // logs begin flowing once the backend has registered the running job.
   // -------------------------------------------------------------------------
+
+  const SSE_RECONNECT_DELAY_MS = 3000;
 
   useEffect(() => {
     const controller = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let receivedDone = false;
 
     async function run() {
+      receivedDone = false;
       try {
         for await (const event of streamOptimizationLogs(docId, controller.signal)) {
-          if (controller.signal.aborted) break;
+          if (controller.signal.aborted) return;
 
           if (event.type === "log") {
             setLogLines((prev) => [
@@ -212,20 +222,36 @@ export default function OptimizingClient({ docId }: { docId: string }) {
           } else if (event.type === "progress") {
             setLatestProgress(event);
           } else if (event.type === "done") {
+            receivedDone = true;
             setDoneStatus(event.status);
             setOptStatus(
               event.status === "optimization-complete" ? "optimization-complete" : "failed"
             );
           }
         }
-      } catch (error) {
+      } catch {
         if (controller.signal.aborted) return;
-        throw error;
+      }
+
+      // Stream ended. If we received a proper "done" event or the job is known
+      // to be terminal, do not reconnect. Otherwise schedule a reconnect so we
+      // pick up events once the backend has registered the running job.
+      if (!controller.signal.aborted && !receivedDone) {
+        reconnectTimer = setTimeout(() => {
+          if (!controller.signal.aborted) {
+            void run();
+          }
+        }, SSE_RECONNECT_DELAY_MS);
       }
     }
 
     void run();
-    return () => { controller.abort(); };
+    return () => {
+      controller.abort();
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+      }
+    };
     // retryCount triggers stream restart on retry
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId, retryCount]);
@@ -431,7 +457,7 @@ export default function OptimizingClient({ docId }: { docId: string }) {
                   {docTitle || "Optimizing Document…"}
                 </h1>
                 <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-muted-foreground">Stage 10 · RAG Optimization</span>
+                  <span className="text-xs text-muted-foreground">RAG Optimization</span>
                   <span className="text-zinc-700 text-xs">·</span>
                   <StatusPill status={optStatus} />
                   {doneStatus === null && startedAt && (
@@ -574,7 +600,7 @@ export default function OptimizingClient({ docId }: { docId: string }) {
                 </div>
 
                 <div className="divide-y divide-border flex-1">
-                  {OPTIMIZATION_STAGES.map((stage, idx) => {
+                  {OPTIMIZATION_STAGES.map((stage) => {
                     const status = stageStatuses[stage.id] ?? "pending";
                     return (
                       <div
@@ -598,7 +624,7 @@ export default function OptimizingClient({ docId }: { docId: string }) {
                             <Loader2 className="h-5 w-5 text-primary animate-spin" />
                           ) : (
                             <span className="flex h-6 w-6 items-center justify-center rounded-full border border-border text-xs text-muted-foreground font-medium">
-                              {idx + 1}
+                              •
                             </span>
                           )}
                         </div>
