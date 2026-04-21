@@ -21,9 +21,19 @@ export function getFastApiBaseUrl(): string {
 }
 
 export function getFastApiWsBaseUrl(): string {
-   // Convert http(s) → ws(s) for WebSocket upgrade.
-   // Maintains hostname/port from getFastApiBaseUrl().
-  return getFastApiBaseUrl().replace(/^http/, 'ws');
+  const httpBase = getFastApiBaseUrl();
+  if (httpBase.startsWith('/')) {
+    // Relative path (proxy mode) — build absolute ws URL from current origin
+    // so the browser WebSocket constructor receives a valid absolute URL.
+    if (typeof window !== 'undefined') {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}${httpBase}`;
+    }
+    // SSR fallback — WebSockets don't run server-side; return as-is.
+    return httpBase;
+  }
+  // Absolute URL: convert http(s) → ws(s).
+  return httpBase.replace(/^http/, 'ws');
 }
 
 export class ApiError extends Error {

@@ -53,7 +53,7 @@ GROUP BY
 
 GRANT SELECT ON conversation_summaries TO plantig_user, plantig_reviewer, plantig_admin;
 
-ALTER VIEW conversation_summaries SET (security_barrier = true);
+ALTER VIEW conversation_summaries SET (security_barrier = true, security_invoker = true);
 
 -- ============================================================================
 -- END OF MIGRATION

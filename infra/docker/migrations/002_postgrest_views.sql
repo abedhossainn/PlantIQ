@@ -251,7 +251,7 @@ GRANT EXECUTE ON FUNCTION get_user_stats(UUID) TO plantig_user, plantig_reviewer
 -- Views inherit RLS from base tables, but we enable RLS explicitly for clarity
 ALTER VIEW document_summaries SET (security_barrier = true);
 ALTER VIEW section_summaries SET (security_barrier = true);
-ALTER VIEW conversation_summaries SET (security_barrier = true);
+ALTER VIEW conversation_summaries SET (security_barrier = true, security_invoker = true);
 ALTER VIEW bookmark_details SET (security_barrier = true);
 
 -- ============================================================================

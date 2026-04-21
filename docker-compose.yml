@@ -89,10 +89,12 @@ services:
     ports:
       - "3000:3000"
     environment:
-      # Local development: always use local backend to avoid accidental tunnel/CORS drift.
-      # If remote API usage is needed, set these directly in compose for that session.
-      - NEXT_PUBLIC_API_URL=http://localhost:8001
-      - NEXT_PUBLIC_FASTAPI_URL=http://localhost:8001
+      # Relative path proxied server-side by Next.js → BACKEND_INTERNAL_URL.
+      # Works on localhost:3000 and any Cloudflare tunnel origin without change.
+      - NEXT_PUBLIC_API_URL=/PlantIQ/api/backend
+      - NEXT_PUBLIC_FASTAPI_URL=/PlantIQ/api/backend
+      # Server-side proxy target (Docker internal network, never sent to browser).
+      - BACKEND_INTERNAL_URL=http://backend:8000
       # PostgREST: served via Next.js server-side proxy (/PlantIQ/api/postgrest/)
       # so the browser never needs direct access to localhost:3001
       - NEXT_PUBLIC_POSTGREST_URL=/PlantIQ/api/postgrest
