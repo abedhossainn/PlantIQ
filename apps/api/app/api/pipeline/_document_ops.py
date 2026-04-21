@@ -38,6 +38,7 @@ from ._db_ops import (
     _set_document_status,
 )
 from ._filesystem import (
+    _candidate_work_roots,
     _find_document_workspace,
     _find_manifest_path,
     _find_review_workspace,
@@ -390,25 +391,37 @@ async def _approve_for_optimization(
 
 async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
     """Read pipeline artifact files to populate totalPages/totalSections/qaScore for docs with NULL metadata."""
-    import glob as _glob
     import json as _json
     from sqlalchemy import text as _text
 
-    root = Path(settings.PIPELINE_WORK_DIR)
     index: dict[str, dict] = {}
 
-    for m_path in _glob.glob(str(root / "*_manifest.json")):
+    def _iter_artifact_paths(pattern: str):
+        seen: set[Path] = set()
+        for root in _candidate_work_roots():
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob(pattern)):
+                if not path.is_file():
+                    continue
+                resolved = path.resolve(strict=False)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                yield path
+
+    for m_path in _iter_artifact_paths("*_manifest.json"):
         try:
-            data = _json.loads(Path(m_path).read_text())
+            data = _json.loads(m_path.read_text(encoding="utf-8"))
             name = data.get("document_name") or data.get("document", "")
             if name:
                 index.setdefault(name, {})["total_pages"] = data.get("pdf_page_count")
         except Exception:
             pass
 
-    for pr_path in _glob.glob(str(root / "*_pipeline_results.json")):
+    for pr_path in _iter_artifact_paths("*_pipeline_results.json"):
         try:
-            data = _json.loads(Path(pr_path).read_text())
+            data = _json.loads(pr_path.read_text(encoding="utf-8"))
             name = data.get("document", "")
             if name:
                 total_sections = (data.get("stages", {}).get("review_workspace") or {}).get("total_sections")
@@ -418,9 +431,9 @@ async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
             pass
 
     for qa_pattern in ("*_qa_report.json", "*_qa_pre_review.json"):
-        for qa_path in _glob.glob(str(root / qa_pattern)):
+        for qa_path in _iter_artifact_paths(qa_pattern):
             try:
-                data = _json.loads(Path(qa_path).read_text())
+                data = _json.loads(qa_path.read_text(encoding="utf-8"))
                 name = data.get("document_name") or data.get("document", "")
                 if name:
                     score = (data.get("metrics") or {}).get("overall_confidence_score")

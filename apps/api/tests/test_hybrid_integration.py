@@ -222,6 +222,12 @@ class FakeAsyncSession:
                     document["indexed_chunk_count"] = None
                 if "qdrant_collection = null" in sql:
                     document["qdrant_collection"] = None
+                if "tp" in params and document.get("total_pages") is None:
+                    document["total_pages"] = params["tp"]
+                if "ts" in params and document.get("total_sections") is None:
+                    document["total_sections"] = params["ts"]
+                if "qs" in params and document.get("qa_score") is None:
+                    document["qa_score"] = params["qs"]
             document["updated_at"] = datetime.now(timezone.utc)
             return FakeResult(None)
 
@@ -1531,6 +1537,87 @@ def test_list_documents_reconciles_stale_optimizing_to_optimization_complete_whe
     assert row["status"] == "optimization-complete"
     assert fake_db.documents[document_id]["status"] == "optimization-complete"
     assert fake_db.documents[document_id]["optimization_error"] is None
+
+
+def test_list_documents_enriches_metadata_from_nested_artifact_directories(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    document_title = "COMMON Module 4 Electrical Distribution System"
+    now = datetime.now(timezone.utc)
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "title": document_title,
+        "version": "1.0",
+        "system": "Electrical",
+        "document_type": "Technical Standard",
+        "status": "final-approved",
+        "file_path": "/tmp/common-module-4.pdf",
+        "uploaded_by": str(TEST_USER_ID),
+        "notes": None,
+        "uploaded_at": now,
+        "created_at": now,
+        "updated_at": now,
+        "total_pages": None,
+        "total_sections": None,
+        "review_progress": 100,
+        "qa_score": None,
+        "approved_by": TEST_USER_ID,
+        "approved_at": now,
+        "publication_status": "pending",
+        "published_at": None,
+        "publication_error": None,
+        "indexed_chunk_count": None,
+        "qdrant_collection": None,
+    }
+
+    nested_artifact_dir = tmp_path / document_id
+    nested_artifact_dir.mkdir(parents=True)
+    artifact_stem = f"{document_id}_{document_title}"
+    _write_json(
+        nested_artifact_dir / f"{artifact_stem}_manifest.json",
+        {
+            "document_name": document_title,
+            "pdf_page_count": 124,
+        },
+    )
+    _write_json(
+        nested_artifact_dir / f"{artifact_stem}_pipeline_results.json",
+        {
+            "document": document_title,
+            "stages": {
+                "review_workspace": {
+                    "total_sections": 51,
+                }
+            },
+        },
+    )
+    _write_json(
+        nested_artifact_dir / f"{artifact_stem}_qa_report.json",
+        {
+            "document_name": document_title,
+            "metrics": {
+                "overall_confidence_score": 96.5,
+            },
+        },
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+
+    response = client.get("/api/v1/documents")
+
+    assert response.status_code == 200
+    payload = response.json()
+    document_row = next(item for item in payload if item["id"] == document_id)
+    assert document_row["totalPages"] == 124
+    assert document_row["totalSections"] == 51
+    assert document_row["qaScore"] == 96.5
+    assert fake_db.documents[document_id]["total_pages"] == 124
+    assert fake_db.documents[document_id]["total_sections"] == 51
+    assert fake_db.documents[document_id]["qa_score"] == 96.5
 
 
 def test_document_pages_endpoint_generates_page_review_units_from_validation(
