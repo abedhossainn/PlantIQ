@@ -24,6 +24,55 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_image_description_prompt() -> str:
+    return '''You are analyzing a technical document page.
+
+Identify and describe ALL images, diagrams, figures, charts, and visual elements on this page.
+For each visual element, provide:
+1. A clear, descriptive title
+2. A detailed description of what it shows
+3. Any labels, legends, or key information visible
+
+Format your response as a JSON array:
+[
+  {"title": "Figure X: [Title]", "description": "[Detailed description]"},
+  ...
+]
+
+If there are NO visual elements (only text), return: []'''
+
+
+def _extract_descriptions_from_response(response: str) -> List[Dict[str, str]]:
+    match = re.search(r'\[[^\]]*\]', response, re.DOTALL)
+    if match:
+        json_str = match.group(0)
+        descriptions = json.loads(json_str)
+        return [
+            {
+                "title": desc.get("title", "Unknown"),
+                "description": desc.get("description", ""),
+            }
+            for desc in descriptions
+            if isinstance(desc, dict) and "title" in desc and "description" in desc
+        ]
+
+    partial_objects = re.findall(r'\{[^}]*"title"[^}]*"description"[^}]*\}', response, re.DOTALL)
+    extracted: List[Dict[str, str]] = []
+    for obj_str in partial_objects:
+        try:
+            obj_str_clean = obj_str.strip()
+            if not obj_str_clean.endswith('}'):
+                obj_str_clean += '}'
+            obj = json.loads(obj_str_clean)
+            extracted.append({
+                "title": obj.get("title", "Unknown"),
+                "description": obj.get("description", ""),
+            })
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    return extracted
+
+
 def extract_images_from_validation(validation_path: str) -> Dict[int, int]:
     """
     Extract pages with image loss from validation report
@@ -148,21 +197,7 @@ def generate_image_descriptions_vlm(
                     torch.cuda.empty_cache()
                     
                     # Prepare prompt
-                    prompt = '''You are analyzing a technical document page.
-
-Identify and describe ALL images, diagrams, figures, charts, and visual elements on this page.
-For each visual element, provide:
-1. A clear, descriptive title
-2. A detailed description of what it shows
-3. Any labels, legends, or key information visible
-
-Format your response as a JSON array:
-[
-  {"title": "Figure X: [Title]", "description": "[Detailed description]"},
-  ...
-]
-
-If there are NO visual elements (only text), return: []'''
+                    prompt = _build_image_description_prompt()
                     
                     messages = [
                         {
@@ -208,53 +243,14 @@ If there are NO visual elements (only text), return: []'''
                     if vlm_options.verbose:
                         logger.info(f"   VLM Response: {response[:500]}")
                 
-                    # Extract JSON from response - try structured parsing first
-                    try:
-                        # First try to parse as array directly
-                        match = re.search(r'\[.*?\]', response, re.DOTALL)
-                        if match:
-                            json_str = match.group(0)
-                            descriptions = json.loads(json_str)
-                            
-                            # Validate each description has required fields
-                            validated_descriptions = []
-                            for desc in descriptions:
-                                if isinstance(desc, dict) and 'title' in desc and 'description' in desc:
-                                    validated_descriptions.append({
-                                        "title": desc.get("title", "Unknown"),
-                                        "description": desc.get("description", "")
-                                    })
-                            
-                            page_descriptions[page_num] = validated_descriptions
-                            logger.info(f"   ✅ Found {len(validated_descriptions)} images on page {page_num}")
-                        else:
-                            page_descriptions[page_num] = []
-                            logger.info(f"   ⚠️  No JSON array found in VLM response")
-                    
-                    except json.JSONDecodeError:
-                        # Fallback: extract partial objects
-                        logger.info(f"   ⚙️  Attempting to extract partial JSON...")
-                        partial_objects = re.findall(r'\{[^}]*"title"[^}]*"description"[^}]*\}', response, re.DOTALL)
-                        descriptions = []
-                        for obj_str in partial_objects:
-                            try:
-                                obj_str_clean = obj_str.strip()
-                                if not obj_str_clean.endswith('}'):
-                                    obj_str_clean += '}'
-                                obj = json.loads(obj_str_clean)
-                                descriptions.append({
-                                    "title": obj.get("title", "Unknown"),
-                                    "description": obj.get("description", "")
-                                })
-                            except:
-                                continue
-                        
-                        if descriptions:
-                            page_descriptions[page_num] = descriptions
-                            logger.info(f"   ✅ Extracted {len(descriptions)} partial descriptions on page {page_num}")
-                        else:
-                            page_descriptions[page_num] = []
-                            logger.warning(f"   ⚠️  Could not extract any valid descriptions")
+                    # Extract JSON from response
+                    descriptions = _extract_descriptions_from_response(response)
+                    if descriptions:
+                        page_descriptions[page_num] = descriptions
+                        logger.info(f"   ✅ Extracted {len(descriptions)} image descriptions on page {page_num}")
+                    else:
+                        page_descriptions[page_num] = []
+                        logger.warning("   ⚠️  Could not extract any valid descriptions")
                     
                     # Mark as completed
                     if progress_tracker:
@@ -262,7 +258,7 @@ If there are NO visual elements (only text), return: []'''
                     
                     estimator.update()
                     
-                except Exception as e:
+                except (RuntimeError, OSError, TypeError, ValueError, json.JSONDecodeError) as e:
                     logger.error(f"   ❌ Error processing page {page_num}: {e}")
                     page_descriptions[page_num] = []
                     if progress_tracker:

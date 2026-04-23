@@ -63,6 +63,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DOCLING_CHUNK_PAGES = 4
 DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS = 300
+EMBEDDED_IMAGE_PATTERN = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
+DEFAULT_DOCLING_URL = "http://localhost:5001"
+DEFAULT_OUTPUT_FILENAME = "output.md"
 
 # Load the configured vision-language model for image descriptions
 def _load_qwen_model(vlm_options: 'VLMOptions' = None):
@@ -175,8 +178,7 @@ def _extract_referenced_images(md_content: str, output_path: str) -> tuple[str, 
             return match.group(0)
     
     # Replace all embedded images
-    pattern = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
-    modified_content = re.sub(pattern, replace_image, md_content)
+    modified_content = re.sub(EMBEDDED_IMAGE_PATTERN, replace_image, md_content)
     
     return modified_content, image_files
 
@@ -279,7 +281,7 @@ def _normalize_table_cells(md_content: str) -> str:
 
 def _generate_image_descriptions(
     md_content: str,
-    docling_url: str = "http://localhost:5001",
+    _docling_url: str = DEFAULT_DOCLING_URL,
     vlm_options: 'VLMOptions' = None,
     starting_figure_number: int = 1,
 ) -> str:
@@ -311,11 +313,9 @@ def _generate_image_descriptions(
             description = alt_text.strip() if alt_text and alt_text.strip() else f"Image {image_counter[0]}"
             return f"\n**[Figure {image_counter[0]}: {description}]**\n"
         
-        pattern = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
-        return re.sub(pattern, replace_with_placeholder, md_content)
+        return re.sub(EMBEDDED_IMAGE_PATTERN, replace_with_placeholder, md_content)
     
     image_counter = [max(0, starting_figure_number - 1)]
-    descriptions_cache = {}  # Cache by image hash (bytes)
     hash_to_description = {}  # Map image hash to description
     
     def replace_with_description(match):
@@ -435,8 +435,7 @@ def _generate_image_descriptions(
             return f"\n**[Figure {image_num}: {description}]**\n"
     
     # Replace all embedded images with descriptions
-    pattern = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
-    modified_content = re.sub(pattern, replace_with_description, md_content)
+    modified_content = re.sub(EMBEDDED_IMAGE_PATTERN, replace_with_description, md_content)
     
     return modified_content
 
@@ -665,7 +664,7 @@ def convert_pdf_with_qwen(
     pdf_path: str,
     output_path: str,
     image_mode: str = DEFAULT_IMAGE_MODE,
-    docling_url: str = "http://localhost:5001",
+    docling_url: str = DEFAULT_DOCLING_URL,
     vlm_options: 'VLMOptions' = None
 ):
     """
@@ -833,7 +832,12 @@ Examples:
     )
     
     parser.add_argument("pdf", help="Input PDF file path")
-    parser.add_argument("output", nargs="?", default="output.md", help="Output Markdown file path (default: output.md)")
+    parser.add_argument(
+        "output",
+        nargs="?",
+        default=DEFAULT_OUTPUT_FILENAME,
+        help=f"Output Markdown file path (default: {DEFAULT_OUTPUT_FILENAME})",
+    )
     parser.add_argument(
         "--image-mode",
         choices=["placeholder", "embedded", "referenced", "descriptions"],
@@ -842,8 +846,8 @@ Examples:
     )
     parser.add_argument(
         "--docling-url",
-        default="http://localhost:5001",
-        help="Docling service URL (default: http://localhost:5001)"
+        default=DEFAULT_DOCLING_URL,
+        help=f"Docling service URL (default: {DEFAULT_DOCLING_URL})"
     )
     parser.add_argument("--config", help="VLM options config file (YAML or JSON)")
     parser.add_argument("--preset", choices=["balanced", "fast", "quality", "low_memory"],
@@ -865,8 +869,8 @@ Examples:
             vlm_options.max_new_tokens = 120  # Short image descriptions
     
     # If only one positional arg provided, use default output name
-    if args.output == "output.md" and len(sys.argv) == 2:
-        args.output = "output.md"
+    if args.output == DEFAULT_OUTPUT_FILENAME and len(sys.argv) == 2:
+        args.output = DEFAULT_OUTPUT_FILENAME
     
     convert_pdf_with_qwen(
         pdf_path=args.pdf,

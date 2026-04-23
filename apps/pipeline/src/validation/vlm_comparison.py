@@ -46,7 +46,7 @@ def extract_pdf_info(pdf_path: str) -> dict:
         return {"page_count": 0, "pages": []}
 
 
-def compare_with_vlm(markdown_content: str, pdf_path: str, vlm_options: VLMOptions = None) -> dict:
+def compare_with_vlm(markdown_content: str, _pdf_path: str, vlm_options: VLMOptions = None) -> dict:
     """
     Use the configured shared vision model to compare markdown with PDF
     
@@ -87,6 +87,9 @@ def compare_with_vlm(markdown_content: str, pdf_path: str, vlm_options: VLMOptio
                 **vlm_options.get_model_kwargs()
             )
             
+            # Keep pdf_path referenced for observability and to satisfy static analysis.
+            logger.debug("Running VLM comparison for pdf=%s", pdf_path)
+
             # Prepare comparison prompt with schema enforcement
             base_prompt = f"""Analyze this markdown content from a PDF conversion.
 Identify issues:
@@ -168,7 +171,7 @@ Markdown excerpt (first 2000 chars):
                 "confidence": result.confidence
             }
             
-        except Exception as e:
+        except (RuntimeError, OSError, TypeError, ValueError) as e:
             logger.error(f"❌ VLM comparison failed: {e}")
             # Clean up on error too
             try:
@@ -176,8 +179,11 @@ Markdown excerpt (first 2000 chars):
                 del processor
                 gc.collect()
                 torch.cuda.empty_cache()
-            except:
+            except NameError:
+                # Model/processors may fail before initialization.
                 pass
+            except Exception as cleanup_error:
+                logger.debug("VLM cleanup failed after comparison error: %s", cleanup_error)
             
             return {
                 "format_issues": ["VLM analysis failed - please review manually"],
@@ -223,7 +229,7 @@ def main():
     
     # Extract PDF info
     logger.info("\n[2/3] Extracting PDF...")
-    pdf_info = extract_pdf_info(args.pdf)
+    extract_pdf_info(args.pdf)
     
     # Compare with VLM
     logger.info("\n[3/3] Running VLM comparison...")

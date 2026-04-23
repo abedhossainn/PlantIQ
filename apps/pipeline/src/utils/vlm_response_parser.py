@@ -80,7 +80,7 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
         pass
     
     # Strategy 2: Extract from markdown code block
-    code_block_pattern = r'```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```'
+    code_block_pattern = r'```(?:json)?\s*(\{[^`]*\}|\[[^`]*\])\s*```'
     match = re.search(code_block_pattern, text, re.DOTALL)
     if match:
         try:
@@ -123,8 +123,8 @@ def lax_json_parse(text: str) -> Optional[Dict[str, Any]]:
     """
     try:
         # Remove comments
-        text = re.sub(r'//.*?$', '', text, flags=re.MULTILINE)
-        text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+        text = re.sub(r'//[^\n]*$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'/\*[^*]*\*+(?:[^/*][^*]*\*+)*/', '', text)
         
         # Replace single quotes with double quotes (careful with apostrophes)
         text = re.sub(r"(?<!\\)'", '"', text)
@@ -134,7 +134,7 @@ def lax_json_parse(text: str) -> Optional[Dict[str, Any]]:
         text = re.sub(r',\s*]', ']', text)
         
         return json.loads(text)
-    except (json.JSONDecodeError, Exception):
+    except (TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
@@ -195,7 +195,7 @@ def parse_vlm_response(
             if verbose:
                 logger.debug(f"  ❌ {strategy_name} failed: {str(e)[:100]}")
             continue
-        except Exception as e:
+        except RuntimeError as e:
             if verbose:
                 logger.warning(f"  ⚠️  {strategy_name} unexpected error: {str(e)[:100]}")
             continue

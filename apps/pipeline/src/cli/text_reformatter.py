@@ -172,6 +172,19 @@ def _dedupe_strings(values: Iterable[Any]) -> list[str]:
     return ordered
 
 
+def _dedupe_ints(values: Iterable[Any]) -> list[int]:
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for value in values:
+        if not isinstance(value, int):
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
 def _build_generation_segments(markdown_content: str, optimization_prep: dict | None) -> list[dict[str, Any]]:
     if optimization_prep and isinstance(optimization_prep.get("segments"), list) and optimization_prep["segments"]:
         return [segment for segment in optimization_prep["segments"] if isinstance(segment, dict)]
@@ -480,7 +493,7 @@ def _synthesize_chunks_from_optimization_prep(
                     for citation in citations
                     if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
                 )
-            source_pages = [page for i, page in enumerate(source_pages) if isinstance(page, int) and page not in source_pages[:i]]
+            source_pages = _dedupe_ints(source_pages)
             content = _ensure_citation(raw_content, doc_name, source_pages)
             synthesized_chunks.append(
                 {
@@ -608,7 +621,7 @@ def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_p
         )
 
     source_pages.extend(_extract_page_numbers(content))
-    source_pages = [page for i, page in enumerate(source_pages) if isinstance(page, int) and page not in source_pages[:i]]
+    source_pages = _dedupe_ints(source_pages)
 
     if not content and optimization_prep:
         matching_page = next(
@@ -729,7 +742,7 @@ def parse_reformatter_response(
 def reformat_with_qwen(
     markdown_content: str,
     validation_report: dict,
-    pdf_path: str,
+    _pdf_path: str,
     doc_name: str,
     vlm_options: VLMOptions = None,
     optimization_prep: dict | None = None,
@@ -789,7 +802,6 @@ def reformat_with_qwen(
                     if k not in ("page_validations",)
                 }
 
-            optimization_prep_payload = json.dumps(trimmed_prep, indent=2) if trimmed_prep else "null"
             validation_payload = json.dumps(trimmed_validation, indent=2) if trimmed_validation else "null"
             generation_segments = _build_generation_segments(markdown_content, optimization_prep)
 

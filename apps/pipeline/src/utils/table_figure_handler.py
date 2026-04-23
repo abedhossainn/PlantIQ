@@ -482,7 +482,7 @@ def main():
         with open(args.markdown, 'r', encoding='utf-8') as f:
             markdown_content = f.read()
         
-        optimized = optimize_document_tables_and_figures(markdown_content, args.pdf)
+        optimize_document_tables_and_figures(markdown_content, args.pdf)
         
         # This is a placeholder - full optimization would modify the markdown
         logger.info("✅ Optimization complete (report generated)")

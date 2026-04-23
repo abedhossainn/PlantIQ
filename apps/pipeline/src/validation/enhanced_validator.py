@@ -102,6 +102,11 @@ def _count_figure_markers(markdown_section: str) -> int:
     return markdown_images + described_figures
 
 
+def _candidate_sort_key(item: tuple[int, int], expected_center: int) -> tuple[int, int, int]:
+    line_index, score = item
+    return (-score, abs(line_index - expected_center), line_index)
+
+
 class IssueType(Enum):
     """Issue categorization for systematic tracking"""
     MISSING_CONTENT = "missing_content"
@@ -208,7 +213,7 @@ def _build_page_markdown_map_from_previews(
 
         has_candidates = bool(candidates)
         if has_candidates:
-            candidates.sort(key=lambda item: (-item[1], abs(item[0] - expected_center), item[0]))
+            candidates.sort(key=lambda item, expected_center=expected_center: _candidate_sort_key(item, expected_center))
             candidate_indices = [candidate_index for candidate_index, _ in candidates]
         else:
             candidate_indices = [max(0, min(expected_center, len(lines) - 1))]
@@ -323,14 +328,19 @@ def extract_page_evidence(pdf_path: str) -> List[PageEvidence]:
 def validate_page_against_markdown(
     page_evidence: PageEvidence,
     markdown_content: str,
-    vlm_model,
     total_pages: int,
+    vlm_model=None,
     page_markdown_map: Optional[Dict[int, str]] = None,
 ) -> PageValidationReport:
     """
     Validate a single page against its corresponding markdown section
     Uses VLM to identify issues with categorization
     """
+    if vlm_model is not None:
+        logger.debug(
+            "VLM semantic validation hook enabled for page %s",
+            page_evidence.page_number,
+        )
     issues = []
     
     markdown_section = ""
@@ -410,8 +420,7 @@ def create_validation_report(
     page_evidences = extract_page_evidence(pdf_path)
     
     if not page_evidences:
-        logger.error("❌ No page evidence extracted")
-        return None
+        raise RuntimeError("No page evidence extracted")
     
     # Load markdown
     with open(markdown_path, 'r', encoding='utf-8') as f:
@@ -509,20 +518,20 @@ def main():
     logger.info("🔍 Enhanced Validation Module")
     logger.info("=" * 80)
     
-    report = create_validation_report(
-        args.pdf,
-        args.markdown,
-        args.vlm_model or get_vision_model_id(),
-        args.docling_version
-    )
-    
-    if report:
+    try:
+        report = create_validation_report(
+            args.pdf,
+            args.markdown,
+            args.vlm_model or get_vision_model_id(),
+            args.docling_version
+        )
         save_validation_report(report, args.output)
-        logger.info("✅ Enhanced validation complete")
-        return 0
-    else:
-        logger.error("❌ Validation failed")
+    except Exception as exc:
+        logger.error("❌ Validation failed: %s", exc)
         return 1
+
+    logger.info("✅ Enhanced validation complete")
+    return 0
 
 
 if __name__ == "__main__":

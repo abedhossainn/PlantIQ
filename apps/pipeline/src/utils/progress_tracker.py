@@ -135,8 +135,8 @@ class PersistentProgressTracker:
             start = datetime.fromisoformat(self.state.start_time)
             end = datetime.fromisoformat(stage_metric.end_time)
             stage_metric.duration_seconds = (end - start).total_seconds()
-        except:
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.debug("Could not compute stage duration for %s: %s", stage_name, exc)
         
         self.state.completed_stages.append(stage_metric)
         self.state.current_stage = None
