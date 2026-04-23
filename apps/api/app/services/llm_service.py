@@ -18,6 +18,8 @@ from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
+OLLAMA_GENERATE_ENDPOINT = "/api/generate"
+
 
 class LLMConfigurationError(RuntimeError):
     """Raised when runtime LLM configuration is invalid."""
@@ -100,7 +102,7 @@ class LLMService:
         }
         try:
             # Native Ollama endpoint for memory residency control.
-            await client.post("/api/generate", json=payload)
+            await client.post(OLLAMA_GENERATE_ENDPOINT, json=payload)
             logger.info("Unloaded Ollama model from memory: %s", settings.TEXT_MODEL_ID)
         except Exception as exc:
             logger.warning("Could not unload Ollama model (non-fatal): %s", exc)
@@ -241,7 +243,7 @@ class LLMService:
                     top_p=top_p,
                     stream=False,
                 )
-                response = await cls._post_with_startup_retry("/api/generate", payload)
+                response = await cls._post_with_startup_retry(OLLAMA_GENERATE_ENDPOINT, payload)
                 result = response.json() or {}
                 text = str(result.get("response") or "")
                 if text:

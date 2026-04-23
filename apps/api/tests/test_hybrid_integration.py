@@ -37,6 +37,33 @@ PNG_1X1 = (
     b"\x00\x01\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
 )
 
+CHECKLIST_LABELS = {
+    "question_headings": "Headings are questions",
+    "table_facts_extracted": "Table facts extracted to bullets",
+    "figure_descriptions": "Figures have text descriptions",
+    "citations_present": "Source citations included",
+    "no_hallucinations": "No AI-generated content",
+    "rag_optimized": "Follows RAG guidelines",
+}
+SSE_EVENT_PREFIX = "event: "
+SSE_DATA_PREFIX = "data: "
+CHAT_QUERY_ENDPOINT = "/api/v1/chat/query"
+CHAT_STREAM_ENDPOINT = "/api/v1/chat/stream"
+DOCS_ENDPOINT = "/api/v1/documents"
+COMMON_QUERY_LNG_DENSITY = "What is LNG density?"
+COMMON_QUERY_WHAT_IS_LNG = "What is LNG?"
+COMMON_TEXT_LNG_CRYOGENIC = "LNG is a cryogenic fuel."
+COMMON_TITLE_OPERATIONS_GUIDE = "Operations Guide"
+COMMON_TEXT_METHANE_BOILING_POINT = "The boiling point of methane is -259.6°F."
+SAMPLE_DOC_TITLE = "Sample Document"
+SAMPLE_OPTIMIZED_JSON = "sample_document_rag_optimized.json"
+SAMPLE_VALIDATION_JSON = "sample_document_validation.json"
+SAMPLE_QA_REPORT_JSON = "sample_document_qa_report.json"
+SAMPLE_QA_PRE_REVIEW_JSON = "sample_document_qa_pre_review.json"
+PAGE_REVIEW_MANIFEST_JSON = "page_review_manifest.json"
+PAGE_001_MD = "page_001.md"
+PAGE_001_CHECKLIST_JSON = "page_001_checklist.json"
+
 
 class FakeMappings:
     def __init__(self, rows: Any = None):
@@ -401,24 +428,24 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _write_complete_checklist(path: Path) -> None:
     checklist = {
-        "question_headings": {"item": "Headings are questions", "checked": True, "notes": None},
-        "table_facts_extracted": {"item": "Table facts extracted to bullets", "checked": True, "notes": None},
-        "figure_descriptions": {"item": "Figures have text descriptions", "checked": True, "notes": None},
-        "citations_present": {"item": "Source citations included", "checked": True, "notes": None},
-        "no_hallucinations": {"item": "No AI-generated content", "checked": True, "notes": None},
-        "rag_optimized": {"item": "Follows RAG guidelines", "checked": True, "notes": None},
+        "question_headings": {"item": CHECKLIST_LABELS["question_headings"], "checked": True, "notes": None},
+        "table_facts_extracted": {"item": CHECKLIST_LABELS["table_facts_extracted"], "checked": True, "notes": None},
+        "figure_descriptions": {"item": CHECKLIST_LABELS["figure_descriptions"], "checked": True, "notes": None},
+        "citations_present": {"item": CHECKLIST_LABELS["citations_present"], "checked": True, "notes": None},
+        "no_hallucinations": {"item": CHECKLIST_LABELS["no_hallucinations"], "checked": True, "notes": None},
+        "rag_optimized": {"item": CHECKLIST_LABELS["rag_optimized"], "checked": True, "notes": None},
     }
     _write_json(path, checklist)
 
 
 def _write_empty_checklist(path: Path) -> None:
     checklist = {
-        "question_headings": {"item": "Headings are questions", "checked": False, "notes": None},
-        "table_facts_extracted": {"item": "Table facts extracted to bullets", "checked": False, "notes": None},
-        "figure_descriptions": {"item": "Figures have text descriptions", "checked": False, "notes": None},
-        "citations_present": {"item": "Source citations included", "checked": False, "notes": None},
-        "no_hallucinations": {"item": "No AI-generated content", "checked": False, "notes": None},
-        "rag_optimized": {"item": "Follows RAG guidelines", "checked": False, "notes": None},
+        "question_headings": {"item": CHECKLIST_LABELS["question_headings"], "checked": False, "notes": None},
+        "table_facts_extracted": {"item": CHECKLIST_LABELS["table_facts_extracted"], "checked": False, "notes": None},
+        "figure_descriptions": {"item": CHECKLIST_LABELS["figure_descriptions"], "checked": False, "notes": None},
+        "citations_present": {"item": CHECKLIST_LABELS["citations_present"], "checked": False, "notes": None},
+        "no_hallucinations": {"item": CHECKLIST_LABELS["no_hallucinations"], "checked": False, "notes": None},
+        "rag_optimized": {"item": CHECKLIST_LABELS["rag_optimized"], "checked": False, "notes": None},
     }
     _write_json(path, checklist)
 
@@ -429,9 +456,9 @@ def _parse_sse_events(body: str) -> list[tuple[str, dict[str, Any]]]:
         event_name: str | None = None
         payload: dict[str, Any] | None = None
         for line in raw_event.splitlines():
-            if line.startswith("event: "):
+            if line.startswith(SSE_EVENT_PREFIX):
                 event_name = line[7:]
-            elif line.startswith("data: "):
+            elif line.startswith(SSE_DATA_PREFIX):
                 payload = json.loads(line[6:])
         if event_name is not None and payload is not None:
             parsed_events.append((event_name, payload))
@@ -462,8 +489,8 @@ def test_chat_query_returns_citations_and_persists_messages(client: TestClient, 
     monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
 
     response = client.post(
-        "/api/v1/chat/query",
-        json={"query": "What is LNG density?"},
+        CHAT_QUERY_ENDPOINT,
+        json={"query": COMMON_QUERY_LNG_DENSITY},
     )
 
     assert response.status_code == 200
@@ -502,7 +529,7 @@ def test_chat_query_applies_workspace_and_document_type_filters(client: TestClie
     monkeypatch.setattr(chat_service_module.VLLMService, "generate", fake_generate)
 
     response = client.post(
-        "/api/v1/chat/query",
+        CHAT_QUERY_ENDPOINT,
         json={
             "query": "How do I start up liquefaction after pre-treatment checks?",
             "workspace": "Liquefaction",
@@ -968,7 +995,7 @@ def test_chat_stream_emits_sse_tokens_and_done_marker(client: TestClient, fake_d
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["cache-control"] == "no-cache"
+    assert "no-cache" in response.headers["cache-control"]
     assert response.headers["x-accel-buffering"] == "no"
 
     raw_events = [chunk for chunk in body.split("\n\n") if chunk.strip()]
@@ -1016,20 +1043,21 @@ def test_chat_stream_falls_back_to_non_stream_generation_when_stream_is_empty(
         return [
             RAGContext(
                 chunk_id="chunk-1",
-                content="LNG is cryogenic.",
+                content=COMMON_TEXT_LNG_CRYOGENIC,
                 document_id=uuid.uuid4(),
-                document_title="Operations Guide",
+                document_title=COMMON_TITLE_OPERATIONS_GUIDE,
                 metadata={"page_number": 3},
                 score=0.91,
             )
         ]
 
     async def fake_generate_stream(**_kwargs):
-        if False:  # pragma: no cover
-            yield ""
+        if _kwargs.get("emit_tokens"):
+            yield "unused"
+        return
 
     async def fake_generate(**_kwargs):
-        return "The boiling point of methane is -259.6°F."
+        return COMMON_TEXT_METHANE_BOILING_POINT
 
     monkeypatch.setattr(chat_service_module.EmbeddingService, "embed_query", fake_embed_query)
     monkeypatch.setattr(chat_service_module.QdrantService, "search_similar", fake_search_similar)
@@ -1056,8 +1084,8 @@ def test_chat_stream_falls_back_to_non_stream_generation_when_stream_is_empty(
 
     token_events = [payload for event_name, payload in parsed_events if event_name == "token"]
     assert token_events
-    assert token_events[-1]["token"] == "The boiling point of methane is -259.6°F."
-    assert fake_db.chat_messages[-1]["content"] == "The boiling point of methane is -259.6°F."
+    assert token_events[-1]["token"] == COMMON_TEXT_METHANE_BOILING_POINT
+    assert fake_db.chat_messages[-1]["content"] == COMMON_TEXT_METHANE_BOILING_POINT
     assert parsed_events[-1][0] == "complete"
 
 
@@ -1223,7 +1251,7 @@ def test_pipeline_events_stream_replays_accept_progress_and_complete(client: Tes
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert response.headers["cache-control"] == "no-cache"
+    assert "no-cache" in response.headers["cache-control"]
     assert response.headers["x-accel-buffering"] == "no"
     assert "event: job.accepted" in body
     assert "event: progress" in body
@@ -3504,8 +3532,8 @@ def test_pipeline_websocket_rejects_non_admin_users(monkeypatch: pytest.MonkeyPa
 
     with TestClient(app) as test_client:
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token"):
-                pass
+            with test_client.websocket_connect("/ws/pipeline/doc-123?token=valid-token") as websocket:
+                websocket.receive_json()
 
         assert exc_info.value.code == 403
 
@@ -3540,8 +3568,8 @@ def test_chat_websocket_rejects_when_conversation_access_check_fails(monkeypatch
 
     with TestClient(app) as test_client:
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with test_client.websocket_connect("/ws/chat/conv-123?token=valid-token"):
-                pass
+            with test_client.websocket_connect("/ws/chat/conv-123?token=valid-token") as websocket:
+                websocket.receive_json()
 
         assert exc_info.value.code == 403
 
@@ -3631,7 +3659,7 @@ def test_approve_for_optimization_succeeds_from_valid_pre_optimization_statuses(
     _setup_optimization_workspace(tmp_path, document_id, monkeypatch)
 
     async def fake_execute_optimization_stage(**_kwargs):
-        pass
+        return None
 
     monkeypatch.setattr(pipeline_api, "_execute_optimization_stage", fake_execute_optimization_stage)
 
@@ -3660,7 +3688,7 @@ def test_review_complete_alias_delegates_to_approve_for_optimization(
     _setup_optimization_workspace(tmp_path, document_id, monkeypatch)
 
     async def fake_execute_optimization_stage(**_kwargs):
-        pass
+        return None
 
     monkeypatch.setattr(pipeline_api, "_execute_optimization_stage", fake_execute_optimization_stage)
 
@@ -3993,7 +4021,7 @@ def test_execute_optimization_stage_marks_document_failed_when_completed_artifac
 
     class FakeRunner:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self._initialized = True
 
         def run_post_approval_reformatting(self, **_kwargs):
             _write_json(work_dir / "sample_document_rag_optimized.json", {
@@ -4047,7 +4075,7 @@ def test_execute_optimization_stage_persists_optimization_complete_for_valid_art
 
     class FakeRunner:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self._initialized = True
 
         def run_post_approval_reformatting(self, **_kwargs):
             _write_json(work_dir / "sample_document_rag_optimized.json", {

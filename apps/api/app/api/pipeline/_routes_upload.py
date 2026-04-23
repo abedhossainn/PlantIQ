@@ -243,6 +243,13 @@ async def stream_optimization_logs(
             yield encode_sse_event(latest_progress)
 
         if queue is None:
+            final_status = OptimizationLogManager.get_final_status(doc_id)
+            if final_status is not None:
+                # A finished run can race with DB status persistence; when the
+                # in-memory manager already has a terminal status, trust it.
+                yield encode_sse_event({"event": "done", "status": final_status})
+                return
+
             # The log manager has no active stream for this document.
             # Before concluding the job is finished, check the live DB status.
             # The SSE may have connected during the brief window between a

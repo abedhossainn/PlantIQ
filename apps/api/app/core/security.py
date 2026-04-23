@@ -18,6 +18,7 @@ if AUTH_DISABLED_USER_ROLE not in {"admin", "user"}:
     AUTH_DISABLED_USER_ROLE = "user"
 
 security = HTTPBearer(auto_error=False)
+NOT_AUTHENTICATED_DETAIL = "Not authenticated"
 
 
 def _get_jwt_manager():
@@ -60,7 +61,7 @@ async def get_jwt_payload(
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
+            detail=NOT_AUTHENTICATED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -149,7 +150,7 @@ async def require_role(
         if credentials is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not authenticated",
+                detail=NOT_AUTHENTICATED_DETAIL,
                 headers={"WWW-Authenticate": "Bearer"},
             )
         token = credentials.credentials
@@ -187,7 +188,7 @@ def require_admin(credentials: HTTPAuthorizationCredentials = Depends(security))
         if credentials is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not authenticated",
+                detail=NOT_AUTHENTICATED_DETAIL,
                 headers={"WWW-Authenticate": "Bearer"},
             )
         token = credentials.credentials

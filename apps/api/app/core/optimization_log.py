@@ -23,7 +23,7 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-_EMOJI_PREFIX_RE = re.compile(r"^[\W_]*(?:[\u2190-\u2BFF\u2600-\u27BF\uFE0E\uFE0F\U0001F300-\U0001FAFF]+\s*)+")
+_EMOJI_PREFIX_RE = re.compile(r"^[\W_]*(?:[\u2190-\u2BFF\uFE0E\uFE0F\U0001F300-\U0001FAFF]+\s*)+")
 _SEGMENT_FRACTION_RE = re.compile(r"\bsegment\s+(?P<current>\d+)\s*/\s*(?P<total>\d+)\b", re.IGNORECASE)
 _GENERATION_PROGRESS_RE = re.compile(
     r"^Generate output:\s*(?P<percent>-?\d+)%\s*\((?P<generated>\d+)\s*/\s*(?P<target>\d+)\s*tokens,\s*(?P<minutes>\d+):(?P<seconds>\d{2})\s*elapsed\)$",
@@ -276,12 +276,12 @@ class OptimizationLogManager:
         ``live_queue`` is ``None`` if the optimization is already finished,
         in which case only the replay buffer is returned.
         """
-        buffer = list(cls._buffers.get(document_id, []))
+        buffer_snapshot = list(cls._buffers.get(document_id, []))
         if cls._done.get(document_id, False):
-            return buffer, None
+            return buffer_snapshot, None
         q: asyncio.Queue = asyncio.Queue(maxsize=500)
         cls._queues.setdefault(document_id, []).append(q)
-        return buffer, q
+        return buffer_snapshot, q
 
     @classmethod
     def is_active(cls, document_id: str) -> bool:

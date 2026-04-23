@@ -4,6 +4,10 @@ from app.core.config import settings
 from app.services.llm_service import LLMConfigurationError, LLMService
 
 
+OLLAMA_MODEL = "qwen3:4b"
+VLLM_MODEL = "Qwen/Qwen3-4B"
+
+
 class _FakeResponse:
     def __init__(self, status_code=200, payload=None):
         self.status_code = status_code
@@ -34,14 +38,14 @@ async def test_resolve_generation_model_raises_when_configured_ollama_model_miss
     fake_client = _FakeClient(
         tags_payload={
             "models": [
-                {"name": "qwen3:4b"},
+                {"name": OLLAMA_MODEL},
                 {"name": "llama3.2"},
             ]
         }
     )
 
     monkeypatch.setattr(settings, "LLM_BACKEND", "ollama", raising=False)
-    monkeypatch.setattr(settings, "TEXT_MODEL_ID", "Qwen/Qwen3-4B", raising=False)
+    monkeypatch.setattr(settings, "TEXT_MODEL_ID", VLLM_MODEL, raising=False)
     monkeypatch.setattr(LLMService, "get_client", classmethod(lambda cls: fake_client))
 
     with pytest.raises(LLMConfigurationError):
@@ -61,7 +65,7 @@ async def test_generate_uses_resolved_runtime_model(monkeypatch):
         return None
 
     async def _resolved_model(*_args, **_kwargs):
-        return "Qwen/Qwen3-4B"
+        return VLLM_MODEL
 
     monkeypatch.setattr(settings, "LLM_BACKEND", "vllm", raising=False)
     monkeypatch.setattr(LLMService, "_request_started", classmethod(lambda cls: _noop()))
@@ -73,7 +77,7 @@ async def test_generate_uses_resolved_runtime_model(monkeypatch):
 
     assert result == "Generated answer"
     assert captured_payload["endpoint"] == "/v1/completions"
-    assert captured_payload["payload"]["model"] == "Qwen/Qwen3-4B"
+    assert captured_payload["payload"]["model"] == VLLM_MODEL
 
 
 @pytest.mark.asyncio
@@ -89,7 +93,7 @@ async def test_generate_uses_ollama_native_generate_endpoint(monkeypatch):
         return None
 
     async def _resolved_model(*_args, **_kwargs):
-        return "qwen3:4b"
+        return OLLAMA_MODEL
 
     monkeypatch.setattr(settings, "LLM_BACKEND", "ollama", raising=False)
     monkeypatch.setattr(LLMService, "_request_started", classmethod(lambda cls: _noop()))
@@ -101,12 +105,12 @@ async def test_generate_uses_ollama_native_generate_endpoint(monkeypatch):
 
     assert result == "Generated from ollama"
     assert captured_payload["endpoint"] == "/api/generate"
-    assert captured_payload["payload"]["model"] == "qwen3:4b"
+    assert captured_payload["payload"]["model"] == OLLAMA_MODEL
     assert captured_payload["payload"]["think"] is False
 
 
 def test_prepare_ollama_prompt_adds_no_think_for_qwen3_models():
-    prepared = LLMService._prepare_ollama_prompt("qwen3:4b", "What is methane boiling point?")
+    prepared = LLMService._prepare_ollama_prompt(OLLAMA_MODEL, "What is methane boiling point?")
     assert prepared.startswith("/no_think\n")
 
 
@@ -118,11 +122,12 @@ def test_prepare_ollama_prompt_leaves_non_qwen_models_unchanged():
 
 @pytest.mark.asyncio
 async def test_lifecycle_status_reports_configured_model_availability(monkeypatch):
-    fake_client = _FakeClient(tags_payload={"models": [{"name": "qwen3:4b"}]})
+    fake_client = _FakeClient(tags_payload={"models": [{"name": OLLAMA_MODEL}]})
 
     class _ProbeClient:
         def __init__(self, *args, **kwargs):
-            pass
+            self._args = args
+            self._kwargs = kwargs
 
         async def __aenter__(self):
             return self
@@ -135,7 +140,7 @@ async def test_lifecycle_status_reports_configured_model_availability(monkeypatc
             return _FakeResponse(status_code=200)
 
     monkeypatch.setattr(settings, "LLM_BACKEND", "ollama", raising=False)
-    monkeypatch.setattr(settings, "TEXT_MODEL_ID", "Qwen/Qwen3-4B", raising=False)
+    monkeypatch.setattr(settings, "TEXT_MODEL_ID", VLLM_MODEL, raising=False)
     monkeypatch.setattr(LLMService, "get_client", classmethod(lambda cls: fake_client))
 
     import app.services.llm_service as llm_service_module
@@ -145,7 +150,7 @@ async def test_lifecycle_status_reports_configured_model_availability(monkeypatc
     status = await LLMService.get_lifecycle_status()
 
     assert status["container_reachable"] is True
-    assert status["configured_model"] == "Qwen/Qwen3-4B"
+    assert status["configured_model"] == VLLM_MODEL
     assert status["configured_model_available"] is False
-    assert status["model"] == "Qwen/Qwen3-4B"
-    assert status["available_models"] == ["qwen3:4b"]
+    assert status["model"] == VLLM_MODEL
+    assert status["available_models"] == [OLLAMA_MODEL]

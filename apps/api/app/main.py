@@ -131,28 +131,44 @@ async def observability_middleware(request: Request, call_next):
     response.headers["x-request-id"] = request_id
     response.headers["x-trace-id"] = trace_id
 
-    # Suppress noisy low-value logs for lightweight endpoints unless they are errors/slow.
-    if is_quiet and status_code < 400 and duration_ms < SLOW_REQUEST_THRESHOLD_MS:
-        return response
-
-    log_fn = logger.warning if duration_ms >= SLOW_REQUEST_THRESHOLD_MS else logger.info
-    log_fn(
-        "http_request_complete method=%s path=%s status=%s duration_ms=%.2f slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s client_ip=%s user_agent=%s content_length=%s auth_header_present=%s cookie_header_present=%s query=%s",
-        request.method,
-        path_template,
-        status_code,
-        duration_ms,
-        SLOW_REQUEST_THRESHOLD_MS,
-        endpoint_class,
-        request_id,
-        trace_id,
-        client_ip,
-        user_agent,
-        content_length,
-        auth_header_present,
-        cookie_header_present,
-        query_string,
-    )
+    should_log_request = not (is_quiet and status_code < 400 and duration_ms < SLOW_REQUEST_THRESHOLD_MS)
+    if should_log_request:
+        if duration_ms >= SLOW_REQUEST_THRESHOLD_MS:
+            logger.warning(
+                "http_request_complete method=%s path=%s status=%s duration_ms=%.2f slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s client_ip=%s user_agent=%s content_length=%s auth_header_present=%s cookie_header_present=%s query=%s",
+                request.method,
+                path_template,
+                status_code,
+                duration_ms,
+                SLOW_REQUEST_THRESHOLD_MS,
+                endpoint_class,
+                request_id,
+                trace_id,
+                client_ip,
+                user_agent,
+                content_length,
+                auth_header_present,
+                cookie_header_present,
+                query_string,
+            )
+        else:
+            logger.info(
+                "http_request_complete method=%s path=%s status=%s duration_ms=%.2f slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s client_ip=%s user_agent=%s content_length=%s auth_header_present=%s cookie_header_present=%s query=%s",
+                request.method,
+                path_template,
+                status_code,
+                duration_ms,
+                SLOW_REQUEST_THRESHOLD_MS,
+                endpoint_class,
+                request_id,
+                trace_id,
+                client_ip,
+                user_agent,
+                content_length,
+                auth_header_present,
+                cookie_header_present,
+                query_string,
+            )
     return response
 
 # Configure CORS

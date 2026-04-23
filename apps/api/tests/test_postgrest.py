@@ -66,7 +66,7 @@ class PostgRESTTester:
                 try:
                     result["data"] = response.json()
                     print(f"   📦 Returned {len(result['data']) if isinstance(result['data'], list) else 1} item(s)")
-                except:
+                except (ValueError, json.JSONDecodeError):
                     result["data"] = response.text
             else:
                 print(f"   ❌ {response.status_code} - {response.text[:100]}")
@@ -101,7 +101,7 @@ class PostgRESTTester:
         )
         
         # Test 2: List users
-        result = self.test(
+        self.test(
             "List Users",
             "GET",
             "/users?select=id,username,email,role&limit=10"
@@ -122,7 +122,7 @@ class PostgRESTTester:
         )
         
         # Test 5: List document summaries
-        result = self.test(
+        self.test(
             "List Document Summaries",
             "GET",
             "/document_summaries?select=id,title,status,uploaded_by_name&limit=10"
@@ -152,7 +152,7 @@ class PostgRESTTester:
         )
         
         # Test 9: List conversations
-        result = self.test(
+        self.test(
             "List Conversations",
             "GET",
             "/conversation_summaries?order=updated_at.desc&limit=10"
