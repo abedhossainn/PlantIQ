@@ -148,7 +148,10 @@ PROJECT_STATUS.md
 # Downloaded model weights (large files, not tracked)
 models/
 
-# Generated Sonar investigation artifacts (do not commit)
+# SonarQube — local-only, server runs locally and must never be committed
+sonar-project.properties
+.sonarlint/
+scripts/sonarqube_agent_toolkit.py
 docs/SONARQUBE_ISSUES.md
 docs/sonarqube_issues.json
 docs/SONARQUBE_MCP_DIAGNOSIS.md
