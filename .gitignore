@@ -147,3 +147,9 @@ PROJECT_STATUS.md
 
 # Downloaded model weights (large files, not tracked)
 models/
+
+# Generated Sonar investigation artifacts (do not commit)
+docs/SONARQUBE_ISSUES.md
+docs/sonarqube_issues.json
+docs/SONARQUBE_MCP_DIAGNOSIS.md
+PROJECT_STATUS.pdf
