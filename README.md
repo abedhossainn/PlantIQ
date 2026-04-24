@@ -188,13 +188,3 @@ llm-rag-chatbot/
 3. Finish outstanding code-quality remediation waves and re-verify regressions.
 4. Finalize Beta evidence packaging and readiness for final checkpoint signoff.
 
----
-
-## Notes for contributors
-
-- Current priority is **core path reliability** (ingestion + chat), not new feature breadth.
-- Keep changes aligned to the quality-gated workflow and citation trust model.
-- Treat `PROJECT_STATUS.md` as the current operational source of truth for progress and validation evidence.
-
-For full checkpoint evidence and detailed architecture/test tables, see:
-`docs/capstone/Beta_Checkpoint_Report.md`
