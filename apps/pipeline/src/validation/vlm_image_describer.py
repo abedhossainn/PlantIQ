@@ -68,7 +68,7 @@ def _extract_descriptions_from_response(response: str) -> List[Dict[str, str]]:
                 "title": obj.get("title", "Unknown"),
                 "description": obj.get("description", ""),
             })
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError):
             continue
     return extracted
 
@@ -97,6 +97,239 @@ def extract_images_from_validation(validation_path: str) -> Dict[int, int]:
     return pages_with_images
 
 
+def _generate_descriptions_for_single_page(
+    *,
+    page: Any,
+    page_num: int,
+    model: Any,
+    processor: Any,
+    process_vision_info: Any,
+    torch: Any,
+    gc: Any,
+    vlm_options: VLMOptions,
+) -> List[Dict[str, str]]:
+    """Render one PDF page and run VLM inference to extract image descriptions."""
+    image_path = f"/tmp/page_{page_num}_temp.png"
+    try:
+        im = page.to_image(resolution=vlm_options.image_resolution)
+        im.save(image_path)
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        prompt = _build_image_description_prompt()
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": f"file://{image_path}"},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inference_device = next(model.parameters()).device
+        inputs = inputs.to(inference_device)
+
+        with torch.no_grad():
+            output_ids = model.generate(**inputs, **vlm_options.get_generation_kwargs())
+
+        generated_ids = [
+            output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs.input_ids, output_ids)
+        ]
+        response = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+
+        if vlm_options.verbose:
+            logger.info(f"   VLM Response: {response[:500]}")
+
+        return _extract_descriptions_from_response(response)
+    finally:
+        Path(image_path).unlink(missing_ok=True)
+
+
+def _store_page_result(
+    *,
+    page_descriptions: Dict[int, List[Dict[str, str]]],
+    page_num: int,
+    descriptions: List[Dict[str, str]],
+) -> None:
+    """Store extracted descriptions and emit consistent logging."""
+    page_descriptions[page_num] = descriptions
+    if descriptions:
+        logger.info(f"   ✅ Extracted {len(descriptions)} image descriptions on page {page_num}")
+        return
+    logger.warning("   ⚠️  Could not extract any valid descriptions")
+
+
+def _should_skip_page(page_num: int, total_pages: int, progress_tracker: PersistentProgressTracker | None) -> tuple[bool, str | None]:
+    """Return skip decision and optional failure reason for a page."""
+    if progress_tracker and progress_tracker.is_completed(page_num):
+        return True, None
+    if page_num > total_pages:
+        return True, "Page not found"
+    return False, None
+
+
+def _build_default_description_options(vlm_options: VLMOptions | None) -> VLMOptions:
+    """Return initialized VLM options for image description generation."""
+    if vlm_options is not None:
+        return vlm_options
+
+    default_options = VLMOptions.get_default("quality")
+    default_options.model_id = get_vision_model_id()
+    default_options.max_new_tokens = 2048
+    default_options.verbose = True
+    return default_options
+
+
+def _log_pages_with_images(pages_with_images: Dict[int, int], vlm_options: VLMOptions) -> None:
+    """Emit standard startup logging for image description generation."""
+    logger.info(f"🤖 Generating image descriptions with {vlm_options.model_id}...")
+    logger.info(f"   Processing {len(pages_with_images)} pages with images")
+
+
+def _load_vlm_generation_resources(vlm_options: VLMOptions) -> tuple[Any, Any, Any, Any, Any]:
+    """Load multimodal model resources for page image description generation."""
+    try:
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from qwen_vl_utils import process_vision_info
+        import torch
+        import gc
+    except ImportError as e:
+        logger.error(f"❌ Required libraries not available: {e}")
+        raise
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    processor = AutoProcessor.from_pretrained(
+        vlm_options.model_id,
+        **vlm_options.get_processor_kwargs()
+    )
+    model = AutoModelForImageTextToText.from_pretrained(
+        vlm_options.model_id,
+        **vlm_options.get_model_kwargs()
+    )
+    return model, processor, process_vision_info, torch, gc
+
+
+def _process_pages_with_progress(
+    *,
+    pdf: Any,
+    pages_to_process: List[int],
+    total_pages: int,
+    model: Any,
+    processor: Any,
+    process_vision_info: Any,
+    torch: Any,
+    gc: Any,
+    vlm_options: VLMOptions,
+    progress_tracker: PersistentProgressTracker | None,
+    page_descriptions: Dict[int, List[Dict[str, str]]],
+) -> None:
+    """Process target pages with progress reporting and ETA updates."""
+    estimator = TimeEstimator(total_items=len(pages_to_process))
+
+    with ProgressBar(pages_to_process, desc="🖼️  Image descriptions", unit="page") as pbar:
+        for page_num in pbar:
+            if estimator.completed > 0:
+                logger.info(f"📄 Processing page {page_num} | ETA: {estimator.get_eta()}")
+
+            should_advance = _process_target_page(
+                page_num=page_num,
+                total_pages=total_pages,
+                pdf=pdf,
+                model=model,
+                processor=processor,
+                process_vision_info=process_vision_info,
+                torch=torch,
+                gc=gc,
+                vlm_options=vlm_options,
+                progress_tracker=progress_tracker,
+                page_descriptions=page_descriptions,
+            )
+
+            if should_advance:
+                estimator.update()
+
+
+def _cleanup_vlm_generation_resources(model: Any, processor: Any, gc: Any, torch: Any) -> None:
+    """Release multimodal generation resources and clear CUDA cache."""
+    logger.info("🗑️  Unloading VLM model from GPU...")
+    del model
+    del processor
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info("✅ Model unloaded")
+
+
+def _process_target_page(
+    *,
+    page_num: int,
+    total_pages: int,
+    pdf: Any,
+    model: Any,
+    processor: Any,
+    process_vision_info: Any,
+    torch: Any,
+    gc: Any,
+    vlm_options: VLMOptions,
+    progress_tracker: PersistentProgressTracker | None,
+    page_descriptions: Dict[int, List[Dict[str, str]]],
+) -> bool:
+    """Process one page and return whether ETA/progress should advance."""
+    should_skip, skip_reason = _should_skip_page(page_num, total_pages, progress_tracker)
+    if should_skip and skip_reason is None:
+        logger.info(f"⏭️  Skipping page {page_num} (already done)")
+        return True
+
+    if should_skip and skip_reason is not None:
+        logger.warning(f"⚠️  Page {page_num} not found in PDF")
+        if progress_tracker:
+            progress_tracker.mark_failed(page_num, skip_reason)
+        return False
+
+    try:
+        page = pdf.pages[page_num - 1]
+        descriptions = _generate_descriptions_for_single_page(
+            page=page,
+            page_num=page_num,
+            model=model,
+            processor=processor,
+            process_vision_info=process_vision_info,
+            torch=torch,
+            gc=gc,
+            vlm_options=vlm_options,
+        )
+        _store_page_result(
+            page_descriptions=page_descriptions,
+            page_num=page_num,
+            descriptions=descriptions,
+        )
+        if progress_tracker:
+            progress_tracker.mark_completed(page_num)
+        return True
+    except (RuntimeError, OSError, TypeError, json.JSONDecodeError) as e:
+        logger.error(f"   ❌ Error processing page {page_num}: {e}")
+        page_descriptions[page_num] = []
+        if progress_tracker:
+            progress_tracker.mark_failed(page_num, str(e))
+        return False
+
+
 def generate_image_descriptions_vlm(
     pdf_path: str,
     pages_with_images: Dict[int, int],
@@ -115,15 +348,8 @@ def generate_image_descriptions_vlm(
     Returns:
         Dict mapping page_number -> list of image descriptions
     """
-    # Use default options if not provided
-    if vlm_options is None:
-        vlm_options = VLMOptions.get_default("quality")  # Use quality preset for image descriptions
-        vlm_options.model_id = get_vision_model_id()
-        vlm_options.max_new_tokens = 2048  # Ensure longer descriptions
-        vlm_options.verbose = True
-    
-    logger.info(f"🤖 Generating image descriptions with {vlm_options.model_id}...")
-    logger.info(f"   Processing {len(pages_with_images)} pages with images")
+    vlm_options = _build_default_description_options(vlm_options)
+    _log_pages_with_images(pages_with_images, vlm_options)
     
     # Setup progress tracking
     doc_name = Path(pdf_path).stem
@@ -132,150 +358,38 @@ def generate_image_descriptions_vlm(
         progress_tracker.start_stage("Image Descriptions", total_items=len(pages_with_images))
     else:
         progress_tracker = None
-    
-    # Time estimation
-    estimator = TimeEstimator(total_items=len(pages_with_images))
-    
+
     with log_operation("Load VLM Model", model=vlm_options.model_id):
         try:
-            # Use the generic multimodal auto-loader because exact Qwen3-VL class names
-            # vary across Transformers releases.
-            from transformers import AutoModelForImageTextToText, AutoProcessor
-            from qwen_vl_utils import process_vision_info
-            import torch
-            import gc
-        except ImportError as e:
-            logger.error(f"❌ Required libraries not available: {e}")
+            model, processor, process_vision_info, torch, gc = _load_vlm_generation_resources(vlm_options)
+        except ImportError:
             return {}
-        
-        # Clear GPU cache first
-        gc.collect()
-        torch.cuda.empty_cache()
-        
-        processor = AutoProcessor.from_pretrained(
-            vlm_options.model_id,
-            **vlm_options.get_processor_kwargs()
-        )
-        model = AutoModelForImageTextToText.from_pretrained(
-            vlm_options.model_id,
-            **vlm_options.get_model_kwargs()
-        )
     
     page_descriptions = {}
     
-    # Process each page with progress bar
     with pdfplumber.open(pdf_path) as pdf:
         pages_to_process = sorted(pages_with_images.keys())
-        
-        with ProgressBar(pages_to_process, desc="🖼️  Image descriptions", unit="page") as pbar:
-            for page_num in pbar:
-                # Check if already completed
-                if progress_tracker and progress_tracker.is_completed(page_num):
-                    logger.info(f"⏭️  Skipping page {page_num} (already done)")
-                    estimator.update()
-                    continue
-                
-                if page_num > len(pdf.pages):
-                    logger.warning(f"⚠️  Page {page_num} not found in PDF")
-                    if progress_tracker:
-                        progress_tracker.mark_failed(page_num, "Page not found")
-                    continue
-                
-                # Show ETA
-                if estimator.completed > 0:
-                    logger.info(f"📄 Processing page {page_num} | ETA: {estimator.get_eta()}")
-                
-                try:
-                    # Convert page to image
-                    page = pdf.pages[page_num - 1]
-                    im = page.to_image(resolution=vlm_options.image_resolution)
-                    img_path = f"/tmp/page_{page_num}_temp.png"
-                    im.save(img_path)
-                    
-                    # Clear GPU cache before processing
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    
-                    # Prepare prompt
-                    prompt = _build_image_description_prompt()
-                    
-                    messages = [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "image": f"file://{img_path}"},
-                                {"type": "text", "text": prompt}
-                            ]
-                        }
-                    ]
-                    
-                    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    image_inputs, video_inputs = process_vision_info(messages)
-                    
-                    inputs = processor(
-                        text=[text],
-                        images=image_inputs,
-                        videos=video_inputs,
-                        padding=True,
-                        return_tensors="pt"
-                    )
-                    inference_device = next(model.parameters()).device
-                    inputs = inputs.to(inference_device)
-                    
-                    # Generate with VLM options
-                    with torch.no_grad():
-                        output_ids = model.generate(
-                            **inputs,
-                            **vlm_options.get_generation_kwargs()
-                        )
-                    
-                    # Decode only the generated tokens
-                    generated_ids = [
-                        output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs.input_ids, output_ids)
-                    ]
-                    
-                    response = processor.batch_decode(
-                        generated_ids,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=False
-                    )[0]
-                    
-                    if vlm_options.verbose:
-                        logger.info(f"   VLM Response: {response[:500]}")
-                
-                    # Extract JSON from response
-                    descriptions = _extract_descriptions_from_response(response)
-                    if descriptions:
-                        page_descriptions[page_num] = descriptions
-                        logger.info(f"   ✅ Extracted {len(descriptions)} image descriptions on page {page_num}")
-                    else:
-                        page_descriptions[page_num] = []
-                        logger.warning("   ⚠️  Could not extract any valid descriptions")
-                    
-                    # Mark as completed
-                    if progress_tracker:
-                        progress_tracker.mark_completed(page_num)
-                    
-                    estimator.update()
-                    
-                except (RuntimeError, OSError, TypeError, ValueError, json.JSONDecodeError) as e:
-                    logger.error(f"   ❌ Error processing page {page_num}: {e}")
-                    page_descriptions[page_num] = []
-                    if progress_tracker:
-                        progress_tracker.mark_failed(page_num, str(e))
+        total_pages = len(pdf.pages)
+        _process_pages_with_progress(
+            pdf=pdf,
+            pages_to_process=pages_to_process,
+            total_pages=total_pages,
+            model=model,
+            processor=processor,
+            process_vision_info=process_vision_info,
+            torch=torch,
+            gc=gc,
+            vlm_options=vlm_options,
+            progress_tracker=progress_tracker,
+            page_descriptions=page_descriptions,
+        )
     
     # End progress tracking
     if progress_tracker:
         progress_tracker.end_stage("Image Descriptions")
         logger.info(f"\n{progress_tracker.get_progress_summary()}")
     
-    # Unload model from GPU
-    logger.info("🗑️  Unloading VLM model from GPU...")
-    del model
-    del processor
-    gc.collect()
-    torch.cuda.empty_cache()
-    logger.info("✅ Model unloaded")
+    _cleanup_vlm_generation_resources(model, processor, gc, torch)
     
     logger.info(f"✅ Generated descriptions for {len(page_descriptions)} pages")
     return page_descriptions

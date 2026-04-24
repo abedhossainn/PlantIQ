@@ -26,7 +26,7 @@ import hashlib
 import logging
 from pathlib import Path
 from PIL import Image
-from typing import Optional
+from typing import Any, Optional
 
 # Use "placeholder" mode by default to avoid expensive VLM inference on every image in PDFs
 # This significantly speeds up Docling PDF conversion. For production image analysis,
@@ -189,56 +189,49 @@ def _coalesce_consecutive_headings(md_content: str) -> str:
     If multiple ## headings appear within 3 lines of each other with no prose,
     combine them into a single heading or reflow as a paragraph.
     """
+    def _is_h2(line_text: str) -> bool:
+        return line_text.startswith('##') and not line_text.startswith('###')
+
+    def _flush_heading_buffer(buffer: list[str], output: list[str]) -> None:
+        if not buffer:
+            return
+        if len(buffer) == 1:
+            output.append(buffer[0])
+            return
+        combined = buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in buffer[1:])
+        output.append(combined)
+
+    def _next_non_empty_is_h2(all_lines: list[str], current_index: int) -> bool:
+        for j in range(current_index + 1, min(current_index + 4, len(all_lines))):
+            next_stripped = all_lines[j].strip()
+            if not next_stripped:
+                continue
+            return _is_h2(next_stripped)
+        return False
+
     lines = md_content.split('\n')
-    result = []
-    heading_buffer = []
-    
+    result: list[str] = []
+    heading_buffer: list[str] = []
+
     for i, line in enumerate(lines):
         stripped = line.strip()
-        
-        # Check if this is a heading
-        if stripped.startswith('##') and not stripped.startswith('###'):
+
+        if _is_h2(stripped):
             heading_buffer.append(stripped)
-        elif stripped:  # Non-empty, non-heading line
-            # Flush heading buffer if we have multiple consecutive headings
-            if len(heading_buffer) > 1:
-                # Combine headings with " / " separator
-                combined = heading_buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in heading_buffer[1:])
-                result.append(combined)
-            elif heading_buffer:
-                result.append(heading_buffer[0])
-            
+            continue
+
+        if stripped:
+            _flush_heading_buffer(heading_buffer, result)
             heading_buffer = []
             result.append(line)
-        else:  # Empty line
-            if heading_buffer:
-                # Check if next non-empty line is also a heading
-                next_is_heading = False
-                for j in range(i + 1, min(i + 4, len(lines))):
-                    next_stripped = lines[j].strip()
-                    if next_stripped:
-                        next_is_heading = next_stripped.startswith('##') and not next_stripped.startswith('###')
-                        break
-                
-                if not next_is_heading:
-                    # Flush buffer
-                    if len(heading_buffer) > 1:
-                        combined = heading_buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in heading_buffer[1:])
-                        result.append(combined)
-                    else:
-                        result.append(heading_buffer[0])
-                    heading_buffer = []
-            
-            result.append(line)
-    
-    # Flush any remaining headings
-    if heading_buffer:
-        if len(heading_buffer) > 1:
-            combined = heading_buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in heading_buffer[1:])
-            result.append(combined)
-        else:
-            result.append(heading_buffer[0])
-    
+            continue
+
+        if heading_buffer and not _next_non_empty_is_h2(lines, i):
+            _flush_heading_buffer(heading_buffer, result)
+            heading_buffer = []
+        result.append(line)
+
+    _flush_heading_buffer(heading_buffer, result)
     return '\n'.join(result)
 
 
@@ -440,6 +433,87 @@ def _generate_image_descriptions(
     return modified_content
 
 
+def _resolve_docling_image_mode(image_mode: str):
+    """Resolve Docling image export mode for local page conversion."""
+    if image_mode == "placeholder":
+        return ImageRefMode.PLACEHOLDER
+    return ImageRefMode.EMBEDDED
+
+
+def _resolve_accelerator_device(AcceleratorDevice: Any):
+    """Resolve the preferred Docling accelerator device from environment."""
+    preferred_device = str(os.getenv("DOCLING_ACCELERATOR_DEVICE", "cuda")).strip().lower()
+    device_name_map = {
+        "cpu": "CPU",
+        "mps": "MPS",
+        "auto": "AUTO",
+    }
+    requested_name = device_name_map.get(preferred_device, "CUDA")
+    accelerator_device = getattr(AcceleratorDevice, requested_name, None)
+    if accelerator_device is None:
+        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
+    return accelerator_device
+
+
+def _configure_page_export_pipeline_options(
+    *,
+    PdfPipelineOptions: Any,
+    AcceleratorDevice: Any,
+    AcceleratorOptions: Any,
+) -> Any:
+    """Build pipeline options for page-scoped markdown export."""
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.generate_picture_images = True
+    pipeline_options.generate_page_images = False
+    pipeline_options.do_picture_description = False
+    pipeline_options.enable_remote_services = False
+
+    accelerator_device = _resolve_accelerator_device(AcceleratorDevice)
+    if accelerator_device is not None:
+        pipeline_options.accelerator_options = AcceleratorOptions(device=accelerator_device)
+
+    ocr_options = getattr(pipeline_options, "ocr_options", None)
+    if ocr_options is not None and hasattr(ocr_options, "use_gpu"):
+        setattr(
+            ocr_options,
+            "use_gpu",
+            accelerator_device == getattr(AcceleratorDevice, "CUDA", None),
+        )
+    if hasattr(pipeline_options, "min_picture_page_surface_ratio"):
+        pipeline_options.min_picture_page_surface_ratio = 0
+    return pipeline_options
+
+
+def _post_process_page_markdown(
+    *,
+    page_markdown: str,
+    page_no: int,
+    image_mode: str,
+    pdf_path: str,
+    vlm_options: 'VLMOptions' = None,
+    figure_number: int,
+) -> tuple[str, int]:
+    """Apply image-mode-specific and structural post-processing to page markdown."""
+    next_figure_number = figure_number
+
+    if image_mode == "placeholder":
+        page_markdown = _convert_embedded_to_placeholders(page_markdown)
+    elif image_mode == "referenced":
+        page_markdown, _ = _extract_referenced_images(page_markdown, f"{pdf_path}.page_{page_no}.md")
+    elif image_mode == "descriptions":
+        embedded_images = len(re.findall(EMBEDDED_IMAGE_PATTERN, page_markdown))
+        page_markdown = _generate_image_descriptions(
+            page_markdown,
+            vlm_options=vlm_options,
+            starting_figure_number=figure_number,
+        )
+        next_figure_number += embedded_images
+
+    page_markdown = _normalize_table_cells(page_markdown)
+    page_markdown = _coalesce_consecutive_headings(page_markdown)
+    return page_markdown.strip(), next_figure_number
+
+
 def export_page_markdown_map(
     pdf_path: str,
     image_mode: str = DEFAULT_IMAGE_MODE,
@@ -465,48 +539,15 @@ def export_page_markdown_map(
         logger.warning("Local Docling image modes unavailable; cannot export page-scoped markdown")
         return {}
 
-    if image_mode == "placeholder":
-        docling_image_mode = ImageRefMode.PLACEHOLDER
-    else:
-        docling_image_mode = ImageRefMode.EMBEDDED
+    docling_image_mode = _resolve_docling_image_mode(image_mode)
 
     page_markdown_map: dict[int, str] = {}
     figure_number = 1
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.generate_picture_images = True
-    pipeline_options.generate_page_images = False
-    pipeline_options.do_picture_description = False
-    pipeline_options.enable_remote_services = False
-    # Root-cause fix: explicitly request GPU acceleration for local Docling
-    # conversion so per-page extraction does not silently run CPU-only.
-    # Falls back to AUTO if explicit CUDA enum resolution is unavailable.
-    accelerator_device = None
-    preferred_device = str(os.getenv("DOCLING_ACCELERATOR_DEVICE", "cuda")).strip().lower()
-    if preferred_device == "cpu":
-        accelerator_device = getattr(AcceleratorDevice, "CPU", None)
-    elif preferred_device == "mps":
-        accelerator_device = getattr(AcceleratorDevice, "MPS", None)
-    elif preferred_device == "auto":
-        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
-    else:
-        accelerator_device = getattr(AcceleratorDevice, "CUDA", None)
-
-    if accelerator_device is None:
-        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
-
-    if accelerator_device is not None:
-        pipeline_options.accelerator_options = AcceleratorOptions(device=accelerator_device)
-
-    # If OCR options expose a `use_gpu` switch, align it with accelerator choice.
-    ocr_options = getattr(pipeline_options, "ocr_options", None)
-    if ocr_options is not None and hasattr(ocr_options, "use_gpu"):
-        setattr(
-            ocr_options,
-            "use_gpu",
-            accelerator_device == getattr(AcceleratorDevice, "CUDA", None),
-        )
-    if hasattr(pipeline_options, "min_picture_page_surface_ratio"):
-        pipeline_options.min_picture_page_surface_ratio = 0
+    pipeline_options = _configure_page_export_pipeline_options(
+        PdfPipelineOptions=PdfPipelineOptions,
+        AcceleratorDevice=AcceleratorDevice,
+        AcceleratorOptions=AcceleratorOptions,
+    )
 
     converter = DocumentConverter(
         format_options={
@@ -531,24 +572,78 @@ def export_page_markdown_map(
             image_mode=docling_image_mode,
         )
 
-        if image_mode == "placeholder":
-            page_markdown = _convert_embedded_to_placeholders(page_markdown)
-        elif image_mode == "referenced":
-            page_markdown, _ = _extract_referenced_images(page_markdown, f"{pdf_path}.page_{page_no}.md")
-        elif image_mode == "descriptions":
-            embedded_images = len(re.findall(r'!\[[^\]]*\]\((data:image/[^)]+)\)', page_markdown))
-            page_markdown = _generate_image_descriptions(
-                page_markdown,
-                vlm_options=vlm_options,
-                starting_figure_number=figure_number,
-            )
-            figure_number += embedded_images
-
-        page_markdown = _normalize_table_cells(page_markdown)
-        page_markdown = _coalesce_consecutive_headings(page_markdown)
-        page_markdown_map[int(page_no)] = page_markdown.strip()
+        page_markdown, figure_number = _post_process_page_markdown(
+            page_markdown=page_markdown,
+            page_no=page_no,
+            image_mode=image_mode,
+            pdf_path=pdf_path,
+            vlm_options=vlm_options,
+            figure_number=figure_number,
+        )
+        page_markdown_map[int(page_no)] = page_markdown
 
     return page_markdown_map
+
+
+def _build_conversion_options(image_mode: str) -> dict[str, Any]:
+    """Build Docling conversion options aligned to the requested image strategy."""
+    image_export_mode = "embedded" if image_mode in {"embedded", "referenced", "descriptions"} else "placeholder"
+    return {
+        "to_formats": ["md"],
+        "do_ocr": True,
+        "pdf_backend": "dlparse_v4",
+        "table_mode": "accurate",
+        "do_table_structure": True,
+        "do_formula_enrichment": False,
+        "do_picture_description": False,
+        "do_code_enrichment": False,
+        "do_picture_classification": False,
+        "abort_on_error": True,
+        "image_export_mode": image_export_mode,
+        "include_images": image_export_mode == "embedded",
+        "images_scale": 1.0,
+    }
+
+
+def _convert_markdown_for_selected_image_mode(
+    *,
+    md_content: str,
+    image_mode: str,
+    output_path: str,
+    docling_url: str,
+    vlm_options: 'VLMOptions' = None,
+) -> str:
+    """Apply requested image-mode post-processing to converted markdown."""
+    if image_mode == "placeholder":
+        print("\n🔄 Converting embedded images to placeholders...")
+        return _convert_embedded_to_placeholders(md_content)
+    if image_mode == "referenced":
+        print("\n🔄 Converting embedded images to referenced format...")
+        converted_content, image_refs = _extract_referenced_images(md_content, output_path)
+        if image_refs:
+            print(f"   Extracted {len(image_refs)} images to separate files")
+        return converted_content
+    if image_mode == "descriptions":
+        print("\n🔄 Generating AI descriptions for images...")
+        return _generate_image_descriptions(md_content, docling_url, vlm_options)
+    return md_content
+
+
+def _finalize_markdown_output(md_content: str, output_path: str) -> None:
+    """Run structural normalization and save the markdown output."""
+    print("\n🔧 Applying structural post-processing...")
+    print("   ✓ Normalizing table cells and chemical formulas")
+    md_content = _normalize_table_cells(md_content)
+    print("   ✓ Coalescing consecutive headings")
+    md_content = _coalesce_consecutive_headings(md_content)
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_text(md_content, encoding="utf-8")
+
+    print("\n✅ Conversion complete!")
+    print(f"📝 Output: {output_file.resolve()}")
+    print(f"📊 File size: {len(md_content):,} bytes ({len(md_content.split(chr(10)))} lines)")
 
 
 def _get_pdf_page_count(pdf_path: str) -> int:
@@ -706,31 +801,7 @@ def convert_pdf_with_qwen(
         pages_per_chunk = int(os.getenv("DOCLING_CHUNK_PAGES", str(DEFAULT_DOCLING_CHUNK_PAGES)))
         connect_timeout = 10
         read_timeout = int(os.getenv("DOCLING_CHUNK_READ_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS)))
-
-        # Align server-side processing with the current image strategy.
-        # Large PDFs were hanging partly because we were asking Docling to do a single,
-        # synchronous, image-heavy conversion for the entire document.
-        image_export_mode = "embedded" if image_mode in {"embedded", "referenced", "descriptions"} else "placeholder"
-
-        # Settings - focus on accurate extraction while avoiding redundant heavy image/VLM work.
-        # Root-cause note: Docling Serve 1.12.0 returns a server-side 404
-        # ("Task result not found") for synchronous chunked requests when
-        # formula enrichment is enabled, so keep that disabled here.
-        options = {
-            "to_formats": ["md"],
-            "do_ocr": True,
-            "pdf_backend": "dlparse_v4",
-            "table_mode": "accurate",
-            "do_table_structure": True,
-            "do_formula_enrichment": False,
-            "do_picture_description": False,
-            "do_code_enrichment": False,
-            "do_picture_classification": False,
-            "abort_on_error": True,
-            "image_export_mode": image_export_mode,
-            "include_images": image_export_mode == "embedded",
-            "images_scale": 1.0,
-        }
+        options = _build_conversion_options(image_mode)
 
         try:
             # Use bounded synchronous page-range chunks so large PDFs do not hang on a
@@ -790,34 +861,14 @@ def convert_pdf_with_qwen(
         print(f"   Elements: {len(document.get('elements', []))}")
         print(f"   Raw MD size: {len(md_content):,} bytes")
         
-        # Post-process markdown based on image_mode
-        if image_mode == "placeholder":
-            print("\n🔄 Converting embedded images to placeholders...")
-            md_content = _convert_embedded_to_placeholders(md_content)
-        elif image_mode == "referenced":
-            print("\n🔄 Converting embedded images to referenced format...")
-            md_content, image_refs = _extract_referenced_images(md_content, output_path)
-            if image_refs:
-                print(f"   Extracted {len(image_refs)} images to separate files")
-        elif image_mode == "descriptions":
-            print("\n🔄 Generating AI descriptions for images...")
-            md_content = _generate_image_descriptions(md_content, docling_url, vlm_options)
-        
-        # Apply structural post-processing improvements
-        print("\n🔧 Applying structural post-processing...")
-        print("   ✓ Normalizing table cells and chemical formulas")
-        md_content = _normalize_table_cells(md_content)
-        print("   ✓ Coalescing consecutive headings")
-        md_content = _coalesce_consecutive_headings(md_content)
-        
-        # Save to file
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(md_content, encoding="utf-8")
-        
-        print(f"\n✅ Conversion complete!")
-        print(f"📝 Output: {output_file.resolve()}")
-        print(f"📊 File size: {len(md_content):,} bytes ({len(md_content.split(chr(10)))} lines)")
+        md_content = _convert_markdown_for_selected_image_mode(
+            md_content=md_content,
+            image_mode=image_mode,
+            output_path=output_path,
+            docling_url=docling_url,
+            vlm_options=vlm_options,
+        )
+        _finalize_markdown_output(md_content, output_path)
 
 def main():
     parser = argparse.ArgumentParser(

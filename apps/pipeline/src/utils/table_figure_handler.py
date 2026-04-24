@@ -47,6 +47,36 @@ class FigureData:
     source_location: str
 
 
+def _normalize_table_headers(table: list[list[object]]) -> list[str]:
+    """Return normalized table headers from first row."""
+    return [str(cell or '').strip() for cell in table[0]]
+
+
+def _normalize_table_rows(table: list[list[object]]) -> list[list[str]]:
+    """Return non-empty normalized data rows for a table."""
+    rows: list[list[str]] = []
+    for row in table[1:]:
+        cleaned_row = [str(cell or '').strip() for cell in row]
+        if any(cleaned_row):
+            rows.append(cleaned_row)
+    return rows
+
+
+def _build_table_data(page_num: int, table_idx: int, headers: list[str], rows: list[list[str]]) -> TableData:
+    """Build structured table payload for downstream RAG formatting."""
+    table_id = f"table_p{page_num}_{table_idx}"
+    return TableData(
+        table_id=table_id,
+        page_number=page_num,
+        caption=None,
+        headers=headers,
+        rows=rows,
+        key_facts=extract_table_key_facts(headers, rows),
+        serialized_table=serialize_table_markdown(headers, rows),
+        source_location=f"Page {page_num}",
+    )
+
+
 def extract_tables_from_pdf(pdf_path: str) -> List[TableData]:
     """
     Extract and serialize tables from PDF using pdfplumber
@@ -61,44 +91,21 @@ def extract_tables_from_pdf(pdf_path: str) -> List[TableData]:
         
         with pdfplumber.open(pdf_path) as pdf:
             for page_num, page in enumerate(pdf.pages, 1):
-                tables = page.extract_tables()
-                
-                for table_idx, table in enumerate(tables, 1):
+                for table_idx, table in enumerate(page.extract_tables(), 1):
                     if not table or len(table) < 2:
                         continue
-                    
-                    # Extract headers (first row)
-                    headers = [str(cell or '').strip() for cell in table[0]]
-                    
-                    # Extract data rows
-                    rows = []
-                    for row in table[1:]:
-                        cleaned_row = [str(cell or '').strip() for cell in row]
-                        if any(cleaned_row):  # Skip empty rows
-                            rows.append(cleaned_row)
-                    
-                    # Create table ID
-                    table_id = f"table_p{page_num}_{table_idx}"
-                    
-                    # Serialize table in markdown format
-                    serialized = serialize_table_markdown(headers, rows)
-                    
-                    # Extract key facts from table
-                    key_facts = extract_table_key_facts(headers, rows)
-                    
-                    table_data = TableData(
-                        table_id=table_id,
-                        page_number=page_num,
-                        caption=None,  # Will be extracted from surrounding text
-                        headers=headers,
-                        rows=rows,
-                        key_facts=key_facts,
-                        serialized_table=serialized,
-                        source_location=f"Page {page_num}"
-                    )
-                    
+
+                    headers = _normalize_table_headers(table)
+                    rows = _normalize_table_rows(table)
+                    table_data = _build_table_data(page_num, table_idx, headers, rows)
+
                     tables_data.append(table_data)
-                    logger.info(f"✅ Extracted {table_id}: {len(headers)} columns, {len(rows)} rows")
+                    logger.info(
+                        "✅ Extracted %s: %s columns, %s rows",
+                        table_data.table_id,
+                        len(headers),
+                        len(rows),
+                    )
         
         logger.info(f"✅ Total tables extracted: {len(tables_data)}")
         return tables_data

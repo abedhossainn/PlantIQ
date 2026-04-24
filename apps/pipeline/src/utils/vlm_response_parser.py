@@ -15,6 +15,38 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
 
 
+def _try_load_json(candidate: str) -> Optional[Dict[str, Any]]:
+    """Safely parse a JSON candidate string."""
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _extract_markdown_json_block(text: str) -> Optional[str]:
+    """Return JSON text from a fenced markdown block when present."""
+    code_block_pattern = r'```(?:json)?\s*(\{[^`]*\}|\[[^`]*\])\s*```'
+    match = re.search(code_block_pattern, text, re.DOTALL)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _iter_json_like_matches(text: str) -> List[str]:
+    """Yield JSON-like object/array candidates from free-form text."""
+    json_patterns = [
+        r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',
+        r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]',
+    ]
+
+    matches: List[str] = []
+    for pattern in json_patterns:
+        for match in re.finditer(pattern, text, re.DOTALL):
+            matches.append(match.group(0))
+    return matches
+
+
 # ===== Response Models =====
 
 class ValidationResult(BaseModel):
@@ -73,35 +105,21 @@ def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     Returns:
         Parsed JSON dict or None
     """
-    # Strategy 1: Direct parse
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    
-    # Strategy 2: Extract from markdown code block
-    code_block_pattern = r'```(?:json)?\s*(\{[^`]*\}|\[[^`]*\])\s*```'
-    match = re.search(code_block_pattern, text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
-    
-    # Strategy 3: Find JSON object or array
-    json_patterns = [
-        r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',  # Nested objects
-        r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]',  # Nested arrays
-    ]
-    
-    for pattern in json_patterns:
-        matches = re.finditer(pattern, text, re.DOTALL)
-        for match in matches:
-            try:
-                return json.loads(match.group(0))
-            except json.JSONDecodeError:
-                continue
-    
+    direct = _try_load_json(text)
+    if direct is not None:
+        return direct
+
+    markdown_candidate = _extract_markdown_json_block(text)
+    if markdown_candidate is not None:
+        markdown_parsed = _try_load_json(markdown_candidate)
+        if markdown_parsed is not None:
+            return markdown_parsed
+
+    for candidate in _iter_json_like_matches(text):
+        parsed = _try_load_json(candidate)
+        if parsed is not None:
+            return parsed
+
     return None
 
 
@@ -134,8 +152,55 @@ def lax_json_parse(text: str) -> Optional[Dict[str, Any]]:
         text = re.sub(r',\s*]', ']', text)
         
         return json.loads(text)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, json.JSONDecodeError):
         return None
+
+
+def _run_parse_strategy(strategy_fn: Any) -> tuple[Optional[T], Optional[Exception]]:
+    """Run a parse strategy and capture failures without raising."""
+    try:
+        result = strategy_fn()
+        return result, None
+    except (json.JSONDecodeError, ValidationError, TypeError, KeyError, RuntimeError) as exc:
+        return None, exc
+
+
+def _get_parse_strategies(response: str, schema: Type[T]) -> List[tuple[str, Any]]:
+    """Return ordered parsing strategies for a VLM response."""
+    return [
+        ("direct_json", lambda: schema(**json.loads(response))),
+        ("extract_json", lambda: schema(**extract_json_from_text(response))),
+        ("lax_json", lambda: schema(**lax_json_parse(response))),
+    ]
+
+
+def _log_parse_attempt(verbose: bool, strategy_name: str, error: Optional[Exception]) -> None:
+    """Emit verbose parse attempt logging."""
+    if not verbose:
+        return
+    if error is None:
+        logger.info(f"  ✅ Success with {strategy_name}")
+        return
+    logger.debug(f"  ❌ {strategy_name} failed: {str(error)[:100]}")
+
+
+def _parse_with_strategies(
+    *,
+    response: str,
+    schema: Type[T],
+    verbose: bool,
+) -> Optional[T]:
+    """Try ordered parsing strategies and return the first successful result."""
+    for strategy_name, strategy_fn in _get_parse_strategies(response, schema):
+        if verbose:
+            logger.info(f"  🔍 Trying strategy: {strategy_name}")
+
+        result, error = _run_parse_strategy(strategy_fn)
+        _log_parse_attempt(verbose, strategy_name, error)
+        if result is not None:
+            return result
+
+    return None
 
 
 # ===== Structured Parsing =====
@@ -171,34 +236,10 @@ def parse_vlm_response(
     if verbose:
         logger.info(f"📋 Parsing VLM response with schema: {schema.__name__}")
         logger.debug(f"Response preview: {response[:200]}...")
-    
-    # Parsing strategies
-    strategies = [
-        ("direct_json", lambda: schema(**json.loads(response))),
-        ("extract_json", lambda: schema(**extract_json_from_text(response))),
-        ("lax_json", lambda: schema(**lax_json_parse(response))),
-    ]
-    
-    # Try each strategy
-    for strategy_name, strategy_fn in strategies:
-        try:
-            if verbose:
-                logger.info(f"  🔍 Trying strategy: {strategy_name}")
-            
-            result = strategy_fn()
-            
-            if result is not None:
-                if verbose:
-                    logger.info(f"  ✅ Success with {strategy_name}")
-                return result
-        except (json.JSONDecodeError, ValidationError, TypeError, KeyError) as e:
-            if verbose:
-                logger.debug(f"  ❌ {strategy_name} failed: {str(e)[:100]}")
-            continue
-        except RuntimeError as e:
-            if verbose:
-                logger.warning(f"  ⚠️  {strategy_name} unexpected error: {str(e)[:100]}")
-            continue
+
+    result = _parse_with_strategies(response=response, schema=schema, verbose=verbose)
+    if result is not None:
+        return result
     
     # All strategies failed
     if fallback is not None:

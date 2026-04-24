@@ -368,19 +368,7 @@ def compute_qa_metrics(
     )
     
     # Section status counts
-    sections_approved = 0
-    sections_rejected = 0
-    sections_pending = 0
-    
-    if review_data and 'sections' in review_data:
-        for section in review_data['sections']:
-            status = section.get('status', 'PENDING')
-            if status == 'APPROVED':
-                sections_approved += 1
-            elif status == 'REJECTED' or status == 'NEEDS_REWORK':
-                sections_rejected += 1
-            else:
-                sections_pending += 1
+    sections_approved, sections_rejected, sections_pending = _summarize_review_section_statuses(review_data)
     
     metrics = QAMetrics(
         citation_coverage_percent=citation_coverage,
@@ -400,6 +388,88 @@ def compute_qa_metrics(
     return metrics
 
 
+def _summarize_review_section_statuses(review_data: Optional[Dict]) -> tuple[int, int, int]:
+    """Return approved/rejected/pending section counts from optional review data."""
+    sections_approved = 0
+    sections_rejected = 0
+    sections_pending = 0
+
+    if not review_data or 'sections' not in review_data:
+        return sections_approved, sections_rejected, sections_pending
+
+    for section in review_data['sections']:
+        status = section.get('status', 'PENDING')
+        if status == 'APPROVED':
+            sections_approved += 1
+        elif status == 'REJECTED' or status == 'NEEDS_REWORK':
+            sections_rejected += 1
+        else:
+            sections_pending += 1
+
+    return sections_approved, sections_rejected, sections_pending
+
+
+def _evaluate_gate_criterion(
+    *,
+    passed: List[str],
+    failed: List[str],
+    recommendations: List[str],
+    value: float,
+    threshold: float,
+    label: str,
+    recommendation: str,
+    formatter: str = "{value:.1f}%",
+    threshold_formatter: str = "{threshold:.1f}%",
+) -> None:
+    """Evaluate one threshold-based criterion and append messaging."""
+    if value >= threshold:
+        passed.append(f"{label}: {formatter.format(value=value, threshold=threshold)}")
+        return
+
+    failed.append(
+        f"{label}: {formatter.format(value=value, threshold=threshold)} < "
+        f"{threshold_formatter.format(value=value, threshold=threshold)}"
+    )
+    recommendations.append(recommendation)
+
+
+def _evaluate_critical_issue_criterion(
+    *,
+    passed: List[str],
+    failed: List[str],
+    recommendations: List[str],
+    current_count: int,
+    max_allowed: int,
+) -> None:
+    """Evaluate zero/low critical issue tolerance criterion."""
+    if current_count <= max_allowed:
+        passed.append(f"Critical issues: {current_count}")
+        return
+
+    failed.append(f"Critical issues: {current_count} > {max_allowed}")
+    recommendations.append("Resolve all critical issues before approval")
+
+
+def _evaluate_figure_description_criterion(
+    *,
+    passed: List[str],
+    failed: List[str],
+    recommendations: List[str],
+    require_all_figures_described: bool,
+    figure_description_coverage_percent: float,
+) -> None:
+    """Evaluate the optional all-figures-described gate."""
+    if not require_all_figures_described:
+        return
+
+    if figure_description_coverage_percent >= 100.0:
+        passed.append("All figures described")
+        return
+
+    failed.append(f"Figure descriptions: {figure_description_coverage_percent:.1f}% < 100%")
+    recommendations.append("Add text descriptions for all figures")
+
+
 def evaluate_qa_gate(
     metrics: QAMetrics,
     criteria: AcceptanceCriteria
@@ -414,43 +484,61 @@ def evaluate_qa_gate(
     failed = []
     recommendations = []
     
-    # Check each criterion
-    if metrics.citation_coverage_percent >= criteria.min_citation_coverage * 100:
-        passed.append(f"Citation coverage: {metrics.citation_coverage_percent:.1f}%")
-    else:
-        failed.append(f"Citation coverage: {metrics.citation_coverage_percent:.1f}% < {criteria.min_citation_coverage*100:.1f}%")
-        recommendations.append("Add source citations to more sections")
-    
-    if metrics.question_heading_compliance_percent >= criteria.min_question_heading_compliance * 100:
-        passed.append(f"Question headings: {metrics.question_heading_compliance_percent:.1f}%")
-    else:
-        failed.append(f"Question headings: {metrics.question_heading_compliance_percent:.1f}% < {criteria.min_question_heading_compliance*100:.1f}%")
-        recommendations.append("Reformat more headings as questions")
-    
-    if metrics.table_to_bullets_ratio >= criteria.min_table_facts_extraction * 100:
-        passed.append(f"Table facts extraction: {metrics.table_to_bullets_ratio:.1f}%")
-    else:
-        failed.append(f"Table facts extraction: {metrics.table_to_bullets_ratio:.1f}% < {criteria.min_table_facts_extraction*100:.1f}%")
-        recommendations.append("Extract key facts from tables as bullet points")
-    
-    if metrics.overall_confidence_score >= criteria.min_confidence_score * 100:
-        passed.append(f"Confidence score: {metrics.overall_confidence_score:.1f}%")
-    else:
-        failed.append(f"Confidence score: {metrics.overall_confidence_score:.1f}% < {criteria.min_confidence_score*100:.1f}%")
-        recommendations.append("Review and correct low-confidence sections")
-    
-    if metrics.critical_issues_count <= criteria.max_critical_issues:
-        passed.append(f"Critical issues: {metrics.critical_issues_count}")
-    else:
-        failed.append(f"Critical issues: {metrics.critical_issues_count} > {criteria.max_critical_issues}")
-        recommendations.append("Resolve all critical issues before approval")
-    
-    if criteria.require_all_figures_described:
-        if metrics.figure_description_coverage_percent >= 100.0:
-            passed.append("All figures described")
-        else:
-            failed.append(f"Figure descriptions: {metrics.figure_description_coverage_percent:.1f}% < 100%")
-            recommendations.append("Add text descriptions for all figures")
+    _evaluate_gate_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        value=metrics.citation_coverage_percent,
+        threshold=criteria.min_citation_coverage * 100,
+        label="Citation coverage",
+        recommendation="Add source citations to more sections",
+    )
+
+    _evaluate_gate_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        value=metrics.question_heading_compliance_percent,
+        threshold=criteria.min_question_heading_compliance * 100,
+        label="Question headings",
+        recommendation="Reformat more headings as questions",
+    )
+
+    _evaluate_gate_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        value=metrics.table_to_bullets_ratio,
+        threshold=criteria.min_table_facts_extraction * 100,
+        label="Table facts extraction",
+        recommendation="Extract key facts from tables as bullet points",
+    )
+
+    _evaluate_gate_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        value=metrics.overall_confidence_score,
+        threshold=criteria.min_confidence_score * 100,
+        label="Confidence score",
+        recommendation="Review and correct low-confidence sections",
+    )
+
+    _evaluate_critical_issue_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        current_count=metrics.critical_issues_count,
+        max_allowed=criteria.max_critical_issues,
+    )
+
+    _evaluate_figure_description_criterion(
+        passed=passed,
+        failed=failed,
+        recommendations=recommendations,
+        require_all_figures_described=criteria.require_all_figures_described,
+        figure_description_coverage_percent=metrics.figure_description_coverage_percent,
+    )
     
     # Determine decision
     if not failed:

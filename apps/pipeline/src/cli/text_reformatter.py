@@ -185,63 +185,160 @@ def _dedupe_ints(values: Iterable[Any]) -> list[int]:
     return ordered
 
 
-def _build_generation_segments(markdown_content: str, optimization_prep: dict | None) -> list[dict[str, Any]]:
-    if optimization_prep and isinstance(optimization_prep.get("segments"), list) and optimization_prep["segments"]:
-        return [segment for segment in optimization_prep["segments"] if isinstance(segment, dict)]
+def _collect_source_pages_from_chunk(chunk: dict[str, Any], content: str) -> list[int]:
+    """Collect and de-duplicate source pages from chunk fields and citations."""
+    source_pages: list[int] = []
+    source_page_candidates = chunk.get("source_pages") or chunk.get("page_numbers") or chunk.get("pages")
+    if isinstance(source_page_candidates, list):
+        source_pages.extend(page for page in source_page_candidates if isinstance(page, int))
+    elif isinstance(source_page_candidates, int):
+        source_pages.append(source_page_candidates)
 
-    if optimization_prep and isinstance(optimization_prep.get("pages"), list) and optimization_prep["pages"]:
-        return [
-            {
-                "segment_id": "segment_001",
-                "title": "Full Document",
-                "page_numbers": [
-                    int(page.get("page_number"))
-                    for page in optimization_prep["pages"]
-                    if isinstance(page, dict) and isinstance(page.get("page_number"), int)
-                ],
-                "heading_candidates": _dedupe_strings(
-                    heading
-                    for page in optimization_prep["pages"]
-                    if isinstance(page, dict)
-                    for heading in (page.get("heading_candidates") or [])
-                ),
-                "table_facts": _dedupe_strings(
-                    fact
-                    for page in optimization_prep["pages"]
-                    if isinstance(page, dict)
-                    for fact in (page.get("table_facts") or [])
-                ),
-                "ambiguity_flags": _dedupe_strings(
-                    flag
-                    for page in optimization_prep["pages"]
-                    if isinstance(page, dict)
-                    for flag in (page.get("ambiguity_flags") or [])
-                ),
-                "citations": [
-                    citation
-                    for page in optimization_prep["pages"]
-                    if isinstance(page, dict)
-                    for citation in (page.get("citations") or [])
-                    if isinstance(citation, dict)
-                ],
-                "pages": optimization_prep["pages"],
-                "authoritative_markdown": markdown_content,
-            }
-        ]
+    citations = chunk.get("citations")
+    if isinstance(citations, list):
+        source_pages.extend(
+            citation.get("page_number")
+            for citation in citations
+            if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
+        )
 
-    return [
-        {
-            "segment_id": "segment_001",
-            "title": "Full Document",
-            "page_numbers": _extract_page_numbers(markdown_content),
-            "heading_candidates": [doc for doc in []],
-            "table_facts": [],
-            "ambiguity_flags": [],
-            "citations": [],
-            "pages": [],
-            "authoritative_markdown": markdown_content,
-        }
+    source_pages.extend(_extract_page_numbers(content))
+    return _dedupe_ints(source_pages)
+
+
+def _resolve_chunk_content_from_optimization_prep(
+    *,
+    content: str,
+    source_pages: list[int],
+    optimization_prep: dict | None,
+) -> str:
+    """Fallback to matching optimization-prep page markdown when content is empty."""
+    if content or not optimization_prep:
+        return content
+
+    matching_page = next(
+        (
+            page for page in optimization_prep.get("pages", [])
+            if isinstance(page, dict)
+            and any(page.get("page_number") == page_number for page_number in source_pages)
+        ),
+        None,
+    )
+    if isinstance(matching_page, dict):
+        return _strip_html_comments(_stringify(matching_page.get("authoritative_markdown")))
+    return content
+
+
+def _select_raw_chunks(payload: dict[str, Any]) -> list[Any]:
+    """Return first available non-empty chunk-like collection from payload."""
+    for key in ("chunks", "sections", "items"):
+        candidate = payload.get(key)
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return []
+
+
+def _build_response_parse_candidates(response: str) -> list[dict[str, Any] | None]:
+    """Build ordered parse candidates from strict, lax and repaired JSON extraction."""
+    candidates: list[dict[str, Any] | None] = [
+        extract_json_from_text(response),
+        lax_json_parse(response),
+        _parse_first_json_object(response),
     ]
+
+    json_block_match = re.search(r"```(?:json)?\s*(\{.*)$", response, flags=re.DOTALL)
+    if json_block_match:
+        repaired_candidate = _repair_partial_json(json_block_match.group(1))
+        try:
+            candidates.append(json.loads(repaired_candidate))
+        except json.JSONDecodeError:
+            pass
+
+    return candidates
+
+
+def _get_optimization_pages(optimization_prep: dict | None) -> list[dict[str, Any]]:
+    if not optimization_prep:
+        return []
+
+    pages = optimization_prep.get("pages")
+    if not isinstance(pages, list):
+        return []
+    return [page for page in pages if isinstance(page, dict)]
+
+
+def _build_segmented_generation_segments(optimization_prep: dict | None) -> list[dict[str, Any]]:
+    if not optimization_prep:
+        return []
+
+    segments = optimization_prep.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return []
+    return [segment for segment in segments if isinstance(segment, dict)]
+
+
+def _collect_page_string_field(pages: list[dict[str, Any]], field_name: str) -> list[str]:
+    return _dedupe_strings(
+        item
+        for page in pages
+        for item in (page.get(field_name) or [])
+    )
+
+
+def _collect_page_citations(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        citation
+        for page in pages
+        for citation in (page.get("citations") or [])
+        if isinstance(citation, dict)
+    ]
+
+
+def _build_full_document_generation_segment(
+    markdown_content: str,
+    pages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "segment_id": "segment_001",
+        "title": "Full Document",
+        "page_numbers": [
+            int(page.get("page_number"))
+            for page in pages
+            if isinstance(page.get("page_number"), int)
+        ],
+        "heading_candidates": _collect_page_string_field(pages, "heading_candidates"),
+        "table_facts": _collect_page_string_field(pages, "table_facts"),
+        "ambiguity_flags": _collect_page_string_field(pages, "ambiguity_flags"),
+        "citations": _collect_page_citations(pages),
+        "pages": pages,
+        "authoritative_markdown": markdown_content,
+    }
+
+
+def _build_fallback_generation_segment(markdown_content: str) -> dict[str, Any]:
+    return {
+        "segment_id": "segment_001",
+        "title": "Full Document",
+        "page_numbers": _extract_page_numbers(markdown_content),
+        "heading_candidates": [],
+        "table_facts": [],
+        "ambiguity_flags": [],
+        "citations": [],
+        "pages": [],
+        "authoritative_markdown": markdown_content,
+    }
+
+
+def _build_generation_segments(markdown_content: str, optimization_prep: dict | None) -> list[dict[str, Any]]:
+    segments = _build_segmented_generation_segments(optimization_prep)
+    if segments:
+        return segments
+
+    pages = _get_optimization_pages(optimization_prep)
+    if pages:
+        return [_build_full_document_generation_segment(markdown_content, pages)]
+
+    return [_build_fallback_generation_segment(markdown_content)]
 
 
 def _build_segment_prompt_context(segment: dict[str, Any], doc_name: str) -> dict[str, Any]:
@@ -462,62 +559,78 @@ def _get_cuda_free_memory_gib(torch_module: Any) -> float | None:
         return None
 
 
+def _get_page_heading_source(page: dict[str, Any]) -> str:
+    heading_candidates = page.get("heading_candidates") or []
+    if not isinstance(heading_candidates, list):
+        return ""
+    return next((str(item).strip() for item in heading_candidates if str(item).strip()), "")
+
+
+def _get_page_source_pages(page: dict[str, Any], page_number: int | None) -> list[int]:
+    source_pages = [page_number] if page_number is not None else []
+    citations = page.get("citations") or []
+    if isinstance(citations, list):
+        source_pages.extend(
+            citation.get("page_number")
+            for citation in citations
+            if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
+        )
+    return _dedupe_ints(source_pages)
+
+
+def _get_page_synthesis_content(page: dict[str, Any]) -> str:
+    raw_content = _strip_html_comments(_stringify(page.get("authoritative_markdown")))
+    if raw_content:
+        return raw_content
+    return _stringify(page.get("text_preview"))
+
+
+def _build_synthesized_chunk_from_page(page: dict[str, Any], index: int, doc_name: str) -> dict[str, Any] | None:
+    page_number = page.get("page_number") if isinstance(page.get("page_number"), int) else None
+    raw_content = _get_page_synthesis_content(page)
+    if not raw_content:
+        return None
+
+    heading = _heading_to_question(_get_page_heading_source(page), fallback_page=page_number)
+    source_pages = _get_page_source_pages(page, page_number)
+    return {
+        "heading": heading,
+        "content": _ensure_citation(raw_content, doc_name, source_pages),
+        "source_pages": source_pages,
+        "table_facts": page.get("table_facts") or [],
+        "ambiguity_flags": page.get("ambiguity_flags") or [],
+    }
+
+
+def _build_fallback_synthesized_chunk(markdown_content: str, doc_name: str) -> dict[str, Any]:
+    source_pages = _extract_page_numbers(markdown_content)
+    fallback_content = _ensure_citation(_strip_html_comments(markdown_content), doc_name, source_pages)
+    return {
+        "heading": _heading_to_question(doc_name),
+        "content": fallback_content,
+        "source_pages": source_pages,
+        "table_facts": [],
+        "ambiguity_flags": [],
+    }
+
+
 def _synthesize_chunks_from_optimization_prep(
     *,
     markdown_content: str,
     doc_name: str,
     optimization_prep: dict | None,
 ) -> list[dict[str, Any]]:
-    if optimization_prep and isinstance(optimization_prep.get("pages"), list):
-        synthesized_chunks: list[dict[str, Any]] = []
-        for index, page in enumerate(optimization_prep.get("pages", []), start=1):
-            if not isinstance(page, dict):
-                continue
-            page_number = page.get("page_number") if isinstance(page.get("page_number"), int) else None
-            raw_content = _strip_html_comments(_stringify(page.get("authoritative_markdown")))
-            if not raw_content:
-                raw_content = _stringify(page.get("text_preview"))
-            if not raw_content:
-                continue
-
-            heading_candidates = page.get("heading_candidates") or []
-            heading_source = ""
-            if isinstance(heading_candidates, list):
-                heading_source = next((str(item).strip() for item in heading_candidates if str(item).strip()), "")
-            heading = _heading_to_question(heading_source, fallback_page=page_number)
-            source_pages = [page_number] if page_number is not None else []
-            citations = page.get("citations") or []
-            if isinstance(citations, list):
-                source_pages.extend(
-                    citation.get("page_number")
-                    for citation in citations
-                    if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
-                )
-            source_pages = _dedupe_ints(source_pages)
-            content = _ensure_citation(raw_content, doc_name, source_pages)
-            synthesized_chunks.append(
-                {
-                    "heading": heading,
-                    "content": content,
-                    "source_pages": source_pages,
-                    "table_facts": page.get("table_facts") or [],
-                    "ambiguity_flags": page.get("ambiguity_flags") or [],
-                }
-            )
-
-        if synthesized_chunks:
-            return synthesized_chunks
-
-    fallback_content = _ensure_citation(_strip_html_comments(markdown_content), doc_name, _extract_page_numbers(markdown_content))
-    return [
-        {
-            "heading": _heading_to_question(doc_name),
-            "content": fallback_content,
-            "source_pages": _extract_page_numbers(markdown_content),
-            "table_facts": [],
-            "ambiguity_flags": [],
-        }
+    pages = _get_optimization_pages(optimization_prep)
+    synthesized_chunks = [
+        chunk
+        for index, page in enumerate(pages, start=1)
+        for chunk in [_build_synthesized_chunk_from_page(page, index, doc_name)]
+        if chunk is not None
     ]
+    if synthesized_chunks:
+        return synthesized_chunks
+
+    return [_build_fallback_synthesized_chunk(markdown_content, doc_name)]
 
 
 def _repair_partial_json(candidate: str) -> str:
@@ -579,66 +692,42 @@ def _parse_first_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_prep: dict | None) -> dict[str, Any] | None:
-    if isinstance(chunk, str):
-        content = chunk.strip()
-        if not content:
-            return None
-        source_pages = _extract_page_numbers(content)
-        return {
-            "heading": _heading_to_question(f"Chunk {fallback_index}"),
-            "content": _ensure_citation(content, doc_name, source_pages),
-            "source_pages": source_pages,
-            "table_facts": [],
-            "ambiguity_flags": [],
-        }
-
-    if not isinstance(chunk, dict):
+def _coerce_string_chunk(chunk: str, doc_name: str, fallback_index: int) -> dict[str, Any] | None:
+    content = chunk.strip()
+    if not content:
         return None
 
-    heading = _stringify(
+    source_pages = _extract_page_numbers(content)
+    return {
+        "heading": _heading_to_question(f"Chunk {fallback_index}"),
+        "content": _ensure_citation(content, doc_name, source_pages),
+        "source_pages": source_pages,
+        "table_facts": [],
+        "ambiguity_flags": [],
+    }
+
+
+def _get_chunk_heading(chunk: dict[str, Any], fallback_index: int) -> str:
+    return _stringify(
         chunk.get("heading")
         or chunk.get("title")
         or chunk.get("question")
         or chunk.get("section_heading")
         or f"Chunk {fallback_index}"
     )
-    content = _stringify(chunk.get("content") or chunk.get("markdown") or chunk.get("body") or chunk.get("text"))
 
-    source_pages: list[int] = []
-    source_page_candidates = chunk.get("source_pages") or chunk.get("page_numbers") or chunk.get("pages")
-    if isinstance(source_page_candidates, list):
-        source_pages.extend(page for page in source_page_candidates if isinstance(page, int))
-    elif isinstance(source_page_candidates, int):
-        source_pages.append(source_page_candidates)
 
-    citations = chunk.get("citations")
-    if isinstance(citations, list):
-        source_pages.extend(
-            citation.get("page_number")
-            for citation in citations
-            if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
-        )
+def _get_chunk_content(chunk: dict[str, Any]) -> str:
+    return _stringify(chunk.get("content") or chunk.get("markdown") or chunk.get("body") or chunk.get("text"))
 
-    source_pages.extend(_extract_page_numbers(content))
-    source_pages = _dedupe_ints(source_pages)
 
-    if not content and optimization_prep:
-        matching_page = next(
-            (
-                page for page in optimization_prep.get("pages", [])
-                if isinstance(page, dict)
-                and any(page.get("page_number") == page_number for page_number in source_pages)
-            ),
-            None,
-        )
-        if isinstance(matching_page, dict):
-            content = _strip_html_comments(_stringify(matching_page.get("authoritative_markdown")))
-
-    content = _ensure_citation(content, doc_name, source_pages)
-    if not content:
-        return None
-
+def _build_coerced_chunk_payload(
+    *,
+    heading: str,
+    content: str,
+    source_pages: list[int],
+    chunk: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "heading": _heading_to_question(heading, fallback_page=source_pages[0] if source_pages else None),
         "content": content,
@@ -646,6 +735,34 @@ def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_p
         "table_facts": chunk.get("table_facts") or chunk.get("facts") or [],
         "ambiguity_flags": chunk.get("ambiguity_flags") or chunk.get("ambiguities") or [],
     }
+
+
+def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_prep: dict | None) -> dict[str, Any] | None:
+    if isinstance(chunk, str):
+        return _coerce_string_chunk(chunk, doc_name, fallback_index)
+
+    if not isinstance(chunk, dict):
+        return None
+
+    heading = _get_chunk_heading(chunk, fallback_index)
+    content = _get_chunk_content(chunk)
+    source_pages = _collect_source_pages_from_chunk(chunk, content)
+    content = _resolve_chunk_content_from_optimization_prep(
+        content=content,
+        source_pages=source_pages,
+        optimization_prep=optimization_prep,
+    )
+
+    content = _ensure_citation(content, doc_name, source_pages)
+    if not content:
+        return None
+
+    return _build_coerced_chunk_payload(
+        heading=heading,
+        content=content,
+        source_pages=source_pages,
+        chunk=chunk,
+    )
 
 
 def normalize_reformatter_payload(
@@ -662,18 +779,13 @@ def normalize_reformatter_payload(
         or doc_name
     )
 
-    raw_chunks = payload.get("chunks")
-    if not isinstance(raw_chunks, list) or not raw_chunks:
-        raw_chunks = payload.get("sections")
-    if not isinstance(raw_chunks, list) or not raw_chunks:
-        raw_chunks = payload.get("items")
+    raw_chunks = _select_raw_chunks(payload)
 
     normalized_chunks: list[dict[str, Any]] = []
-    if isinstance(raw_chunks, list):
-        for index, chunk in enumerate(raw_chunks, start=1):
-            normalized_chunk = _coerce_chunk(chunk, document_name, index, optimization_prep)
-            if normalized_chunk:
-                normalized_chunks.append(normalized_chunk)
+    for index, chunk in enumerate(raw_chunks, start=1):
+        normalized_chunk = _coerce_chunk(chunk, document_name, index, optimization_prep)
+        if normalized_chunk:
+            normalized_chunks.append(normalized_chunk)
 
     if not normalized_chunks:
         normalized_chunks = _synthesize_chunks_from_optimization_prep(
@@ -705,19 +817,7 @@ def parse_reformatter_response(
     doc_name: str,
     optimization_prep: dict | None,
 ) -> dict[str, Any]:
-    candidates: list[dict[str, Any] | None] = [
-        extract_json_from_text(response),
-        lax_json_parse(response),
-        _parse_first_json_object(response),
-    ]
-
-    json_block_match = re.search(r"```(?:json)?\s*(\{.*)$", response, flags=re.DOTALL)
-    if json_block_match:
-        repaired_candidate = _repair_partial_json(json_block_match.group(1))
-        try:
-            candidates.append(json.loads(repaired_candidate))
-        except json.JSONDecodeError:
-            pass
+    candidates = _build_response_parse_candidates(response)
 
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -737,6 +837,239 @@ def parse_reformatter_response(
         doc_name=doc_name,
         optimization_prep=optimization_prep,
     )
+
+
+def _build_default_reformatter_options(vlm_options: VLMOptions | None) -> VLMOptions:
+    """Return initialized text reformatter options."""
+    if vlm_options is not None:
+        return vlm_options
+
+    default_options = VLMOptions.get_default("quality")
+    default_options.model_id = get_text_model_id()
+    default_options.max_new_tokens = 8000
+    default_options.do_sample = False
+    default_options.generation_timeout_seconds = get_generation_timeout_seconds()
+    return default_options
+
+
+def _trim_optimization_prep_payload(optimization_prep: dict | None) -> dict | None:
+    """Remove duplicated large markdown fields from optimization prep payloads."""
+    if not optimization_prep:
+        return None
+
+    import copy as _copy
+
+    trimmed_prep = _copy.deepcopy(optimization_prep)
+    trimmed_prep.pop("combined_markdown", None)
+    for page in trimmed_prep.get("pages", []):
+        if isinstance(page, dict):
+            page.pop("authoritative_markdown", None)
+    return trimmed_prep
+
+
+def _trim_validation_payload(validation_report: dict) -> dict:
+    """Keep only the lightweight validation summary needed at inference time."""
+    if not validation_report:
+        return {}
+    return {
+        key: value
+        for key, value in validation_report.items()
+        if key not in ("page_validations",)
+    }
+
+
+def _prepare_reformatter_generation_inputs(
+    *,
+    markdown_content: str,
+    validation_report: dict,
+    optimization_prep: dict | None,
+) -> tuple[dict | None, dict, str, list[dict[str, Any]]]:
+    """Prepare trimmed payloads and generation segments for Stage 10."""
+    trimmed_prep = _trim_optimization_prep_payload(optimization_prep)
+    trimmed_validation = _trim_validation_payload(validation_report)
+    validation_payload = json.dumps(trimmed_validation, indent=2) if trimmed_validation else "null"
+    generation_segments = _build_generation_segments(markdown_content, optimization_prep)
+    return trimmed_prep, trimmed_validation, validation_payload, generation_segments
+
+
+def _load_reformatter_model_resources(vlm_options: VLMOptions) -> tuple[Any, Any, Any, Any]:
+    """Load tokenizer/model resources for generation."""
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
+    import gc
+
+    model_source = resolve_model_reference(vlm_options.model_id)
+    local_model_only = Path(model_source).expanduser().exists()
+
+    gc.collect()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    with log_operation("Load Tokenizer"):
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_source,
+            trust_remote_code=vlm_options.trust_remote_code,
+            local_files_only=local_model_only,
+        )
+
+    with log_operation("Load Model"):
+        model = AutoModelForCausalLM.from_pretrained(
+            model_source,
+            dtype=torch.float16,
+            device_map=vlm_options.device_map,
+            trust_remote_code=vlm_options.trust_remote_code,
+            local_files_only=local_model_only,
+            max_memory={
+                0: f"{int(vlm_options.gpu_memory_fraction * 22)}GiB",
+                "cpu": "100GiB"
+            },
+            offload_folder="/tmp/offload"
+        )
+
+    return tokenizer, model, torch, gc
+
+
+def _get_reformatter_fallback_reason(torch_module: Any) -> str | None:
+    """Return a fallback reason when free CUDA memory is too low."""
+    free_memory_gib = _get_cuda_free_memory_gib(torch_module)
+    if free_memory_gib is None or free_memory_gib >= 0.75:
+        return None
+    return (
+        f"Insufficient free GPU memory after model load ({free_memory_gib:.2f} GiB available); "
+        "using deterministic optimization-prep synthesis"
+    )
+
+
+def _build_segment_optimization_prep(
+    *,
+    doc_name: str,
+    trimmed_validation: dict,
+    segment: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the minimal optimization-prep payload for one generation segment."""
+    return {
+        "document_name": doc_name,
+        "validation_summary": trimmed_validation,
+        "pages": segment.get("pages") or [],
+    }
+
+
+def _generate_segment_payloads(
+    *,
+    tokenizer: Any,
+    model: Any,
+    torch_module: Any,
+    vlm_options: VLMOptions,
+    system_prompt: str,
+    doc_name: str,
+    validation_payload: str,
+    trimmed_validation: dict,
+    generation_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Generate and parse one response payload per optimization segment."""
+    total_segments = len(generation_segments)
+    logger.info(
+        "Stage 10 using %s optimization segment(s) instead of one monolithic prompt",
+        total_segments,
+    )
+
+    segment_payloads: list[dict[str, Any]] = []
+    for segment_index, segment in enumerate(generation_segments, start=1):
+        segment_markdown = _stringify(segment.get("authoritative_markdown"))
+        segment_label = f"segment {segment_index}/{total_segments}"
+        segment_prep = _build_segment_optimization_prep(
+            doc_name=doc_name,
+            trimmed_validation=trimmed_validation,
+            segment=segment,
+        )
+        messages = _build_reformatter_messages(
+            doc_name=doc_name,
+            system_prompt=system_prompt,
+            segment=segment,
+            validation_payload=validation_payload,
+            total_segments=total_segments,
+            segment_index=segment_index,
+        )
+
+        with log_operation("Generate Response", chars=len(segment_markdown), segment=segment_label):
+            try:
+                response = _generate_segment_response(
+                    tokenizer=tokenizer,
+                    model=model,
+                    torch=torch_module,
+                    messages=messages,
+                    vlm_options=vlm_options,
+                    segment_label=segment_label,
+                )
+                segment_payloads.append(
+                    parse_reformatter_response(
+                        response,
+                        markdown_content=segment_markdown,
+                        doc_name=doc_name,
+                        optimization_prep=segment_prep,
+                    )
+                )
+            except Exception as exc:
+                error_detail = _describe_generation_exception(exc)
+                log_level = logging.ERROR if isinstance(exc, queue.Empty) else logging.INFO
+                logger.log(
+                    log_level,
+                    "Text generation failed for %s; switching to deterministic synthesis (%s: %s)",
+                    segment_label,
+                    type(exc).__name__,
+                    error_detail,
+                )
+                segment_payloads.append(
+                    normalize_reformatter_payload(
+                        {},
+                        markdown_content=segment_markdown,
+                        doc_name=doc_name,
+                        optimization_prep=segment_prep,
+                    )
+                )
+
+    return segment_payloads
+
+
+def _build_generation_response(
+    *,
+    tokenizer: Any,
+    model: Any,
+    torch_module: Any,
+    vlm_options: VLMOptions,
+    markdown_content: str,
+    doc_name: str,
+    system_prompt: str,
+    validation_payload: str,
+    trimmed_validation: dict,
+    trimmed_prep: dict | None,
+    generation_segments: list[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    """Attempt model generation and return either a response or a fallback reason."""
+    fallback_reason = _get_reformatter_fallback_reason(torch_module)
+    if fallback_reason:
+        return None, fallback_reason
+
+    segment_payloads = _generate_segment_payloads(
+        tokenizer=tokenizer,
+        model=model,
+        torch_module=torch_module,
+        vlm_options=vlm_options,
+        system_prompt=system_prompt,
+        doc_name=doc_name,
+        validation_payload=validation_payload,
+        trimmed_validation=trimmed_validation,
+        generation_segments=generation_segments,
+    )
+    merged_payload = _merge_segment_payloads(
+        segment_payloads,
+        markdown_content=markdown_content,
+        doc_name=doc_name,
+        optimization_prep=trimmed_prep,
+    )
+    return json.dumps(merged_payload), None
 
 
 def reformat_with_qwen(
@@ -760,13 +1093,7 @@ def reformat_with_qwen(
     Returns:
         Reformatted JSON with chunks
     """
-    # Use default options if not provided (use text-only model settings)
-    if vlm_options is None:
-        vlm_options = VLMOptions.get_default("quality")
-        vlm_options.model_id = get_text_model_id()
-        vlm_options.max_new_tokens = 8000
-        vlm_options.do_sample = False  # Deterministic output
-        vlm_options.generation_timeout_seconds = get_generation_timeout_seconds()
+    vlm_options = _build_default_reformatter_options(vlm_options)
     
     try:
         with log_operation("Text Reformatting", model=vlm_options.model_id, doc=doc_name):
@@ -777,146 +1104,28 @@ def reformat_with_qwen(
             torch = None
             gc = None
 
-            # Build prompt
             system_prompt = load_reformatter_prompt()
-
-            # --- Trim redundant data to avoid OOM on large documents ---
-            # optimization_prep already contains combined_markdown and per-page
-            # authoritative_markdown; both are also passed separately as markdown_full.
-            # Sending them twice triples the prompt size and exhausts GPU VRAM.
-            # Strip them from the JSON payload; keep page structure / annotations.
-            trimmed_prep = None
-            if optimization_prep:
-                import copy as _copy
-                trimmed_prep = _copy.deepcopy(optimization_prep)
-                trimmed_prep.pop("combined_markdown", None)  # passed as markdown_full
-                for _pg in trimmed_prep.get("pages", []):
-                    _pg.pop("authoritative_markdown", None)  # in combined_markdown
-
-            # validation_report.page_validations is ~99% of the 100KB file;
-            # only the summary fields are useful at inference time.
-            trimmed_validation: dict = {}
-            if validation_report:
-                trimmed_validation = {
-                    k: v for k, v in validation_report.items()
-                    if k not in ("page_validations",)
-                }
-
-            validation_payload = json.dumps(trimmed_validation, indent=2) if trimmed_validation else "null"
-            generation_segments = _build_generation_segments(markdown_content, optimization_prep)
+            trimmed_prep, trimmed_validation, validation_payload, generation_segments = _prepare_reformatter_generation_inputs(
+                markdown_content=markdown_content,
+                validation_report=validation_report,
+                optimization_prep=optimization_prep,
+            )
 
             try:
-                from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-                import torch  # type: ignore[no-redef]
-                import gc  # type: ignore[no-redef]
-
-                model_source = resolve_model_reference(vlm_options.model_id)
-                local_model_only = Path(model_source).expanduser().exists()
-
-                # Aggressive cleanup
-                gc.collect()
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-                # Load tokenizer
-                with log_operation("Load Tokenizer"):
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        model_source,
-                        trust_remote_code=vlm_options.trust_remote_code,
-                        local_files_only=local_model_only,
-                    )
-
-                # Load model with VLM options
-                with log_operation("Load Model"):
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_source,
-                        dtype=torch.float16,
-                        device_map=vlm_options.device_map,
-                        trust_remote_code=vlm_options.trust_remote_code,
-                        local_files_only=local_model_only,
-                        max_memory={
-                            0: f"{int(vlm_options.gpu_memory_fraction * 22)}GiB",
-                            "cpu": "100GiB"
-                        },
-                        offload_folder="/tmp/offload"
-                    )
-
-                free_memory_gib = _get_cuda_free_memory_gib(torch)
-                if free_memory_gib is not None and free_memory_gib < 0.75:
-                    fallback_reason = (
-                        f"Insufficient free GPU memory after model load ({free_memory_gib:.2f} GiB available); "
-                        "using deterministic optimization-prep synthesis"
-                    )
-                else:
-                    segment_payloads: list[dict[str, Any]] = []
-                    total_segments = len(generation_segments)
-                    logger.info(
-                        "Stage 10 using %s optimization segment(s) instead of one monolithic prompt",
-                        total_segments,
-                    )
-
-                    for segment_index, segment in enumerate(generation_segments, start=1):
-                        segment_markdown = _stringify(segment.get("authoritative_markdown"))
-                        segment_label = f"segment {segment_index}/{total_segments}"
-                        segment_prep = {
-                            "document_name": doc_name,
-                            "validation_summary": trimmed_validation,
-                            "pages": segment.get("pages") or [],
-                        }
-                        messages = _build_reformatter_messages(
-                            doc_name=doc_name,
-                            system_prompt=system_prompt,
-                            segment=segment,
-                            validation_payload=validation_payload,
-                            total_segments=total_segments,
-                            segment_index=segment_index,
-                        )
-
-                        with log_operation("Generate Response", chars=len(segment_markdown), segment=segment_label):
-                            try:
-                                response = _generate_segment_response(
-                                    tokenizer=tokenizer,
-                                    model=model,
-                                    torch=torch,
-                                    messages=messages,
-                                    vlm_options=vlm_options,
-                                    segment_label=segment_label,
-                                )
-                                segment_payloads.append(
-                                    parse_reformatter_response(
-                                        response,
-                                        markdown_content=segment_markdown,
-                                        doc_name=doc_name,
-                                        optimization_prep=segment_prep,
-                                    )
-                                )
-                            except Exception as exc:
-                                error_detail = _describe_generation_exception(exc)
-                                log_level = logging.ERROR if isinstance(exc, queue.Empty) else logging.INFO
-                                logger.log(
-                                    log_level,
-                                    "Text generation failed for %s; switching to deterministic synthesis (%s: %s)",
-                                    segment_label,
-                                    type(exc).__name__,
-                                    error_detail,
-                                )
-                                segment_payloads.append(
-                                    normalize_reformatter_payload(
-                                        {},
-                                        markdown_content=segment_markdown,
-                                        doc_name=doc_name,
-                                        optimization_prep=segment_prep,
-                                    )
-                                )
-
-                    response = json.dumps(_merge_segment_payloads(
-                        segment_payloads,
-                        markdown_content=markdown_content,
-                        doc_name=doc_name,
-                        optimization_prep=trimmed_prep,
-                    ))
+                tokenizer, model, torch, gc = _load_reformatter_model_resources(vlm_options)
+                response, fallback_reason = _build_generation_response(
+                    tokenizer=tokenizer,
+                    model=model,
+                    torch_module=torch,
+                    vlm_options=vlm_options,
+                    markdown_content=markdown_content,
+                    doc_name=doc_name,
+                    system_prompt=system_prompt,
+                    validation_payload=validation_payload,
+                    trimmed_validation=trimmed_validation,
+                    trimmed_prep=trimmed_prep,
+                    generation_segments=generation_segments,
+                )
             except Exception as exc:
                 error_detail = _describe_generation_exception(exc)
                 logger.error(
@@ -928,7 +1137,6 @@ def reformat_with_qwen(
             finally:
                 _safe_cleanup_model_resources(model, tokenizer, torch, gc)
             
-            # Parse JSON with structured recovery + normalization
             with log_operation("Parse Response"):
                 if fallback_reason:
                     logger.info(fallback_reason)
