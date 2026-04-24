@@ -130,6 +130,225 @@ class PipelineService(PipelineStatusMixin):
     }
 
     @classmethod
+    def _publish_pipeline_progress_event(
+        cls,
+        *,
+        document_id: str,
+        job_id: str,
+        stage: str,
+        progress: int,
+        message: str,
+        event_type: str,
+        step: Optional[str],
+    ) -> None:
+        """Publish normalized ingestion progress events parsed from pipeline output."""
+        if event_type == "stage_start":
+            message = step if step else message
+
+        cls._publish_event(
+            document_id,
+            IngestionProgressEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage=stage,
+                progress=progress,
+                message=message,
+            ),
+        )
+
+    @classmethod
+    async def _stream_pipeline_stdout_events(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+        document_id: str,
+        job_id: str,
+        pipeline_event_prefix: bytes,
+    ) -> None:
+        """Parse structured stdout events emitted by the pipeline subprocess."""
+        assert process.stdout is not None
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            if not line.startswith(pipeline_event_prefix):
+                continue
+
+            raw = line[len(pipeline_event_prefix):].strip()
+            try:
+                payload = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+
+            event_type = str(payload.get("event", "progress"))
+            stage = str(payload.get("stage", "extraction"))
+            progress = min(100, max(0, int(payload.get("progress", 0))))
+            message = str(payload.get("message", ""))
+            step = str(payload["step"]) if payload.get("step") else None
+
+            cls._publish_pipeline_progress_event(
+                document_id=document_id,
+                job_id=job_id,
+                stage=stage,
+                progress=progress,
+                message=message,
+                event_type=event_type,
+                step=step,
+            )
+
+    @classmethod
+    async def _drain_pipeline_stderr(
+        cls,
+        *,
+        process: asyncio.subprocess.Process,
+    ) -> bytes:
+        """Read and return the full stderr stream from a pipeline subprocess."""
+        assert process.stderr is not None
+        chunks: list[bytes] = []
+        while True:
+            chunk = await process.stderr.read(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    @classmethod
+    async def _handle_pipeline_success(
+        cls,
+        *,
+        document_id: str,
+        job_id: str,
+        work_dir: Path,
+    ) -> None:
+        """Persist and publish successful completion state/events."""
+        logger.info(f"Pipeline completed successfully for document {document_id}")
+        await cls._update_document_status(
+            document_id,
+            PipelineStatus.VALIDATION_COMPLETE,
+            progress=100,
+        )
+        artifact_path = str(work_dir)
+        cls._publish_event(
+            document_id,
+            IngestionStageCompleteEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage="validation",
+                progress=100,
+                message="Pipeline validation stage completed.",
+                artifact_type="workspace",
+                artifact_path=artifact_path,
+            ),
+        )
+        cls._publish_event(
+            document_id,
+            IngestionCompleteEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage="completed",
+                progress=100,
+                message="Document ingestion completed successfully.",
+                artifact_type="workspace",
+                artifact_path=artifact_path,
+            ),
+        )
+
+    @classmethod
+    async def _handle_pipeline_failed_exit(
+        cls,
+        *,
+        document_id: str,
+        job_id: str,
+        stderr_raw: bytes | None,
+    ) -> None:
+        """Persist and publish failure state/events for non-zero process exits."""
+        error_message = (
+            stderr_raw.decode(errors="replace")[-500:]
+            if isinstance(stderr_raw, bytes)
+            else ""
+        )
+        logger.error(f"Pipeline failed for document {document_id}: {error_message}")
+        await cls._update_document_status(
+            document_id,
+            PipelineStatus.FAILED,
+            error=error_message,
+        )
+        cls._publish_event(
+            document_id,
+            IngestionErrorEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage="validation",
+                progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                message="Document ingestion failed.",
+                error=error_message,
+            ),
+        )
+
+    @classmethod
+    async def _handle_pipeline_timeout(
+        cls,
+        *,
+        document_id: str,
+        job_id: str,
+        process: asyncio.subprocess.Process,
+        stdout_task: asyncio.Task[Any],
+        stderr_task: asyncio.Task[Any],
+    ) -> None:
+        """Handle pipeline timeout by cancelling streams, killing process, and publishing failure."""
+        stdout_task.cancel()
+        stderr_task.cancel()
+        logger.error(f"Pipeline timed out for document {document_id}")
+        process.kill()
+        await cls._update_document_status(
+            document_id,
+            PipelineStatus.FAILED,
+            error="Pipeline execution timed out",
+        )
+        cls._publish_event(
+            document_id,
+            IngestionErrorEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage="validation",
+                progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                message="Document ingestion timed out.",
+                error="Pipeline execution timed out",
+            ),
+        )
+
+    @classmethod
+    async def _handle_pipeline_monitoring_exception(
+        cls,
+        *,
+        document_id: str,
+        job_id: str,
+        error: Exception,
+        stdout_task: asyncio.Task[Any],
+        stderr_task: asyncio.Task[Any],
+    ) -> None:
+        """Handle unexpected monitoring errors and publish failure state."""
+        stdout_task.cancel()
+        stderr_task.cancel()
+        logger.error(f"Pipeline monitoring error for document {document_id}: {error}")
+        await cls._update_document_status(
+            document_id,
+            PipelineStatus.FAILED,
+            error=str(error),
+        )
+        cls._publish_event(
+            document_id,
+            IngestionErrorEvent(
+                document_id=document_id,
+                job_id=job_id,
+                stage="monitoring",
+                progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                message="Document ingestion monitoring failed.",
+                error=str(error),
+            ),
+        )
+
+    @classmethod
     async def trigger_pipeline(
         cls,
         document_id: str,
@@ -258,65 +477,17 @@ class PipelineService(PipelineStatusMixin):
         work_dir: Path,
     ):
         """Monitor pipeline subprocess and stream live SSE events from structured stdout."""
-        import json as _json
-
         PIPELINE_EVENT_PREFIX = b"PIPELINE_EVENT:"
 
-        async def _stream_stdout() -> None:
-            """Parse PIPELINE_EVENT: lines from subprocess stdout and emit SSE events."""
-            assert process.stdout is not None
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                if not line.startswith(PIPELINE_EVENT_PREFIX):
-                    continue
-                raw = line[len(PIPELINE_EVENT_PREFIX):].strip()
-                try:
-                    payload = _json.loads(raw)
-                    event_type = str(payload.get("event", "progress"))
-                    stage = str(payload.get("stage", "extraction"))
-                    progress = min(100, max(0, int(payload.get("progress", 0))))
-                    message = str(payload.get("message", ""))
-                    # stage_start events carry an optional human-readable step label.
-                    if event_type == "stage_start":
-                        label = str(payload["step"]) if payload.get("step") else message
-                        cls._publish_event(
-                            document_id,
-                            IngestionProgressEvent(
-                                document_id=document_id,
-                                job_id=job_id,
-                                stage=stage,
-                                progress=progress,
-                                message=label,
-                            ),
-                        )
-                    else:
-                        cls._publish_event(
-                            document_id,
-                            IngestionProgressEvent(
-                                document_id=document_id,
-                                job_id=job_id,
-                                stage=stage,
-                                progress=progress,
-                                message=message,
-                            ),
-                        )
-                except Exception:
-                    pass  # Ignore malformed lines
-
-        async def _drain_stderr() -> bytes:
-            assert process.stderr is not None
-            chunks: list[bytes] = []
-            while True:
-                chunk = await process.stderr.read(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-            return b"".join(chunks)
-
-        stdout_task = asyncio.create_task(_stream_stdout())
-        stderr_task = asyncio.create_task(_drain_stderr())
+        stdout_task = asyncio.create_task(
+            cls._stream_pipeline_stdout_events(
+                process=process,
+                document_id=document_id,
+                job_id=job_id,
+                pipeline_event_prefix=PIPELINE_EVENT_PREFIX,
+            )
+        )
+        stderr_task = asyncio.create_task(cls._drain_pipeline_stderr(process=process))
 
         try:
             await asyncio.wait_for(
@@ -329,102 +500,34 @@ class PipelineService(PipelineStatusMixin):
             gather_results = await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
 
             if exit_code == 0:
-                logger.info(f"Pipeline completed successfully for document {document_id}")
-                await cls._update_document_status(
-                    document_id,
-                    PipelineStatus.VALIDATION_COMPLETE,
-                    progress=100,
-                )
-                artifact_path = str(work_dir)
-                cls._publish_event(
-                    document_id,
-                    IngestionStageCompleteEvent(
-                        document_id=document_id,
-                        job_id=job_id,
-                        stage="validation",
-                        progress=100,
-                        message="Pipeline validation stage completed.",
-                        artifact_type="workspace",
-                        artifact_path=artifact_path,
-                    ),
-                )
-                cls._publish_event(
-                    document_id,
-                    IngestionCompleteEvent(
-                        document_id=document_id,
-                        job_id=job_id,
-                        stage="completed",
-                        progress=100,
-                        message="Document ingestion completed successfully.",
-                        artifact_type="workspace",
-                        artifact_path=artifact_path,
-                    ),
+                await cls._handle_pipeline_success(
+                    document_id=document_id,
+                    job_id=job_id,
+                    work_dir=work_dir,
                 )
             else:
                 stderr_raw = gather_results[1]
-                error_message = (
-                    stderr_raw.decode(errors="replace")[-500:]
-                    if isinstance(stderr_raw, bytes)
-                    else ""
-                )
-                logger.error(f"Pipeline failed for document {document_id}: {error_message}")
-                await cls._update_document_status(
-                    document_id,
-                    PipelineStatus.FAILED,
-                    error=error_message,
-                )
-                cls._publish_event(
-                    document_id,
-                    IngestionErrorEvent(
-                        document_id=document_id,
-                        job_id=job_id,
-                        stage="validation",
-                        progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
-                        message="Document ingestion failed.",
-                        error=error_message,
-                    ),
+                await cls._handle_pipeline_failed_exit(
+                    document_id=document_id,
+                    job_id=job_id,
+                    stderr_raw=stderr_raw if isinstance(stderr_raw, bytes) else None,
                 )
 
         except asyncio.TimeoutError:
-            stdout_task.cancel()
-            stderr_task.cancel()
-            logger.error(f"Pipeline timed out for document {document_id}")
-            process.kill()
-            await cls._update_document_status(
-                document_id,
-                PipelineStatus.FAILED,
-                error="Pipeline execution timed out",
-            )
-            cls._publish_event(
-                document_id,
-                IngestionErrorEvent(
-                    document_id=document_id,
-                    job_id=job_id,
-                    stage="validation",
-                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
-                    message="Document ingestion timed out.",
-                    error="Pipeline execution timed out",
-                ),
+            await cls._handle_pipeline_timeout(
+                document_id=document_id,
+                job_id=job_id,
+                process=process,
+                stdout_task=stdout_task,
+                stderr_task=stderr_task,
             )
         except Exception as e:
-            stdout_task.cancel()
-            stderr_task.cancel()
-            logger.error(f"Pipeline monitoring error for document {document_id}: {e}")
-            await cls._update_document_status(
-                document_id,
-                PipelineStatus.FAILED,
-                error=str(e),
-            )
-            cls._publish_event(
-                document_id,
-                IngestionErrorEvent(
-                    document_id=document_id,
-                    job_id=job_id,
-                    stage="monitoring",
-                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
-                    message="Document ingestion monitoring failed.",
-                    error=str(e),
-                ),
+            await cls._handle_pipeline_monitoring_exception(
+                document_id=document_id,
+                job_id=job_id,
+                error=e,
+                stdout_task=stdout_task,
+                stderr_task=stderr_task,
             )
         finally:
             cls._active_processes.pop(job_id, None)

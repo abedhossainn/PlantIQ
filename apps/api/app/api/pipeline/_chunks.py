@@ -167,6 +167,39 @@ def _split_markdown_into_sections(markdown_content: str) -> list[dict]:
     return sections
 
 
+def _iter_dict_chunks(raw_chunks: list[object]) -> list[dict]:
+    """Return only dictionary chunk entries from a mixed chunk list."""
+    return [chunk for chunk in raw_chunks if isinstance(chunk, dict)]
+
+
+def _build_chunk_from_markdown_section(section: dict, index: int) -> dict | None:
+    """Build normalized editable chunk from a markdown section payload."""
+    content = str(section.get("content") or "").strip()
+    if not content:
+        return None
+
+    return {
+        "id": f"chunk_{index:03d}",
+        "heading": str(section.get("heading") or f"Chunk {index}").strip(),
+        "markdown_content": content,
+        "source_pages": _extract_page_numbers_from_chunk({}, content),
+        "table_facts": [],
+        "ambiguity_flags": [],
+    }
+
+
+def _append_chunks_from_markdown_sections(
+    *,
+    chunks: list[dict],
+    markdown_content: str,
+) -> None:
+    """Append fallback chunks derived from markdown sections when needed."""
+    for index, section in enumerate(_split_markdown_into_sections(markdown_content), start=1):
+        section_chunk = _build_chunk_from_markdown_section(section, index)
+        if section_chunk is not None:
+            chunks.append(section_chunk)
+
+
 # ---------------------------------------------------------------------------
 # Editable chunk building and persistence
 # ---------------------------------------------------------------------------
@@ -190,25 +223,14 @@ def _build_editable_optimized_chunks(
     editable_chunks: list[dict] = []
     raw_chunks = optimized_payload.get("chunks") or []
     if isinstance(raw_chunks, list) and raw_chunks:
-        for index, raw_chunk in enumerate(raw_chunks, start=1):
-            if isinstance(raw_chunk, dict):
-                editable_chunks.append(_coerce_optimized_chunk(raw_chunk, index))
+        for index, raw_chunk in enumerate(_iter_dict_chunks(raw_chunks), start=1):
+            editable_chunks.append(_coerce_optimized_chunk(raw_chunk, index))
 
     if not editable_chunks and markdown_content:
-        for index, section in enumerate(_split_markdown_into_sections(markdown_content), start=1):
-            content = str(section.get("content") or "").strip()
-            if not content:
-                continue
-            editable_chunks.append(
-                {
-                    "id": f"chunk_{index:03d}",
-                    "heading": str(section.get("heading") or f"Chunk {index}").strip(),
-                    "markdown_content": content,
-                    "source_pages": _extract_page_numbers_from_chunk({}, content),
-                    "table_facts": [],
-                    "ambiguity_flags": [],
-                }
-            )
+        _append_chunks_from_markdown_sections(
+            chunks=editable_chunks,
+            markdown_content=markdown_content,
+        )
 
     if not editable_chunks:
         raise HTTPException(
@@ -261,28 +283,16 @@ def _build_publishable_chunks(work_dir: Path) -> list[dict]:
     publishable_chunks: list[dict] = []
     raw_chunks = optimized_payload.get("chunks") or []
     if isinstance(raw_chunks, list) and raw_chunks:
-        for index, raw_chunk in enumerate(raw_chunks, start=1):
-            if not isinstance(raw_chunk, dict):
-                continue
+        for index, raw_chunk in enumerate(_iter_dict_chunks(raw_chunks), start=1):
             normalized_chunk = _coerce_optimized_chunk(raw_chunk, index)
             if normalized_chunk["markdown_content"]:
                 publishable_chunks.append(normalized_chunk)
 
     if not publishable_chunks and markdown_content:
-        for index, section in enumerate(_split_markdown_into_sections(markdown_content), start=1):
-            content = str(section.get("content") or "").strip()
-            if not content:
-                continue
-            publishable_chunks.append(
-                {
-                    "id": f"chunk_{index:03d}",
-                    "heading": str(section.get("heading") or f"Chunk {index}").strip(),
-                    "markdown_content": content,
-                    "source_pages": _extract_page_numbers_from_chunk({}, content),
-                    "table_facts": [],
-                    "ambiguity_flags": [],
-                }
-            )
+        _append_chunks_from_markdown_sections(
+            chunks=publishable_chunks,
+            markdown_content=markdown_content,
+        )
 
     if not publishable_chunks:
         raise ValueError("Optimization output is incomplete; nothing is available to publish")
