@@ -32,14 +32,29 @@ jobs:
             echo "::error title=Missing secret::Set SONAR_HOST_URL in GitHub repository secrets."
             exit 1
           fi
-          
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v6
+
+      - name: Validate token against SonarQube API
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.SONARQUBE_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=PlantIQ
-            -Dsonar.sources=.
+        run: |
+          response=$(curl -sS -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/authentication/validate" || true)
+          echo "Auth validation response: ${response}"
+          if [[ "${response}" != *'"valid":true'* ]]; then
+            echo "::error title=Invalid Sonar token::Token authentication failed. Regenerate a user token and update SONAR_TOKEN secret."
+            exit 1
+          fi
+          
+      - name: SonarQube Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          docker run --rm --network host \
+            -v "${GITHUB_WORKSPACE}:/usr/src" \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.login="${SONAR_TOKEN}" \
+            -Dsonar.projectKey=PlantIQ \
+            -Dsonar.sources=. \
             -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/.metrics-venv/**,**/test_keys/**,**/.github/actions-runner/**
