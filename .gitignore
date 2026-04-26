@@ -62,6 +62,12 @@ apps/web/tsconfig.tsbuildinfo
 *.sublime-project
 *.sublime-workspace
 .github/
+# Keep only one GitHub workflow tracked
+!.github/
+/.github/*
+!.github/workflows/
+/.github/workflows/*
+!.github/workflows/sonar-scan.yml
 
 # === Operating System ===
 .DS_Store
