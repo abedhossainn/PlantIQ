@@ -71,23 +71,39 @@ def _extract_relevant_markdown_section(
         return _fallback_markdown_section(markdown_content, page_number, total_pages)
 
     normalized_lines = [_normalize_text_for_match(line) for line in lines]
-    best_index: Optional[int] = None
-    best_score = -1
-
-    for idx, normalized_line in enumerate(normalized_lines):
-        if not normalized_line:
-            continue
-        score = sum(1 for candidate in anchor_candidates if candidate and (candidate in normalized_line or normalized_line in candidate))
-        if score > best_score:
-            best_score = score
-            best_index = idx
-
+    best_index, best_score = _find_best_anchor_line(normalized_lines, anchor_candidates)
     if best_index is None or best_score <= 0:
         return _fallback_markdown_section(markdown_content, page_number, total_pages)
 
     start_line = max(0, best_index - 40)
     end_line = min(len(lines), best_index + 120)
     return "\n".join(lines[start_line:end_line])
+
+
+def _score_anchor_matches(normalized_line: str, anchor_candidates: List[str]) -> int:
+    """Score a normalized markdown line against normalized anchor candidates."""
+    return sum(
+        1
+        for candidate in anchor_candidates
+        if candidate and (candidate in normalized_line or normalized_line in candidate)
+    )
+
+
+def _find_best_anchor_line(
+    normalized_lines: List[str],
+    anchor_candidates: List[str],
+) -> tuple[Optional[int], int]:
+    """Return best matching line index and its score for preview anchors."""
+    best_index: Optional[int] = None
+    best_score = -1
+    for idx, normalized_line in enumerate(normalized_lines):
+        if not normalized_line:
+            continue
+        score = _score_anchor_matches(normalized_line, anchor_candidates)
+        if score > best_score:
+            best_score = score
+            best_index = idx
+    return best_index, best_score
 
 
 def _count_table_markers(markdown_section: str) -> int:
@@ -105,6 +121,129 @@ def _count_figure_markers(markdown_section: str) -> int:
 def _candidate_sort_key(item: tuple[int, int], expected_center: int) -> tuple[int, int, int]:
     line_index, score = item
     return (-score, abs(line_index - expected_center), line_index)
+
+
+def _sorted_page_evidences(page_evidences: List["PageEvidence"]) -> List["PageEvidence"]:
+    """Return page evidences sorted by ascending page number."""
+    return sorted(page_evidences, key=lambda item: item.page_number)
+
+
+def _build_search_window(
+    *,
+    idx: int,
+    total_pages: int,
+    lines_count: int,
+    search_floor: int,
+) -> tuple[int, int, int]:
+    """Build expected center and bounded search window for one page."""
+    expected_center = int((idx - 0.5) * lines_count / total_pages)
+    window_start = max(0, min(search_floor, lines_count - 1))
+    next_expected = int((idx + 0.5) * lines_count / total_pages) if idx < total_pages else lines_count - 1
+    window_end = min(lines_count, max(window_start + 160, next_expected + 120))
+    return expected_center, window_start, window_end
+
+
+def _collect_scored_candidates(
+    *,
+    anchors: List[str],
+    normalized_lines: List[str],
+    window_start: int,
+    window_end: int,
+) -> List[tuple[int, int]]:
+    """Collect scored line candidates in the current search window."""
+    if not anchors:
+        return []
+
+    candidates: List[tuple[int, int]] = []
+    for line_index in range(window_start, window_end):
+        normalized_line = normalized_lines[line_index]
+        if not normalized_line:
+            continue
+        score = _score_anchor_matches(normalized_line, anchors)
+        if score > 0:
+            candidates.append((line_index, score))
+    return candidates
+
+
+def _resolve_candidate_indices(
+    *,
+    candidates: List[tuple[int, int]],
+    expected_center: int,
+    lines_count: int,
+) -> tuple[List[int], bool]:
+    """Resolve candidate line indices and whether they came from anchor matches."""
+    has_candidates = bool(candidates)
+    if not has_candidates:
+        return [max(0, min(expected_center, lines_count - 1))], False
+
+    candidates.sort(
+        key=lambda item, expected_center=expected_center: _candidate_sort_key(item, expected_center)
+    )
+    return [candidate_index for candidate_index, _ in candidates], True
+
+
+def _select_section_from_candidates(
+    *,
+    candidate_indices: List[int],
+    has_candidates: bool,
+    lines: List[str],
+    window_start: int,
+    previous_hash: Optional[int],
+) -> tuple[str, int, int, int, bool]:
+    """Select a non-empty section from top candidates with duplicate avoidance."""
+    for candidate_index in candidate_indices[:8]:
+        start_line = max(window_start, candidate_index - 40) if has_candidates else max(0, candidate_index - 40)
+        end_line = min(len(lines), start_line + 160)
+        section = "\n".join(lines[start_line:end_line]).strip()
+        if not section:
+            continue
+
+        section_hash = hash(section)
+        if section_hash != previous_hash:
+            return section, start_line, end_line, section_hash, True
+        return section, start_line, end_line, section_hash, False
+
+    return "", window_start, window_start, hash(""), False
+
+
+def _build_fallback_selection(
+    *,
+    markdown_content: str,
+    page_number: int,
+    total_pages: int,
+    expected_center: int,
+    window_start: int,
+    lines_count: int,
+) -> tuple[str, int, int, int]:
+    """Build fallback page section selection when anchor matching fails."""
+    fallback = _fallback_markdown_section(markdown_content, page_number, total_pages).strip()
+    start_line = max(window_start, min(expected_center, lines_count - 1))
+    end_line = min(lines_count, start_line + 160)
+    return fallback, start_line, end_line, hash(fallback)
+
+
+def _dedupe_section_with_fallback(
+    *,
+    selected_section: str,
+    selected_hash: int,
+    seen_hashes: set[int],
+    markdown_content: str,
+    page_number: int,
+    total_pages: int,
+) -> tuple[str, int]:
+    """Avoid duplicate sections across pages by applying fallback when needed."""
+    if selected_hash not in seen_hashes:
+        return selected_section, selected_hash
+
+    fallback = _fallback_markdown_section(markdown_content, page_number, total_pages).strip()
+    if fallback:
+        return fallback, hash(fallback)
+    return selected_section, selected_hash
+
+
+def _compute_progression_step(selected_start: int, selected_end: int) -> int:
+    """Compute bounded forward progression step in markdown scan."""
+    return max(1, int((selected_end - selected_start) * 0.35))
 
 
 class IssueType(Enum):
@@ -186,81 +325,60 @@ def _build_page_markdown_map_from_previews(
     seen_hashes: set[int] = set()
     page_map: Dict[int, str] = {}
 
-    for idx, evidence in enumerate(sorted(page_evidences, key=lambda item: item.page_number), start=1):
+    for idx, evidence in enumerate(_sorted_page_evidences(page_evidences), start=1):
         anchors = _preview_anchor_candidates(evidence.text_preview or "")
-        expected_center = int((idx - 0.5) * len(lines) / total_pages)
-        window_start = max(0, min(search_floor, len(lines) - 1))
-        next_expected = (
-            int((idx + 0.5) * len(lines) / total_pages)
-            if idx < total_pages
-            else len(lines) - 1
+        expected_center, window_start, window_end = _build_search_window(
+            idx=idx,
+            total_pages=total_pages,
+            lines_count=len(lines),
+            search_floor=search_floor,
         )
-        window_end = min(len(lines), max(window_start + 160, next_expected + 120))
-
-        candidates: List[tuple[int, int]] = []
-        if anchors:
-            for line_index in range(window_start, window_end):
-                normalized_line = normalized_lines[line_index]
-                if not normalized_line:
-                    continue
-                score = sum(
-                    1
-                    for anchor in anchors
-                    if anchor and (anchor in normalized_line or normalized_line in anchor)
-                )
-                if score > 0:
-                    candidates.append((line_index, score))
-
-        has_candidates = bool(candidates)
-        if has_candidates:
-            candidates.sort(key=lambda item, expected_center=expected_center: _candidate_sort_key(item, expected_center))
-            candidate_indices = [candidate_index for candidate_index, _ in candidates]
-        else:
-            candidate_indices = [max(0, min(expected_center, len(lines) - 1))]
-
-        selected_start = None
-        selected_end = None
-        selected_section = ""
-        selected_hash = None
-        for candidate_index in candidate_indices[:8]:
-            if has_candidates:
-                start_line = max(window_start, candidate_index - 40)
-            else:
-                start_line = max(0, candidate_index - 40)
-            end_line = min(len(lines), start_line + 160)
-            section = "\n".join(lines[start_line:end_line]).strip()
-            if not section:
-                continue
-            section_hash = hash(section)
-            selected_start = start_line
-            selected_end = end_line
-            selected_section = section
-            selected_hash = section_hash
-            if section_hash != previous_hash:
-                previous_hash = section_hash
-                break
+        candidates = _collect_scored_candidates(
+            anchors=anchors,
+            normalized_lines=normalized_lines,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        candidate_indices, has_candidates = _resolve_candidate_indices(
+            candidates=candidates,
+            expected_center=expected_center,
+            lines_count=len(lines),
+        )
+        selected_section, selected_start, selected_end, selected_hash, is_new_hash = _select_section_from_candidates(
+            candidate_indices=candidate_indices,
+            has_candidates=has_candidates,
+            lines=lines,
+            window_start=window_start,
+            previous_hash=previous_hash,
+        )
 
         if not selected_section:
-            fallback = _fallback_markdown_section(markdown_content, evidence.page_number, total_pages).strip()
-            if not fallback:
-                fallback = ""
-            selected_section = fallback
-            selected_start = max(window_start, min(expected_center, len(lines) - 1))
-            selected_end = min(len(lines), selected_start + 160)
-            selected_hash = hash(selected_section)
+            selected_section, selected_start, selected_end, selected_hash = _build_fallback_selection(
+                markdown_content=markdown_content,
+                page_number=evidence.page_number,
+                total_pages=total_pages,
+                expected_center=expected_center,
+                window_start=window_start,
+                lines_count=len(lines),
+            )
+            is_new_hash = True
+
+        if is_new_hash:
             previous_hash = selected_hash
 
-        if selected_hash in seen_hashes:
-            fallback = _fallback_markdown_section(markdown_content, evidence.page_number, total_pages).strip()
-            if fallback:
-                selected_section = fallback
-                selected_hash = hash(selected_section)
-
-        seen_hashes.add(selected_hash if selected_hash is not None else hash(selected_section))
+        selected_section, selected_hash = _dedupe_section_with_fallback(
+            selected_section=selected_section,
+            selected_hash=selected_hash,
+            seen_hashes=seen_hashes,
+            markdown_content=markdown_content,
+            page_number=evidence.page_number,
+            total_pages=total_pages,
+        )
+        seen_hashes.add(selected_hash)
 
         page_map[evidence.page_number] = selected_section
 
-        progression_step = max(1, int((selected_end - selected_start) * 0.35))
+        progression_step = _compute_progression_step(selected_start, selected_end)
         search_floor = min(len(lines) - 1, max(search_floor, selected_start + progression_step))
 
     return page_map

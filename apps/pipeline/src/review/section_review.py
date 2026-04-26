@@ -153,58 +153,141 @@ class DocumentPages:
     metadata: Dict[str, Any]
 
 
-def extract_pages_from_validation(validation_report: Any, document_name: Optional[str] = None) -> DocumentPages:
-    """Build page review units directly from the validation artifact."""
+def _extract_validation_report_context(validation_report: Any) -> tuple[Optional[str], List[Any], Dict[str, Any]]:
+    """Normalize object/dict validation report shape into common tuple context."""
     if hasattr(validation_report, "page_validations"):
         report_document_name = getattr(validation_report, "document_name", None)
         page_validations = validation_report.page_validations
         report_metadata = getattr(validation_report, "metadata", {}) or {}
-    else:
-        report_document_name = validation_report.get("document_name")
-        page_validations = validation_report.get("page_validations", [])
-        report_metadata = validation_report.get("metadata", {}) or {}
+        return report_document_name, page_validations, report_metadata
+
+    report_document_name = validation_report.get("document_name")
+    page_validations = validation_report.get("page_validations", [])
+    report_metadata = validation_report.get("metadata", {}) or {}
+    return report_document_name, page_validations, report_metadata
+
+
+def _extract_page_validation_fields(page_validation: Any) -> tuple[Optional[int], Optional[str], Any, List[Any]]:
+    """Extract page validation fields from object or dict payload."""
+    if isinstance(page_validation, dict):
+        return (
+            page_validation.get("page_number"),
+            page_validation.get("markdown_section"),
+            page_validation.get("evidence", {}),
+            page_validation.get("issues", []),
+        )
+
+    return (
+        getattr(page_validation, "page_number", None),
+        getattr(page_validation, "markdown_section", None),
+        getattr(page_validation, "evidence", None),
+        getattr(page_validation, "issues", None),
+    )
+
+
+def _coerce_evidence_dict(evidence: Any) -> Dict[str, Any]:
+    """Normalize evidence payload to dictionary."""
+    if hasattr(evidence, "__dict__"):
+        return asdict(evidence)
+    return dict(evidence or {})
+
+
+def _coerce_issue_dicts(issues: List[Any]) -> List[Dict[str, Any]]:
+    """Normalize issue payloads to list of dictionaries."""
+    issue_dicts: List[Dict[str, Any]] = []
+    for issue in issues or []:
+        if hasattr(issue, "__dict__"):
+            issue_dicts.append(asdict(issue))
+        else:
+            issue_dicts.append(dict(issue))
+    return issue_dicts
+
+
+def _build_review_page(
+    *,
+    page_number: int,
+    markdown_content: Optional[str],
+    evidence_dict: Dict[str, Any],
+    issue_dicts: List[Dict[str, Any]],
+) -> ReviewPage:
+    """Build one normalized ReviewPage item."""
+    thumbnail_path = evidence_dict.get("thumbnail_path")
+    evidence_images = [thumbnail_path] if thumbnail_path else []
+    text_preview = evidence_dict.get("text_preview") or ""
+    page_markdown = markdown_content or ""
+
+    return ReviewPage(
+        page_id=f"page_{int(page_number):03d}",
+        page_number=int(page_number),
+        markdown_content=page_markdown,
+        text_preview=text_preview,
+        validation_issues=issue_dicts,
+        evidence_images=evidence_images,
+        evidence=evidence_dict,
+    )
+
+
+def _create_markdown_section(
+    *,
+    index: int,
+    heading: str,
+    content: str,
+    start_line: int,
+    end_line: int,
+) -> MarkdownSection:
+    """Build one markdown review section with computed metadata."""
+    return MarkdownSection(
+        section_id=f"section_{index:03d}",
+        heading=heading,
+        content=content,
+        start_line=start_line,
+        end_line=end_line,
+        page_numbers=[],
+        word_count=len(content.split()),
+        has_tables='|' in content,
+        has_images=_section_has_images(content),
+    )
+
+
+def _append_current_section_if_any(
+    sections: List[MarkdownSection],
+    current_section: Optional[str],
+    current_content: List[str],
+    current_start: int,
+    end_line: int,
+) -> None:
+    """Append current buffered section if a heading is active."""
+    if not current_section:
+        return
+    content = '\n'.join(current_content)
+    sections.append(
+        _create_markdown_section(
+            index=len(sections) + 1,
+            heading=current_section,
+            content=content,
+            start_line=current_start,
+            end_line=end_line,
+        )
+    )
+
+
+def extract_pages_from_validation(validation_report: Any, document_name: Optional[str] = None) -> DocumentPages:
+    """Build page review units directly from the validation artifact."""
+    report_document_name, page_validations, report_metadata = _extract_validation_report_context(validation_report)
 
     resolved_document_name = document_name or report_document_name or "document"
     pages: List[ReviewPage] = []
 
     for page_validation in page_validations:
-        page_number = getattr(page_validation, "page_number", None)
-        markdown_content = getattr(page_validation, "markdown_section", None)
-        evidence = getattr(page_validation, "evidence", None)
-        issues = getattr(page_validation, "issues", None)
-
-        if isinstance(page_validation, dict):
-            page_number = page_validation.get("page_number")
-            markdown_content = page_validation.get("markdown_section")
-            evidence = page_validation.get("evidence", {})
-            issues = page_validation.get("issues", [])
-
-        if hasattr(evidence, "__dict__"):
-            evidence_dict = asdict(evidence)
-        else:
-            evidence_dict = dict(evidence or {})
-
-        issue_dicts: List[Dict[str, Any]] = []
-        for issue in issues or []:
-            if hasattr(issue, "__dict__"):
-                issue_dicts.append(asdict(issue))
-            else:
-                issue_dicts.append(dict(issue))
-
-        thumbnail_path = evidence_dict.get("thumbnail_path")
-        evidence_images = [thumbnail_path] if thumbnail_path else []
-        text_preview = evidence_dict.get("text_preview") or ""
-        page_markdown = markdown_content or ""
-
+        page_number, markdown_content, evidence, issues = _extract_page_validation_fields(page_validation)
+        evidence_dict = _coerce_evidence_dict(evidence)
+        issue_dicts = _coerce_issue_dicts(issues)
         pages.append(
-            ReviewPage(
-                page_id=f"page_{int(page_number):03d}",
+            _build_review_page(
                 page_number=int(page_number),
-                markdown_content=page_markdown,
-                text_preview=text_preview,
-                validation_issues=issue_dicts,
-                evidence_images=evidence_images,
-                evidence=evidence_dict,
+                markdown_content=markdown_content,
+                evidence_dict=evidence_dict,
+                issue_dicts=issue_dicts,
             )
         )
 
@@ -294,21 +377,13 @@ def extract_sections_from_markdown(markdown_content: str, document_name: str) ->
     for i, line in enumerate(lines):
         # Detect section headings (## level)
         if line.startswith('## '):
-            # Save previous section
-            if current_section:
-                content = '\n'.join(current_content)
-                section = MarkdownSection(
-                    section_id=f"section_{len(sections)+1:03d}",
-                    heading=current_section,
-                    content=content,
-                    start_line=current_start,
-                    end_line=i - 1,
-                    page_numbers=[],  # Will be populated from validation evidence
-                    word_count=len(content.split()),
-                    has_tables='|' in content,
-                    has_images=_section_has_images(content)
-                )
-                sections.append(section)
+            _append_current_section_if_any(
+                sections,
+                current_section,
+                current_content,
+                current_start,
+                i - 1,
+            )
             
             # Start new section
             current_section = line.replace('## ', '').strip()
@@ -318,21 +393,13 @@ def extract_sections_from_markdown(markdown_content: str, document_name: str) ->
             if current_section:
                 current_content.append(line)
     
-    # Save last section
-    if current_section:
-        content = '\n'.join(current_content)
-        section = MarkdownSection(
-            section_id=f"section_{len(sections)+1:03d}",
-            heading=current_section,
-            content=content,
-            start_line=current_start,
-            end_line=len(lines) - 1,
-            page_numbers=[],
-            word_count=len(content.split()),
-            has_tables='|' in content,
-            has_images=_section_has_images(content)
-        )
-        sections.append(section)
+    _append_current_section_if_any(
+        sections,
+        current_section,
+        current_content,
+        current_start,
+        len(lines) - 1,
+    )
     
     logger.info(f"✅ Extracted {len(sections)} sections")
     

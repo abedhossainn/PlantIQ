@@ -27,6 +27,8 @@ from ..utils.progress_tracker import log_operation
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SEGMENT_ID = "segment_001"
+
 
 DEFAULT_REFORMATTER_PROMPT = """You are a precise document optimization assistant for RAG ingestion.
 
@@ -185,23 +187,31 @@ def _dedupe_ints(values: Iterable[Any]) -> list[int]:
     return ordered
 
 
+def _extract_pages_from_candidates(candidates: Any) -> list[int]:
+    """Extract integer page numbers from a list or a single integer candidate."""
+    if isinstance(candidates, list):
+        return [page for page in candidates if isinstance(page, int)]
+    if isinstance(candidates, int):
+        return [candidates]
+    return []
+
+
+def _extract_citation_page_numbers(citations: Any) -> list[int]:
+    """Extract integer page numbers from a citations list of dicts."""
+    if not isinstance(citations, list):
+        return []
+    return [
+        citation.get("page_number")
+        for citation in citations
+        if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
+    ]
+
+
 def _collect_source_pages_from_chunk(chunk: dict[str, Any], content: str) -> list[int]:
     """Collect and de-duplicate source pages from chunk fields and citations."""
-    source_pages: list[int] = []
     source_page_candidates = chunk.get("source_pages") or chunk.get("page_numbers") or chunk.get("pages")
-    if isinstance(source_page_candidates, list):
-        source_pages.extend(page for page in source_page_candidates if isinstance(page, int))
-    elif isinstance(source_page_candidates, int):
-        source_pages.append(source_page_candidates)
-
-    citations = chunk.get("citations")
-    if isinstance(citations, list):
-        source_pages.extend(
-            citation.get("page_number")
-            for citation in citations
-            if isinstance(citation, dict) and isinstance(citation.get("page_number"), int)
-        )
-
+    source_pages = _extract_pages_from_candidates(source_page_candidates)
+    source_pages.extend(_extract_citation_page_numbers(chunk.get("citations")))
     source_pages.extend(_extract_page_numbers(content))
     return _dedupe_ints(source_pages)
 
@@ -299,7 +309,7 @@ def _build_full_document_generation_segment(
     pages: list[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "segment_id": "segment_001",
+        "segment_id": _DEFAULT_SEGMENT_ID,
         "title": "Full Document",
         "page_numbers": [
             int(page.get("page_number"))
@@ -317,7 +327,7 @@ def _build_full_document_generation_segment(
 
 def _build_fallback_generation_segment(markdown_content: str) -> dict[str, Any]:
     return {
-        "segment_id": "segment_001",
+        "segment_id": _DEFAULT_SEGMENT_ID,
         "title": "Full Document",
         "page_numbers": _extract_page_numbers(markdown_content),
         "heading_candidates": [],
@@ -341,25 +351,28 @@ def _build_generation_segments(markdown_content: str, optimization_prep: dict | 
     return [_build_fallback_generation_segment(markdown_content)]
 
 
+def _build_page_outline_entry(page: dict[str, Any]) -> dict[str, Any]:
+    """Build one page outline entry for segment prompt context."""
+    return {
+        "page_number": page.get("page_number"),
+        "heading_candidates": page.get("heading_candidates") or [],
+        "text_preview": _stringify(page.get("text_preview"))[:500],
+        "table_facts": page.get("table_facts") or [],
+        "ambiguity_flags": page.get("ambiguity_flags") or [],
+        "citations": page.get("citations") or [],
+    }
+
+
 def _build_segment_prompt_context(segment: dict[str, Any], doc_name: str) -> dict[str, Any]:
-    page_outline = []
-    for page in segment.get("pages") or []:
-        if not isinstance(page, dict):
-            continue
-        page_outline.append(
-            {
-                "page_number": page.get("page_number"),
-                "heading_candidates": page.get("heading_candidates") or [],
-                "text_preview": _stringify(page.get("text_preview"))[:500],
-                "table_facts": page.get("table_facts") or [],
-                "ambiguity_flags": page.get("ambiguity_flags") or [],
-                "citations": page.get("citations") or [],
-            }
-        )
+    page_outline = [
+        _build_page_outline_entry(page)
+        for page in segment.get("pages") or []
+        if isinstance(page, dict)
+    ]
 
     return {
         "document_name": doc_name,
-        "segment_id": segment.get("segment_id") or "segment_001",
+        "segment_id": segment.get("segment_id") or _DEFAULT_SEGMENT_ID,
         "segment_title": segment.get("title") or "Document Segment",
         "page_numbers": segment.get("page_numbers") or [],
         "heading_candidates": segment.get("heading_candidates") or [],
@@ -413,6 +426,37 @@ Provide valid JSON output only."""
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
+
+
+def _collect_streamed_generation_output(
+    *,
+    streamer: Any,
+    tokenizer: Any,
+    max_new_tokens: int,
+    generation_started_at: float,
+) -> tuple[str, int]:
+    """Collect streamed generation text and periodically log progress."""
+    response_chunks: list[str] = []
+    generated_token_count = 0
+    last_progress_log_at = generation_started_at
+
+    for text_chunk in streamer:
+        if not text_chunk:
+            continue
+
+        response_chunks.append(text_chunk)
+        generated_token_count += len(tokenizer.encode(text_chunk, add_special_tokens=False))
+
+        now = time.monotonic()
+        if now - last_progress_log_at >= 5:
+            _log_generation_progress(
+                token_count=generated_token_count,
+                max_new_tokens=max_new_tokens,
+                started_at=generation_started_at,
+            )
+            last_progress_log_at = now
+
+    return "".join(response_chunks), generated_token_count
 
 
 def _generate_segment_response(
@@ -470,24 +514,12 @@ def _generate_segment_response(
     generation_thread = Thread(target=_run_generate, daemon=True)
     generation_thread.start()
 
-    response_chunks: list[str] = []
-    generated_token_count = 0
-    last_progress_log_at = generation_started_at
-
-    for text_chunk in streamer:
-        if not text_chunk:
-            continue
-        response_chunks.append(text_chunk)
-        generated_token_count += len(tokenizer.encode(text_chunk, add_special_tokens=False))
-
-        now = time.monotonic()
-        if now - last_progress_log_at >= 5:
-            _log_generation_progress(
-                token_count=generated_token_count,
-                max_new_tokens=vlm_options.max_new_tokens,
-                started_at=generation_started_at,
-            )
-            last_progress_log_at = now
+    response_text, generated_token_count = _collect_streamed_generation_output(
+        streamer=streamer,
+        tokenizer=tokenizer,
+        max_new_tokens=vlm_options.max_new_tokens,
+        generation_started_at=generation_started_at,
+    )
 
     generation_thread.join()
     if "error" in generation_error:
@@ -499,7 +531,7 @@ def _generate_segment_response(
         generated_token_count,
         _format_elapsed_seconds(generation_started_at),
     )
-    return "".join(response_chunks)
+    return response_text
 
 
 def _merge_segment_payloads(
@@ -585,7 +617,7 @@ def _get_page_synthesis_content(page: dict[str, Any]) -> str:
     return _stringify(page.get("text_preview"))
 
 
-def _build_synthesized_chunk_from_page(page: dict[str, Any], index: int, doc_name: str) -> dict[str, Any] | None:
+def _build_synthesized_chunk_from_page(page: dict[str, Any], doc_name: str) -> dict[str, Any] | None:
     page_number = page.get("page_number") if isinstance(page.get("page_number"), int) else None
     raw_content = _get_page_synthesis_content(page)
     if not raw_content:
@@ -623,14 +655,40 @@ def _synthesize_chunks_from_optimization_prep(
     pages = _get_optimization_pages(optimization_prep)
     synthesized_chunks = [
         chunk
-        for index, page in enumerate(pages, start=1)
-        for chunk in [_build_synthesized_chunk_from_page(page, index, doc_name)]
+        for page in pages
+        for chunk in [_build_synthesized_chunk_from_page(page, doc_name)]
         if chunk is not None
     ]
     if synthesized_chunks:
         return synthesized_chunks
 
     return [_build_fallback_synthesized_chunk(markdown_content, doc_name)]
+
+
+def _process_repair_char(
+    char: str,
+    output: list[str],
+    stack: list[str],
+    in_string: bool,
+    escape: bool,
+) -> tuple[bool, bool]:
+    """Process one character during JSON repair. Returns updated (in_string, escape)."""
+    output.append(char)
+    if escape:
+        return in_string, False
+    if char == "\\":
+        return in_string, True
+    if char == '"':
+        return not in_string, False
+    if in_string:
+        return in_string, False
+    if char == '{':
+        stack.append('}')
+    elif char == '[':
+        stack.append(']')
+    elif char in {'}', ']'} and stack and char == stack[-1]:
+        stack.pop()
+    return in_string, False
 
 
 def _repair_partial_json(candidate: str) -> str:
@@ -644,24 +702,7 @@ def _repair_partial_json(candidate: str) -> str:
     escape = False
 
     for char in text:
-        output.append(char)
-        if escape:
-            escape = False
-            continue
-        if char == "\\":
-            escape = True
-            continue
-        if char == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if char == '{':
-            stack.append('}')
-        elif char == '[':
-            stack.append(']')
-        elif char in {'}', ']'} and stack and char == stack[-1]:
-            stack.pop()
+        in_string, escape = _process_repair_char(char, output, stack, in_string, escape)
 
     repaired = "".join(output).rstrip()
     repaired = re.sub(r",\s*$", "", repaired)
@@ -737,13 +778,14 @@ def _build_coerced_chunk_payload(
     }
 
 
-def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_prep: dict | None) -> dict[str, Any] | None:
-    if isinstance(chunk, str):
-        return _coerce_string_chunk(chunk, doc_name, fallback_index)
-
-    if not isinstance(chunk, dict):
-        return None
-
+def _coerce_dict_chunk(
+    *,
+    chunk: dict[str, Any],
+    doc_name: str,
+    fallback_index: int,
+    optimization_prep: dict | None,
+) -> dict[str, Any] | None:
+    """Coerce one dict chunk into normalized structure."""
     heading = _get_chunk_heading(chunk, fallback_index)
     content = _get_chunk_content(chunk)
     source_pages = _collect_source_pages_from_chunk(chunk, content)
@@ -765,6 +807,49 @@ def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_p
     )
 
 
+def _coerce_chunk(chunk: Any, doc_name: str, fallback_index: int, optimization_prep: dict | None) -> dict[str, Any] | None:
+    if isinstance(chunk, str):
+        return _coerce_string_chunk(chunk, doc_name, fallback_index)
+
+    if not isinstance(chunk, dict):
+        return None
+
+    return _coerce_dict_chunk(
+        chunk=chunk,
+        doc_name=doc_name,
+        fallback_index=fallback_index,
+        optimization_prep=optimization_prep,
+    )
+
+
+def _resolve_document_name(
+    payload: dict[str, Any],
+    optimization_prep: dict | None,
+    fallback: str,
+) -> str:
+    """Resolve the canonical document name from payload, optimization_prep, or fallback."""
+    return _stringify(
+        payload.get("document_name")
+        or (optimization_prep or {}).get("document_name")
+        or fallback
+    )
+
+
+def _build_input_contract(
+    payload: dict[str, Any],
+    optimization_prep: dict | None,
+    document_name: str,
+) -> dict[str, Any]:
+    """Build and return the input_contract dict with required defaults."""
+    input_contract = payload.get("input_contract") if isinstance(payload.get("input_contract"), dict) else {}
+    input_contract.setdefault(
+        "primary_source",
+        "optimization_prep" if optimization_prep is not None else "markdown",
+    )
+    input_contract.setdefault("document_name", document_name)
+    return input_contract
+
+
 def normalize_reformatter_payload(
     payload: dict[str, Any] | None,
     *,
@@ -773,11 +858,7 @@ def normalize_reformatter_payload(
     optimization_prep: dict | None,
 ) -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
-    document_name = _stringify(
-        payload.get("document_name")
-        or (optimization_prep or {}).get("document_name")
-        or doc_name
-    )
+    document_name = _resolve_document_name(payload, optimization_prep, doc_name)
 
     raw_chunks = _select_raw_chunks(payload)
 
@@ -795,9 +876,7 @@ def normalize_reformatter_payload(
         )
 
     top_level_markdown = _stringify(payload.get("markdown")) or _build_markdown_from_chunks(document_name, normalized_chunks)
-    input_contract = payload.get("input_contract") if isinstance(payload.get("input_contract"), dict) else {}
-    input_contract.setdefault("primary_source", "optimization_prep" if optimization_prep is not None else "markdown")
-    input_contract.setdefault("document_name", document_name)
+    input_contract = _build_input_contract(payload, optimization_prep, document_name)
 
     normalized_payload = {
         "document_name": document_name,

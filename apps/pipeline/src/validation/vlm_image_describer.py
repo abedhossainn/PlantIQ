@@ -42,22 +42,28 @@ Format your response as a JSON array:
 If there are NO visual elements (only text), return: []'''
 
 
-def _extract_descriptions_from_response(response: str) -> List[Dict[str, str]]:
+def _extract_json_array_candidate(response: str) -> list[dict[str, str]]:
+    """Parse the first JSON array found in a VLM response."""
     match = re.search(r'\[[^\]]*\]', response, re.DOTALL)
-    if match:
-        json_str = match.group(0)
-        descriptions = json.loads(json_str)
-        return [
-            {
-                "title": desc.get("title", "Unknown"),
-                "description": desc.get("description", ""),
-            }
-            for desc in descriptions
-            if isinstance(desc, dict) and "title" in desc and "description" in desc
-        ]
+    if not match:
+        return []
 
+    descriptions = json.loads(match.group(0))
+    return [
+        {
+            "title": desc.get("title", "Unknown"),
+            "description": desc.get("description", ""),
+        }
+        for desc in descriptions
+        if isinstance(desc, dict) and "title" in desc and "description" in desc
+    ]
+
+
+def _extract_partial_json_objects(response: str) -> list[dict[str, str]]:
+    """Recover descriptions from partially emitted JSON objects."""
     partial_objects = re.findall(r'\{[^}]*"title"[^}]*"description"[^}]*\}', response, re.DOTALL)
     extracted: List[Dict[str, str]] = []
+
     for obj_str in partial_objects:
         try:
             obj_str_clean = obj_str.strip()
@@ -70,7 +76,15 @@ def _extract_descriptions_from_response(response: str) -> List[Dict[str, str]]:
             })
         except (json.JSONDecodeError, TypeError):
             continue
+
     return extracted
+
+
+def _extract_descriptions_from_response(response: str) -> List[Dict[str, str]]:
+    extracted = _extract_json_array_candidate(response)
+    if extracted:
+        return extracted
+    return _extract_partial_json_objects(response)
 
 
 def extract_images_from_validation(validation_path: str) -> Dict[int, int]:

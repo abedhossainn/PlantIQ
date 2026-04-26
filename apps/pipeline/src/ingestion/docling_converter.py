@@ -63,8 +63,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DOCLING_CHUNK_PAGES = 4
 DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS = 300
+DEFAULT_DOCLING_CONNECT_TIMEOUT_SECONDS = 10
 EMBEDDED_IMAGE_PATTERN = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
 DEFAULT_DOCLING_URL = "http://localhost:5001"
+DOCLING_CONVERT_ENDPOINT = "/v1/convert/file"
 DEFAULT_OUTPUT_FILENAME = "output.md"
 
 # Load the configured vision-language model for image descriptions
@@ -130,9 +132,7 @@ def _get_qwen_model():
 
 def _convert_embedded_to_placeholders(md_content: str) -> str:
     """Convert embedded data URIs to simple [IMAGE] placeholders"""
-    # Pattern for embedded images: ![alt](data:image/...)
-    pattern = r'!\[([^\]]*)\]\(data:image/[^)]+\)'
-    return re.sub(pattern, '[IMAGE]', md_content)
+    return re.sub(EMBEDDED_IMAGE_PATTERN, '[IMAGE]', md_content)
 
 
 def _extract_referenced_images(md_content: str, output_path: str) -> tuple[str, list]:
@@ -183,32 +183,38 @@ def _extract_referenced_images(md_content: str, output_path: str) -> tuple[str, 
     return modified_content, image_files
 
 
+def _is_h2_heading(line_text: str) -> bool:
+    """Return True for level-2 markdown headings, excluding deeper levels."""
+    return line_text.startswith('##') and not line_text.startswith('###')
+
+
+def _flush_h2_heading_buffer(buffer: list[str], output: list[str]) -> None:
+    """Flush buffered consecutive H2 headings into output with coalescing."""
+    if not buffer:
+        return
+    if len(buffer) == 1:
+        output.append(buffer[0])
+        return
+    combined = buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in buffer[1:])
+    output.append(combined)
+
+
+def _next_non_empty_line_is_h2(all_lines: list[str], current_index: int) -> bool:
+    """Look ahead up to 3 lines and check whether the next non-empty line is an H2."""
+    for j in range(current_index + 1, min(current_index + 4, len(all_lines))):
+        next_stripped = all_lines[j].strip()
+        if not next_stripped:
+            continue
+        return _is_h2_heading(next_stripped)
+    return False
+
+
 def _coalesce_consecutive_headings(md_content: str) -> str:
     """
     Coalesce multiple consecutive headings without intervening text.
     If multiple ## headings appear within 3 lines of each other with no prose,
     combine them into a single heading or reflow as a paragraph.
     """
-    def _is_h2(line_text: str) -> bool:
-        return line_text.startswith('##') and not line_text.startswith('###')
-
-    def _flush_heading_buffer(buffer: list[str], output: list[str]) -> None:
-        if not buffer:
-            return
-        if len(buffer) == 1:
-            output.append(buffer[0])
-            return
-        combined = buffer[0] + ' / ' + ' / '.join(h.lstrip('#').strip() for h in buffer[1:])
-        output.append(combined)
-
-    def _next_non_empty_is_h2(all_lines: list[str], current_index: int) -> bool:
-        for j in range(current_index + 1, min(current_index + 4, len(all_lines))):
-            next_stripped = all_lines[j].strip()
-            if not next_stripped:
-                continue
-            return _is_h2(next_stripped)
-        return False
-
     lines = md_content.split('\n')
     result: list[str] = []
     heading_buffer: list[str] = []
@@ -216,22 +222,22 @@ def _coalesce_consecutive_headings(md_content: str) -> str:
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        if _is_h2(stripped):
+        if _is_h2_heading(stripped):
             heading_buffer.append(stripped)
             continue
 
         if stripped:
-            _flush_heading_buffer(heading_buffer, result)
+            _flush_h2_heading_buffer(heading_buffer, result)
             heading_buffer = []
             result.append(line)
             continue
 
-        if heading_buffer and not _next_non_empty_is_h2(lines, i):
-            _flush_heading_buffer(heading_buffer, result)
+        if heading_buffer and not _next_non_empty_line_is_h2(lines, i):
+            _flush_h2_heading_buffer(heading_buffer, result)
             heading_buffer = []
         result.append(line)
 
-    _flush_heading_buffer(heading_buffer, result)
+    _flush_h2_heading_buffer(heading_buffer, result)
     return '\n'.join(result)
 
 
@@ -272,6 +278,152 @@ def _normalize_table_cells(md_content: str) -> str:
     return '\n'.join(result)
 
 
+def _decode_embedded_image(data_uri: str) -> tuple[str, bytes]:
+    """Decode a data URI into image format and raw bytes."""
+    header, data = data_uri.split(',', 1)
+    img_format = header.split('/')[1].split(';')[0]
+    return img_format, base64.b64decode(data)
+
+
+def _build_qwen_image_messages(image: Image.Image) -> list[dict[str, Any]]:
+    """Build Qwen chat messages payload for image description."""
+    return [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "image": image,
+                },
+                {
+                    "type": "text",
+                    "text": "Describe this image in detail with ONE complete sentence. Prioritize accuracy and completeness. Include the main subject, key details, and context. Be specific and technical.",
+                },
+            ],
+        }
+    ]
+
+
+def _normalize_description_sentence(description: str) -> str:
+    """Keep only the first sentence and ensure trailing punctuation."""
+    sentences = re.split(r'[.!?]\s+', description)
+    if sentences:
+        description = sentences[0].strip()
+        if description and description[-1] not in '.!?':
+            description += '.'
+    return description
+
+
+def _generate_description_from_temp_image(
+    *,
+    image_data: bytes,
+    img_format: str,
+    model: Any,
+    processor: Any,
+    process_vision_info: Any,
+    vlm_options: 'VLMOptions' = None,
+) -> str:
+    """Generate one image description using a temporary image file."""
+    with tempfile.NamedTemporaryFile(suffix=f".{img_format}", delete=False) as tmp:
+        tmp.write(image_data)
+        tmp_path = tmp.name
+
+    try:
+        image = Image.open(tmp_path)
+        messages = _build_qwen_image_messages(image)
+
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, video_inputs = process_vision_info(messages)
+
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(model.device)
+
+        gen_kwargs = {'max_new_tokens': 120}
+        if vlm_options:
+            gen_kwargs = vlm_options.get_generation_kwargs()
+            gen_kwargs['max_new_tokens'] = 120
+
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, **gen_kwargs)
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )
+        description = output_text[0].strip() if output_text else "Image"
+        return _normalize_description_sentence(description)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+
+def _replace_with_placeholder_description(match: re.Match[str], image_counter: list[int]) -> str:
+    """Replace one embedded image with a placeholder figure description."""
+    alt_text = match.group(1)
+    image_counter[0] += 1
+    description = alt_text.strip() if alt_text and alt_text.strip() else f"Image {image_counter[0]}"
+    return f"\n**[Figure {image_counter[0]}: {description}]**\n"
+
+
+def _replace_with_qwen_image_description(
+    match: re.Match[str],
+    *,
+    image_counter: list[int],
+    hash_to_description: dict[str, str],
+    model: Any,
+    processor: Any,
+    process_vision_info: Any,
+    vlm_options: 'VLMOptions' = None,
+) -> str:
+    """Replace one embedded image with a generated Qwen figure description."""
+    alt_text = match.group(1)
+    data_uri = match.group(2)
+
+    if not data_uri.startswith('data:image/'):
+        return match.group(0)
+
+    image_counter[0] += 1
+    image_num = image_counter[0]
+
+    try:
+        img_format, image_data = _decode_embedded_image(data_uri)
+        image_hash = hashlib.sha256(image_data).hexdigest()
+
+        if image_hash in hash_to_description:
+            description = hash_to_description[image_hash]
+            print(f"   ↻ Image {image_num}: Duplicate detected, reusing description")
+            return f"\n**[Figure {image_num}: {description}]**\n"
+
+        description = _generate_description_from_temp_image(
+            image_data=image_data,
+            img_format=img_format,
+            model=model,
+            processor=processor,
+            process_vision_info=process_vision_info,
+            vlm_options=vlm_options,
+        )
+        hash_to_description[image_hash] = description
+
+        print(f"   ✓ Image {image_num}: {description[:60]}...")
+        return f"\n**[Figure {image_num}: {description}]**\n"
+    except Exception as e:
+        print(f"   ⚠️  Image {image_num}: Failed to describe ({str(e)[:50]})")
+        description = alt_text.strip() if alt_text and alt_text.strip() else f"Image {image_num}"
+        return f"\n**[Figure {image_num}: {description}]**\n"
+
+
 def _generate_image_descriptions(
     md_content: str,
     _docling_url: str = DEFAULT_DOCLING_URL,
@@ -300,137 +452,29 @@ def _generate_image_descriptions(
     if model is None or processor is None:
         print("⚠️  Qwen model not available, using placeholder descriptions")
         image_counter = [0]
-        def replace_with_placeholder(match):
-            alt_text = match.group(1)
-            image_counter[0] += 1
-            description = alt_text.strip() if alt_text and alt_text.strip() else f"Image {image_counter[0]}"
-            return f"\n**[Figure {image_counter[0]}: {description}]**\n"
-        
-        return re.sub(EMBEDDED_IMAGE_PATTERN, replace_with_placeholder, md_content)
+        return re.sub(
+            EMBEDDED_IMAGE_PATTERN,
+            lambda match: _replace_with_placeholder_description(match, image_counter),
+            md_content,
+        )
     
     image_counter = [max(0, starting_figure_number - 1)]
     hash_to_description = {}  # Map image hash to description
     
-    def replace_with_description(match):
-        alt_text = match.group(1)
-        data_uri = match.group(2)
-        
-        if not data_uri.startswith('data:image/'):
-            return match.group(0)
-        
-        image_counter[0] += 1
-        image_num = image_counter[0]
-        
-        try:
-            # Extract and decode base64 image
-            header, data = data_uri.split(',', 1)
-            img_format = header.split('/')[1].split(';')[0]
-            image_data = base64.b64decode(data)
-            
-            # Compute hash of image bytes for deduplication
-            image_hash = hashlib.sha256(image_data).hexdigest()
-            
-            # Check if we already generated this description (by byte hash)
-            if image_hash in hash_to_description:
-                description = hash_to_description[image_hash]
-                print(f"   ↻ Image {image_num}: Duplicate detected, reusing description")
-                return f"\n**[Figure {image_num}: {description}]**\n"
-            
-            # Save image temporarily
-            with tempfile.NamedTemporaryFile(suffix=f".{img_format}", delete=False) as tmp:
-                tmp.write(image_data)
-                tmp_path = tmp.name
-            
-            try:
-                # Open image with PIL
-                image = Image.open(tmp_path)
-                
-                # Prepare messages for Qwen in the correct format
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "image": image,  # PIL Image directly
-                            },
-                            {
-                                "type": "text",
-                                "text": "Describe this image in detail with ONE complete sentence. Prioritize accuracy and completeness. Include the main subject, key details, and context. Be specific and technical.",
-                            },
-                        ],
-                    }
-                ]
-                
-                # Apply chat template and process vision info
-                text = processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                image_inputs, video_inputs = process_vision_info(messages)
-                
-                # Prepare inputs
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt",
-                )
-                
-                # Move to device
-                inputs = inputs.to(model.device)
-                
-                # Generate description with VLM options
-                gen_kwargs = {'max_new_tokens': 120}
-                if vlm_options:
-                    gen_kwargs = vlm_options.get_generation_kwargs()
-                    gen_kwargs['max_new_tokens'] = 120  # Override for short descriptions
-                
-                with torch.no_grad():
-                    generated_ids = model.generate(**inputs, **gen_kwargs)
-                
-                # Trim and decode
-                generated_ids_trimmed = [
-                    out_ids[len(in_ids):] 
-                    for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                ]
-                output_text = processor.batch_decode(
-                    generated_ids_trimmed,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False
-                )
-                
-                description = output_text[0].strip() if output_text else "Image"
-                
-                # Ensure sentence completion: take first complete sentence
-                sentences = re.split(r'[.!?]\s+', description)
-                if sentences:
-                    description = sentences[0].strip()
-                    # Ensure it ends with punctuation
-                    if description and description[-1] not in '.!?':
-                        description += '.'
-                
-                # Cache by image hash for deduplication
-                hash_to_description[image_hash] = description
-                
-                print(f"   ✓ Image {image_num}: {description[:60]}...")
-                
-                return f"\n**[Figure {image_num}: {description}]**\n"
-                
-            finally:
-                # Clean up temporary file
-                Path(tmp_path).unlink(missing_ok=True)
-                
-        except Exception as e:
-            print(f"   ⚠️  Image {image_num}: Failed to describe ({str(e)[:50]})")
-            # Fallback to alt text or generic description
-            description = alt_text.strip() if alt_text and alt_text.strip() else f"Image {image_num}"
-            return f"\n**[Figure {image_num}: {description}]**\n"
-    
     # Replace all embedded images with descriptions
-    modified_content = re.sub(EMBEDDED_IMAGE_PATTERN, replace_with_description, md_content)
-    
-    return modified_content
+    return re.sub(
+        EMBEDDED_IMAGE_PATTERN,
+        lambda match: _replace_with_qwen_image_description(
+            match,
+            image_counter=image_counter,
+            hash_to_description=hash_to_description,
+            model=model,
+            processor=processor,
+            process_vision_info=process_vision_info,
+            vlm_options=vlm_options,
+        ),
+        md_content,
+    )
 
 
 def _resolve_docling_image_mode(image_mode: str):
@@ -440,7 +484,7 @@ def _resolve_docling_image_mode(image_mode: str):
     return ImageRefMode.EMBEDDED
 
 
-def _resolve_accelerator_device(AcceleratorDevice: Any):
+def _resolve_accelerator_device(accelerator_device_enum: Any):
     """Resolve the preferred Docling accelerator device from environment."""
     preferred_device = str(os.getenv("DOCLING_ACCELERATOR_DEVICE", "cuda")).strip().lower()
     device_name_map = {
@@ -449,35 +493,35 @@ def _resolve_accelerator_device(AcceleratorDevice: Any):
         "auto": "AUTO",
     }
     requested_name = device_name_map.get(preferred_device, "CUDA")
-    accelerator_device = getattr(AcceleratorDevice, requested_name, None)
+    accelerator_device = getattr(accelerator_device_enum, requested_name, None)
     if accelerator_device is None:
-        accelerator_device = getattr(AcceleratorDevice, "AUTO", None)
+        accelerator_device = getattr(accelerator_device_enum, "AUTO", None)
     return accelerator_device
 
 
 def _configure_page_export_pipeline_options(
     *,
-    PdfPipelineOptions: Any,
-    AcceleratorDevice: Any,
-    AcceleratorOptions: Any,
+    pdf_pipeline_options_cls: Any,
+    accelerator_device_enum: Any,
+    accelerator_options_cls: Any,
 ) -> Any:
     """Build pipeline options for page-scoped markdown export."""
-    pipeline_options = PdfPipelineOptions()
+    pipeline_options = pdf_pipeline_options_cls()
     pipeline_options.generate_picture_images = True
     pipeline_options.generate_page_images = False
     pipeline_options.do_picture_description = False
     pipeline_options.enable_remote_services = False
 
-    accelerator_device = _resolve_accelerator_device(AcceleratorDevice)
+    accelerator_device = _resolve_accelerator_device(accelerator_device_enum)
     if accelerator_device is not None:
-        pipeline_options.accelerator_options = AcceleratorOptions(device=accelerator_device)
+        pipeline_options.accelerator_options = accelerator_options_cls(device=accelerator_device)
 
     ocr_options = getattr(pipeline_options, "ocr_options", None)
     if ocr_options is not None and hasattr(ocr_options, "use_gpu"):
         setattr(
             ocr_options,
             "use_gpu",
-            accelerator_device == getattr(AcceleratorDevice, "CUDA", None),
+            accelerator_device == getattr(accelerator_device_enum, "CUDA", None),
         )
     if hasattr(pipeline_options, "min_picture_page_surface_ratio"):
         pipeline_options.min_picture_page_surface_ratio = 0
@@ -544,9 +588,9 @@ def export_page_markdown_map(
     page_markdown_map: dict[int, str] = {}
     figure_number = 1
     pipeline_options = _configure_page_export_pipeline_options(
-        PdfPipelineOptions=PdfPipelineOptions,
-        AcceleratorDevice=AcceleratorDevice,
-        AcceleratorOptions=AcceleratorOptions,
+        pdf_pipeline_options_cls=PdfPipelineOptions,
+        accelerator_device_enum=AcceleratorDevice,
+        accelerator_options_cls=AcceleratorOptions,
     )
 
     converter = DocumentConverter(
@@ -657,6 +701,20 @@ def _get_pdf_page_count(pdf_path: str) -> int:
         return len(pdf.pages)
 
 
+def _append_docling_form_value(form_data: list[tuple[str, str]], key: str, value: Any) -> None:
+    """Append one normalized Docling multipart field."""
+    if isinstance(value, bool):
+        form_data.append((key, "true" if value else "false"))
+        return
+
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            form_data.append((key, str(item)))
+        return
+
+    form_data.append((key, str(value)))
+
+
 def _build_docling_form_data(options: dict, page_range: Optional[tuple[int, int]] = None) -> list[tuple[str, str]]:
     """Build multipart form fields for Docling Serve endpoints."""
     form_data: list[tuple[str, str]] = []
@@ -664,13 +722,7 @@ def _build_docling_form_data(options: dict, page_range: Optional[tuple[int, int]
     for key, value in options.items():
         if value is None:
             continue
-        if isinstance(value, bool):
-            form_data.append((key, "true" if value else "false"))
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                form_data.append((key, str(item)))
-        else:
-            form_data.append((key, str(value)))
+        _append_docling_form_value(form_data, key, value)
 
     if page_range is not None:
         form_data.append(("page_range", str(page_range[0])))
@@ -679,46 +731,57 @@ def _build_docling_form_data(options: dict, page_range: Optional[tuple[int, int]
     return form_data
 
 
-def _convert_pdf_with_docling_sync_chunks(
-    *,
-    pdf_path: str,
-    docling_url: str,
-    options: dict,
-    pages_per_chunk: int,
-    connect_timeout: int,
-    read_timeout: int,
-) -> dict:
-    """Convert a PDF using bounded synchronous page-range chunks.
+def _emit_error(message: str, *, include_error_label: bool = True) -> None:
+    """Emit a conversion error to both stderr and stdout."""
+    rendered = f"❌ Error: {message}" if include_error_label else f"❌ {message}"
+    print(rendered, file=sys.stderr)
+    print(rendered)
 
-    This avoids the original hang caused by requesting one massive full-document
-    response body, while also avoiding the unstable async queue path in the
-    current Docling server version.
-    """
-    total_pages = _get_pdf_page_count(pdf_path)
-    page_ranges = [
+
+def _exit_with_error(
+    message: str,
+    *,
+    include_error_label: bool = True,
+    hints: Optional[list[str]] = None,
+) -> None:
+    """Emit a conversion error and terminate with non-zero status."""
+    _emit_error(message, include_error_label=include_error_label)
+    for hint in hints or []:
+        print(f"   {hint}")
+    sys.exit(1)
+
+
+def _get_docling_page_ranges(total_pages: int, pages_per_chunk: int) -> list[tuple[int, int]]:
+    """Build sequential inclusive page ranges for chunked conversion."""
+    return [
         (start, min(start + pages_per_chunk - 1, total_pages))
         for start in range(1, total_pages + 1, pages_per_chunk)
     ]
 
-    print(
-        f"📚 Large PDF detected ({total_pages} pages). "
-        f"Using Docling sequential chunking with {len(page_ranges)} chunk(s) of up to {pages_per_chunk} pages."
-    )
 
-    chunk_results: list[dict] = []
-    for index, page_range in enumerate(page_ranges, start=1):
-        print(f"   ⏳ Converting chunk {index}/{len(page_ranges)} (pages {page_range[0]}-{page_range[1]})...")
-        with open(pdf_path, "rb") as pdf_handle:
-            response = requests.post(
-                f"{docling_url}/v1/convert/file",
-                files={"files": (Path(pdf_path).name, pdf_handle, "application/pdf")},
-                data=_build_docling_form_data(options, page_range=page_range),
-                timeout=(connect_timeout, read_timeout),
-            )
-        response.raise_for_status()
-        chunk_payload = response.json()
-        chunk_results.append(chunk_payload)
+def _convert_docling_page_range_chunk(
+    *,
+    pdf_path: str,
+    docling_url: str,
+    options: dict,
+    page_range: tuple[int, int],
+    connect_timeout: int,
+    read_timeout: int,
+) -> dict:
+    """Convert one page-range chunk synchronously via Docling."""
+    with open(pdf_path, "rb") as pdf_handle:
+        response = requests.post(
+            f"{docling_url}{DOCLING_CONVERT_ENDPOINT}",
+            files={"files": (Path(pdf_path).name, pdf_handle, "application/pdf")},
+            data=_build_docling_form_data(options, page_range=page_range),
+            timeout=(connect_timeout, read_timeout),
+        )
+    response.raise_for_status()
+    return response.json()
 
+
+def _merge_docling_chunk_payloads(chunk_results: list[dict], page_ranges: list[tuple[int, int]]) -> dict:
+    """Merge chunk payloads into one Docling-compatible markdown result."""
     md_chunks: list[str] = []
     total_processing_time = 0.0
     aggregated_errors: list = []
@@ -753,6 +816,97 @@ def _convert_pdf_with_docling_sync_chunks(
             "elements": [],
         },
     }
+
+
+def _convert_pdf_with_docling_sync_chunks(
+    *,
+    pdf_path: str,
+    docling_url: str,
+    options: dict,
+    pages_per_chunk: int,
+    connect_timeout: int,
+    read_timeout: int,
+) -> dict:
+    """Convert a PDF using bounded synchronous page-range chunks.
+
+    This avoids the original hang caused by requesting one massive full-document
+    response body, while also avoiding the unstable async queue path in the
+    current Docling server version.
+    """
+    total_pages = _get_pdf_page_count(pdf_path)
+    page_ranges = _get_docling_page_ranges(total_pages, pages_per_chunk)
+
+    print(
+        f"📚 Large PDF detected ({total_pages} pages). "
+        f"Using Docling sequential chunking with {len(page_ranges)} chunk(s) of up to {pages_per_chunk} pages."
+    )
+
+    chunk_results: list[dict] = []
+    for index, page_range in enumerate(page_ranges, start=1):
+        print(f"   ⏳ Converting chunk {index}/{len(page_ranges)} (pages {page_range[0]}-{page_range[1]})...")
+        chunk_payload = _convert_docling_page_range_chunk(
+            pdf_path=pdf_path,
+            docling_url=docling_url,
+            options=options,
+            page_range=page_range,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+        )
+        chunk_results.append(chunk_payload)
+    return _merge_docling_chunk_payloads(chunk_results, page_ranges)
+
+
+def _run_docling_chunked_conversion(
+    *,
+    pdf_file: Path,
+    docling_url: str,
+    options: dict,
+    pages_per_chunk: int,
+    connect_timeout: int,
+    read_timeout: int,
+) -> dict:
+    """Execute chunked Docling conversion with normalized error handling."""
+    try:
+        return _convert_pdf_with_docling_sync_chunks(
+            pdf_path=str(pdf_file),
+            docling_url=docling_url,
+            options=options,
+            pages_per_chunk=pages_per_chunk,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+        )
+    except requests.exceptions.ConnectionError as exc:
+        _exit_with_error(
+            f"Cannot connect to Docling at {docling_url}: {exc}",
+            hints=["Make sure docling-serve is running: docker ps | grep docling-serve"],
+        )
+    except requests.exceptions.Timeout as exc:
+        _exit_with_error(
+            f"Timeout converting PDF with chunked processing: {exc}",
+            hints=["This may indicate the Docling service is overloaded or stuck."],
+        )
+    except requests.exceptions.ChunkedEncodingError as exc:
+        _exit_with_error(
+            f"Docling response was incomplete or corrupted: {exc}",
+            hints=["This may indicate a network issue or Docling service problem."],
+        )
+    except Exception as exc:
+        _exit_with_error(f"Error during PDF conversion: {type(exc).__name__}: {exc}")
+
+
+def _extract_markdown_or_exit(result: dict) -> str:
+    """Extract markdown content from Docling response or terminate with error."""
+    if result.get("status") != "success":
+        _exit_with_error(
+            f"Docling conversion failed: {result.get('errors', 'Unknown error')}",
+            include_error_label=False,
+        )
+
+    document = result.get("document", {})
+    md_content = document.get("md_content", "")
+    if not md_content:
+        _exit_with_error("No markdown content in Docling response")
+    return str(md_content)
 
 
 def convert_pdf_with_qwen(
@@ -790,7 +944,7 @@ def convert_pdf_with_qwen(
         active_model_id = vlm_options.model_id if vlm_options else get_vision_model_id()
         print(f"🎯 Using VLM: {active_model_id}")
         print(f"🖼️  Image mode: {image_mode}")
-        print(f"🔗 Docling API: {docling_url}/v1/convert/file")
+        print(f"🔗 Docling API: {docling_url}{DOCLING_CONVERT_ENDPOINT}")
         print("\n⏳ Converting PDF (this may take a few minutes for first run)...")
 
         if image_mode == "descriptions" and not DOCLING_AVAILABLE_LOCALLY:
@@ -799,61 +953,25 @@ def convert_pdf_with_qwen(
             )
         
         pages_per_chunk = int(os.getenv("DOCLING_CHUNK_PAGES", str(DEFAULT_DOCLING_CHUNK_PAGES)))
-        connect_timeout = 10
+        connect_timeout = int(
+            os.getenv("DOCLING_CONNECT_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CONNECT_TIMEOUT_SECONDS))
+        )
         read_timeout = int(os.getenv("DOCLING_CHUNK_READ_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS)))
         options = _build_conversion_options(image_mode)
 
-        try:
-            # Use bounded synchronous page-range chunks so large PDFs do not hang on a
-            # single giant response body.
-            result = _convert_pdf_with_docling_sync_chunks(
-                pdf_path=str(pdf_file),
-                docling_url=docling_url,
-                options=options,
-                pages_per_chunk=pages_per_chunk,
-                connect_timeout=connect_timeout,
-                read_timeout=read_timeout,
-            )
-        except requests.exceptions.ConnectionError as e:
-            error_msg = f"Cannot connect to Docling at {docling_url}: {e}"
-            print(f"❌ Error: {error_msg}", file=sys.stderr)
-            print(f"❌ Error: {error_msg}")
-            print("   Make sure docling-serve is running: docker ps | grep docling-serve")
-            sys.exit(1)
-        except requests.exceptions.Timeout as e:
-            error_msg = f"Timeout converting PDF with chunked processing: {e}"
-            print(f"❌ Error: {error_msg}", file=sys.stderr)
-            print(f"❌ Error: {error_msg}")
-            print("   This may indicate the Docling service is overloaded or stuck.")
-            sys.exit(1)
-        except requests.exceptions.ChunkedEncodingError as e:
-            error_msg = f"Docling response was incomplete or corrupted: {e}"
-            print(f"❌ Error: {error_msg}", file=sys.stderr)
-            print(f"❌ Error: {error_msg}")
-            print("   This may indicate a network issue or Docling service problem.")
-            sys.exit(1)
-        except Exception as e:
-            error_msg = f"Error during PDF conversion: {type(e).__name__}: {e}"
-            print(f"❌ Error: {error_msg}", file=sys.stderr)
-            print(f"❌ Error: {error_msg}")
-            sys.exit(1)
+        # Use bounded synchronous page-range chunks so large PDFs do not hang on a
+        # single giant response body.
+        result = _run_docling_chunked_conversion(
+            pdf_file=pdf_file,
+            docling_url=docling_url,
+            options=options,
+            pages_per_chunk=pages_per_chunk,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+        )
+        md_content = _extract_markdown_or_exit(result)
 
-        # Check for conversion errors
-        if result.get("status") != "success":
-            error_msg = f"Docling conversion failed: {result.get('errors', 'Unknown error')}"
-            print(f"❌ {error_msg}", file=sys.stderr)
-            print(f"❌ Conversion failed: {result.get('errors', 'Unknown error')}")
-            sys.exit(1)
-
-        # Extract markdown content from API response
         document = result.get("document", {})
-        md_content = document.get("md_content", "")
-
-        if not md_content:
-            error_msg = "No markdown content in Docling response"
-            print(f"❌ Error: {error_msg}", file=sys.stderr)
-            print(f"❌ Error: {error_msg}")
-            sys.exit(1)
         
         # Instrumentation: Log document structure for debugging
         print(f"\n📊 Document structure:")
