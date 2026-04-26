@@ -780,6 +780,33 @@ def _convert_docling_page_range_chunk(
     return response.json()
 
 
+def _validate_chunk_payload_success(chunk_payload: dict) -> None:
+    if chunk_payload.get("status") != "success":
+        raise RuntimeError(f"Docling chunk conversion failed: {chunk_payload}")
+
+
+def _extract_chunk_markdown_content(chunk_payload: dict) -> str:
+    document = chunk_payload.get("document", {}) or {}
+    md_content = str(document.get("md_content") or "").strip()
+    if not md_content:
+        raise RuntimeError(f"Docling chunk returned no markdown content: {chunk_payload}")
+    return md_content
+
+
+def _coerce_chunk_processing_time(chunk_payload: dict) -> float:
+    try:
+        return float(chunk_payload.get("processing_time") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _extract_chunk_errors(chunk_payload: dict) -> list:
+    chunk_errors = chunk_payload.get("errors") or []
+    if isinstance(chunk_errors, list):
+        return chunk_errors
+    return []
+
+
 def _merge_docling_chunk_payloads(chunk_results: list[dict], page_ranges: list[tuple[int, int]]) -> dict:
     """Merge chunk payloads into one Docling-compatible markdown result."""
     md_chunks: list[str] = []
@@ -787,23 +814,10 @@ def _merge_docling_chunk_payloads(chunk_results: list[dict], page_ranges: list[t
     aggregated_errors: list = []
 
     for chunk_payload in chunk_results:
-        if chunk_payload.get("status") != "success":
-            raise RuntimeError(f"Docling chunk conversion failed: {chunk_payload}")
-
-        document = chunk_payload.get("document", {}) or {}
-        md_content = str(document.get("md_content") or "").strip()
-        if not md_content:
-            raise RuntimeError(f"Docling chunk returned no markdown content: {chunk_payload}")
-        md_chunks.append(md_content)
-
-        try:
-            total_processing_time += float(chunk_payload.get("processing_time") or 0.0)
-        except (TypeError, ValueError):
-            pass
-
-        chunk_errors = chunk_payload.get("errors") or []
-        if isinstance(chunk_errors, list):
-            aggregated_errors.extend(chunk_errors)
+        _validate_chunk_payload_success(chunk_payload)
+        md_chunks.append(_extract_chunk_markdown_content(chunk_payload))
+        total_processing_time += _coerce_chunk_processing_time(chunk_payload)
+        aggregated_errors.extend(_extract_chunk_errors(chunk_payload))
 
     merged_markdown = "\n\n".join(chunk.strip() for chunk in md_chunks if chunk.strip())
     return {

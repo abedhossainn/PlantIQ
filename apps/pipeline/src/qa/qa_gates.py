@@ -306,20 +306,19 @@ def filter_unresolved_validation_issues(
 ) -> List[Dict]:
     """Return only validation issues that are still unresolved in optimized output."""
 
+    resolved_by_issue_type = {
+        "image_loss": figure_description_coverage >= 100.0,
+        "table_fidelity": table_to_bullets_ratio >= 100.0,
+        "semantic_mismatch": hallucination_risk <= 0.0,
+        "missing_content": citation_coverage >= 100.0,
+        "formatting": question_heading_compliance >= 100.0,
+    }
     unresolved: List[Dict] = []
 
     for issue in validation_issues:
         issue_type = str(issue.get('issue_type') or '').strip().lower()
 
-        if issue_type == 'image_loss' and figure_description_coverage >= 100.0:
-            continue
-        if issue_type == 'table_fidelity' and table_to_bullets_ratio >= 100.0:
-            continue
-        if issue_type == 'semantic_mismatch' and hallucination_risk <= 0.0:
-            continue
-        if issue_type == 'missing_content' and citation_coverage >= 100.0:
-            continue
-        if issue_type == 'formatting' and question_heading_compliance >= 100.0:
+        if resolved_by_issue_type.get(issue_type, False):
             continue
 
         unresolved.append(issue)

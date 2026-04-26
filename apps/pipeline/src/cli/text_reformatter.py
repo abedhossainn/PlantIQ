@@ -363,12 +363,16 @@ def _build_page_outline_entry(page: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_segment_pages(segment: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = segment.get("pages") or []
+    if not isinstance(pages, list):
+        return []
+    return [page for page in pages if isinstance(page, dict)]
+
+
 def _build_segment_prompt_context(segment: dict[str, Any], doc_name: str) -> dict[str, Any]:
-    page_outline = [
-        _build_page_outline_entry(page)
-        for page in segment.get("pages") or []
-        if isinstance(page, dict)
-    ]
+    segment_pages = _extract_segment_pages(segment)
+    page_outline = [_build_page_outline_entry(page) for page in segment_pages]
 
     return {
         "document_name": doc_name,

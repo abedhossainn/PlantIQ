@@ -471,6 +471,53 @@ def generate_audit_report(manifest: DocumentManifest) -> str:
     return '\n'.join(report_lines)
 
 
+def _run_create_action(args) -> int:
+    if not args.pdf:
+        logger.error("❌ --pdf required for create action")
+        return 1
+
+    manifest = create_document_manifest(
+        args.pdf,
+        args.docling_version,
+        args.vlm_model or get_vision_model_id(),
+        args.reformatter_model or get_text_model_id()
+    )
+
+    output = args.output or f"{Path(args.pdf).stem}_manifest.json"
+    save_manifest(manifest, output)
+    return 0
+
+
+def _run_load_action(args) -> int:
+    if not args.manifest:
+        logger.error("❌ --manifest required for load action")
+        return 1
+
+    manifest = load_manifest(args.manifest)
+    logger.info(f"✅ Loaded manifest: {manifest.document_name}")
+    logger.info(f"   Versions: {len(manifest.markdown_versions)}")
+    logger.info(f"   Review notes: {len(manifest.review_notes)}")
+    return 0
+
+
+def _run_report_action(args) -> int:
+    if not args.manifest:
+        logger.error("❌ --manifest required for report action")
+        return 1
+
+    manifest = load_manifest(args.manifest)
+    report = generate_audit_report(manifest)
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(report)
+        logger.info(f"💾 Audit report saved: {args.output}")
+    else:
+        print(report)
+
+    return 0
+
+
 def main():
     """CLI entry point"""
     import argparse
@@ -500,54 +547,18 @@ def main():
     logger.info("=" * 80)
     logger.info("📋 Lineage and Audit Trail")
     logger.info("=" * 80)
-    
-    if args.action == "create":
-        if not args.pdf:
-            logger.error("❌ --pdf required for create action")
-            return 1
-        
-        manifest = create_document_manifest(
-            args.pdf,
-            args.docling_version,
-            args.vlm_model or get_vision_model_id(),
-            args.reformatter_model or get_text_model_id()
-        )
-        
-        output = args.output or f"{Path(args.pdf).stem}_manifest.json"
-        save_manifest(manifest, output)
-        
+
+    action_handlers = {
+        "create": _run_create_action,
+        "load": _run_load_action,
+        "report": _run_report_action,
+    }
+
+    handler = action_handlers.get(args.action)
+    if handler is None:
         return 0
-    
-    elif args.action == "load":
-        if not args.manifest:
-            logger.error("❌ --manifest required for load action")
-            return 1
-        
-        manifest = load_manifest(args.manifest)
-        logger.info(f"✅ Loaded manifest: {manifest.document_name}")
-        logger.info(f"   Versions: {len(manifest.markdown_versions)}")
-        logger.info(f"   Review notes: {len(manifest.review_notes)}")
-        
-        return 0
-    
-    elif args.action == "report":
-        if not args.manifest:
-            logger.error("❌ --manifest required for report action")
-            return 1
-        
-        manifest = load_manifest(args.manifest)
-        report = generate_audit_report(manifest)
-        
-        if args.output:
-            with open(args.output, 'w') as f:
-                f.write(report)
-            logger.info(f"💾 Audit report saved: {args.output}")
-        else:
-            print(report)
-        
-        return 0
-    
-    return 0
+
+    return handler(args)
 
 
 if __name__ == "__main__":
