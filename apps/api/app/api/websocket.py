@@ -29,6 +29,125 @@ async def _send_ws_error(websocket: WebSocket, error: str, *, operation: Optiona
     await websocket.send_json(payload)
 
 
+async def _send_ws_connected(websocket: WebSocket, *, channel: str, message: str) -> None:
+    await websocket.send_json(
+        {
+            "type": "connected",
+            "channel": channel,
+            "message": message,
+        }
+    )
+
+
+async def _receive_or_heartbeat(websocket: WebSocket) -> str | None:
+    try:
+        return await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=float(settings.WS_HEARTBEAT_INTERVAL),
+        )
+    except asyncio.TimeoutError:
+        await websocket.send_json({"type": "heartbeat"})
+        return None
+
+
+def _parse_json_message_or_none(data: str) -> dict | None:
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON from client: %s", data[:100])
+        return None
+
+
+async def _authorize_pipeline_socket(
+    websocket: WebSocket,
+    document_id: str,
+    token: Optional[str],
+) -> tuple[uuid.UUID, str] | None:
+    auth_result = await verify_ws_token(token)
+    if not auth_result:
+        await websocket.close(code=403, reason="Unauthorized")
+        return None
+
+    user_id, user_role = auth_result
+    if user_role not in {"admin", "plantig_admin"}:
+        await websocket.close(code=403, reason="Forbidden: Pipeline updates require admin access")
+        return None
+
+    has_access = await check_document_access(document_id, user_id, user_role)
+    if not has_access:
+        await websocket.close(code=403, reason="Forbidden: No access to this document")
+        return None
+
+    return user_id, user_role
+
+
+async def _authorize_chat_socket(
+    websocket: WebSocket,
+    conversation_id: str,
+    token: Optional[str],
+) -> tuple[uuid.UUID, str] | None:
+    auth_result = await verify_ws_token(token)
+    if not auth_result:
+        await websocket.close(code=403, reason="Unauthorized")
+        return None
+
+    user_id, user_role = auth_result
+    has_access = await check_conversation_access(conversation_id, user_id)
+    if not has_access:
+        await websocket.close(code=403, reason="Forbidden: No access to this conversation")
+        return None
+
+    return user_id, user_role
+
+
+async def _run_pipeline_ws_loop(websocket: WebSocket) -> None:
+    while True:
+        data = await _receive_or_heartbeat(websocket)
+        if data is None:
+            continue
+        message = _parse_json_message_or_none(data)
+        if message is None:
+            continue
+        if message.get("type") == "ping":
+            await websocket.send_json({"type": "pong"})
+
+
+async def _handle_chat_ws_message(websocket: WebSocket, conversation_id: str, message: dict) -> None:
+    message_type = message.get("type")
+    if message_type == "ping":
+        await websocket.send_json({"type": "pong"})
+        return
+
+    if message_type == "query":
+        query_preview = str(message.get("content") or "")[:50]
+        logger.info("Received unsupported websocket chat query: %s...", query_preview)
+        await _send_ws_error(
+            websocket,
+            "Query processing via WebSocket is not yet implemented. Use POST /api/v1/chat/stream instead.",
+            operation="query",
+        )
+        return
+
+    if message_type == "cancel":
+        logger.info("Received unsupported websocket cancel request for %s", conversation_id)
+        await _send_ws_error(
+            websocket,
+            "Generation cancellation via WebSocket is not supported for this endpoint.",
+            operation="cancel",
+        )
+
+
+async def _run_chat_ws_loop(websocket: WebSocket, conversation_id: str) -> None:
+    while True:
+        data = await _receive_or_heartbeat(websocket)
+        if data is None:
+            continue
+        message = _parse_json_message_or_none(data)
+        if message is None:
+            continue
+        await _handle_chat_ws_message(websocket, conversation_id, message)
+
+
 async def check_document_access(document_id: str, user_id: uuid.UUID, user_role: str) -> bool:
     """
     Check if user has access to document.
@@ -121,22 +240,8 @@ async def pipeline_status_websocket(
     Client sends:
     - ping: {"type": "ping"} -> server responds with pong
     """
-    # Verify authentication
-    auth_result = await verify_ws_token(token)
-    if not auth_result:
-        await websocket.close(code=403, reason="Unauthorized")
-        return
-    
-    user_id, user_role = auth_result
-
-    if user_role not in {"admin", "plantig_admin"}:
-        await websocket.close(code=403, reason="Forbidden: Pipeline updates require admin access")
-        return
-
-    # SECURITY FIX: Check document access authorization
-    has_access = await check_document_access(document_id, user_id, user_role)
-    if not has_access:
-        await websocket.close(code=403, reason="Forbidden: No access to this document")
+    auth_result = await _authorize_pipeline_socket(websocket, document_id, token)
+    if auth_result is None:
         return
     
     manager = get_connection_manager()
@@ -145,36 +250,12 @@ async def pipeline_status_websocket(
     await manager.connect(websocket, channel)
     
     try:
-        # Send initial connection message
-        await websocket.send_json({
-            "type": "connected",
-            "channel": channel,
-            "message": f"Connected to pipeline status for document {document_id}"
-        })
-        
-        # Keep connection alive and handle client messages
-        while True:
-            try:
-                # Wait for messages from client (with timeout for heartbeat)
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=float(settings.WS_HEARTBEAT_INTERVAL),
-                )
-                
-                try:
-                    message = json.loads(data)
-                    
-                    # Handle ping/pong for keepalive
-                    if message.get("type") == "ping":
-                        await websocket.send_json({"type": "pong"})
-                        
-                except json.JSONDecodeError:
-                    logger.warning("Invalid JSON from client: %s", data[:100])
-                    
-            except asyncio.TimeoutError:
-                # Send heartbeat
-                await websocket.send_json({"type": "heartbeat"})
-                
+        await _send_ws_connected(
+            websocket,
+            channel=channel,
+            message=f"Connected to pipeline status for document {document_id}",
+        )
+        await _run_pipeline_ws_loop(websocket)
     except WebSocketDisconnect:
         logger.info("Client disconnected from %s", channel)
     except Exception as exc:
@@ -207,18 +288,8 @@ async def chat_streaming_websocket(
     - cancel: {"type": "cancel"} -> cancel current generation
     - ping: {"type": "ping"} -> server responds with pong
     """
-    # Verify authentication
-    auth_result = await verify_ws_token(token)
-    if not auth_result:
-        await websocket.close(code=403, reason="Unauthorized")
-        return
-    
-    user_id, user_role = auth_result
-    
-    # SECURITY FIX: Check conversation ownership
-    has_access = await check_conversation_access(conversation_id, user_id)
-    if not has_access:
-        await websocket.close(code=403, reason="Forbidden: No access to this conversation")
+    auth_result = await _authorize_chat_socket(websocket, conversation_id, token)
+    if auth_result is None:
         return
     
     manager = get_connection_manager()
@@ -227,53 +298,12 @@ async def chat_streaming_websocket(
     await manager.connect(websocket, channel)
     
     try:
-        # Send initial connection message
-        await websocket.send_json({
-            "type": "connected",
-            "channel": channel,
-            "message": f"Connected to chat stream for conversation {conversation_id}"
-        })
-        
-        # Keep connection alive and handle client messages
-        while True:
-            try:
-                # Wait for messages from client
-                data = await asyncio.wait_for(
-                    websocket.receive_text(),
-                    timeout=float(settings.WS_HEARTBEAT_INTERVAL),
-                )
-                
-                try:
-                    message = json.loads(data)
-                    message_type = message.get("type")
-                    
-                    if message_type == "ping":
-                        await websocket.send_json({"type": "pong"})
-                    
-                    elif message_type == "query":
-                        query_preview = str(message.get("content") or "")[:50]
-                        logger.info("Received unsupported websocket chat query: %s...", query_preview)
-                        await _send_ws_error(
-                            websocket,
-                            "Query processing via WebSocket is not yet implemented. Use POST /api/v1/chat/stream instead.",
-                            operation="query",
-                        )
-                    
-                    elif message_type == "cancel":
-                        logger.info("Received unsupported websocket cancel request for %s", conversation_id)
-                        await _send_ws_error(
-                            websocket,
-                            "Generation cancellation via WebSocket is not supported for this endpoint.",
-                            operation="cancel",
-                        )
-                        
-                except json.JSONDecodeError:
-                    logger.warning("Invalid JSON from client: %s", data[:100])
-                    
-            except asyncio.TimeoutError:
-                # Send heartbeat
-                await websocket.send_json({"type": "heartbeat"})
-                
+        await _send_ws_connected(
+            websocket,
+            channel=channel,
+            message=f"Connected to chat stream for conversation {conversation_id}",
+        )
+        await _run_chat_ws_loop(websocket, conversation_id)
     except WebSocketDisconnect:
         logger.info("Client disconnected from %s", channel)
     except Exception as exc:

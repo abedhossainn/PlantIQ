@@ -253,37 +253,31 @@ class PipelineStatusMixin:
         db: AsyncSession,
         status_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if status_payload["status"] not in {
-            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
-            PipelineStatus.OPTIMIZING.value,
-        }:
+        if not cls._needs_optimization_completion_reconcile(status_payload["status"]):
             return status_payload
 
         artifact_status = _read_valid_optimized_artifact_metadata(document_id)
         if artifact_status is None:
             return status_payload
 
-        artifact_completed_at = (
-            datetime.fromisoformat(str(artifact_status["completed_at"]))
-            if artifact_status.get("completed_at")
-            else None
-        )
+        artifact_completed_at = cls._parse_iso_datetime(artifact_status.get("completed_at"))
         optimization_started_at = status_payload["optimization_started_at"]
-        artifact_is_newer_than_current_run = (
-            artifact_completed_at is not None
-            and optimization_started_at is not None
-            and artifact_completed_at >= optimization_started_at
-        )
-
-        if optimization_started_at is not None and not artifact_is_newer_than_current_run:
+        if not cls._is_valid_artifact_for_current_run(
+            artifact_completed_at=artifact_completed_at,
+            optimization_started_at=optimization_started_at,
+        ):
             return status_payload
 
-        if optimization_started_at is None and artifact_status["started_at"]:
-            optimization_started_at = datetime.fromisoformat(str(artifact_status["started_at"]))
+        optimization_started_at = cls._resolve_optimization_started_at(
+            optimization_started_at=optimization_started_at,
+            artifact_started_at=artifact_status.get("started_at"),
+        )
 
-        optimization_completed_at = status_payload["optimization_completed_at"]
-        if optimization_completed_at is None and artifact_status["completed_at"]:
-            optimization_completed_at = artifact_completed_at
+        optimization_completed_at = cls._resolve_optimization_completed_at(
+            optimization_completed_at=status_payload["optimization_completed_at"],
+            artifact_completed_at=artifact_completed_at,
+            raw_artifact_completed_at=artifact_status.get("completed_at"),
+        )
 
         status_payload["status"] = PipelineStatus.OPTIMIZATION_COMPLETE.value
         status_payload["optimization_started_at"] = optimization_started_at
@@ -313,6 +307,57 @@ class PipelineStatusMixin:
         return status_payload
 
     @classmethod
+    def _needs_optimization_completion_reconcile(cls, status: str) -> bool:
+        return status in {
+            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            PipelineStatus.OPTIMIZING.value,
+        }
+
+    @classmethod
+    def _parse_iso_datetime(cls, value: Any) -> datetime | None:
+        if not value:
+            return None
+        return datetime.fromisoformat(str(value))
+
+    @classmethod
+    def _is_valid_artifact_for_current_run(
+        cls,
+        *,
+        artifact_completed_at: datetime | None,
+        optimization_started_at: datetime | None,
+    ) -> bool:
+        if optimization_started_at is None:
+            return True
+        if artifact_completed_at is None:
+            return False
+        return artifact_completed_at >= optimization_started_at
+
+    @classmethod
+    def _resolve_optimization_started_at(
+        cls,
+        *,
+        optimization_started_at: datetime | None,
+        artifact_started_at: Any,
+    ) -> datetime | None:
+        if optimization_started_at is not None:
+            return optimization_started_at
+        return cls._parse_iso_datetime(artifact_started_at)
+
+    @classmethod
+    def _resolve_optimization_completed_at(
+        cls,
+        *,
+        optimization_completed_at: datetime | None,
+        artifact_completed_at: datetime | None,
+        raw_artifact_completed_at: Any,
+    ) -> datetime | None:
+        if optimization_completed_at is not None:
+            return optimization_completed_at
+        if not raw_artifact_completed_at:
+            return optimization_completed_at
+        return artifact_completed_at
+
+    @classmethod
     def _build_pipeline_status_response(
         cls,
         document_id: str,
@@ -322,35 +367,17 @@ class PipelineStatusMixin:
         progress = cls._status_progress_map.get(status, 0)
         stage = cls._status_stage_map.get(status)
 
-        optimization_statuses = {
-            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
-            PipelineStatus.OPTIMIZING.value,
-            PipelineStatus.OPTIMIZATION_COMPLETE.value,
-            PipelineStatus.FAILED.value,
-        }
-        started_at = (
-            status_payload["optimization_started_at"] or status_payload["created_at"]
-            if status in optimization_statuses
-            else status_payload["created_at"]
+        started_at = cls._resolve_status_started_at(status=status, status_payload=status_payload)
+        completed_at = cls._resolve_status_completed_at(
+            status=status,
+            progress=progress,
+            status_payload=status_payload,
         )
-        if (
-            status in {
-                PipelineStatus.OPTIMIZATION_COMPLETE.value,
-                PipelineStatus.FAILED.value,
-            }
-            and status_payload["optimization_completed_at"] is not None
-        ):
-            completed_at = status_payload["optimization_completed_at"]
-        elif progress == 100 or status == PipelineStatus.FAILED.value:
-            completed_at = status_payload["updated_at"]
-        else:
-            completed_at = None
-        error = status_payload["optimization_error"] or (
-            status_payload["notes"] if status == PipelineStatus.FAILED.value else None
+        error = cls._resolve_status_error(status=status, status_payload=status_payload)
+        normalized_publication_status = cls._resolve_publication_status(
+            status=status,
+            publication_status=status_payload["publication_status"],
         )
-        normalized_publication_status = status_payload["publication_status"]
-        if normalized_publication_status is None and status == PipelineStatus.FINAL_APPROVED.value:
-            normalized_publication_status = PublicationStatus.PENDING.value
 
         return PipelineStatusResponse(
             document_id=UUID(document_id),
@@ -367,3 +394,46 @@ class PipelineStatusMixin:
             indexed_chunk_count=status_payload["indexed_chunk_count"],
             qdrant_collection=status_payload["qdrant_collection"],
         )
+
+    @classmethod
+    def _resolve_status_started_at(cls, *, status: str, status_payload: dict[str, Any]) -> datetime:
+        optimization_statuses = {
+            PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
+            PipelineStatus.OPTIMIZING.value,
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            PipelineStatus.FAILED.value,
+        }
+        if status not in optimization_statuses:
+            return status_payload["created_at"]
+        return status_payload["optimization_started_at"] or status_payload["created_at"]
+
+    @classmethod
+    def _resolve_status_completed_at(
+        cls,
+        *,
+        status: str,
+        progress: int,
+        status_payload: dict[str, Any],
+    ) -> datetime | None:
+        if status in {
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            PipelineStatus.FAILED.value,
+        } and status_payload["optimization_completed_at"] is not None:
+            return status_payload["optimization_completed_at"]
+        if progress == 100 or status == PipelineStatus.FAILED.value:
+            return status_payload["updated_at"]
+        return None
+
+    @classmethod
+    def _resolve_status_error(cls, *, status: str, status_payload: dict[str, Any]) -> Any:
+        if status_payload["optimization_error"]:
+            return status_payload["optimization_error"]
+        if status == PipelineStatus.FAILED.value:
+            return status_payload["notes"]
+        return None
+
+    @classmethod
+    def _resolve_publication_status(cls, *, status: str, publication_status: Any) -> Any:
+        if publication_status is None and status == PipelineStatus.FINAL_APPROVED.value:
+            return PublicationStatus.PENDING.value
+        return publication_status

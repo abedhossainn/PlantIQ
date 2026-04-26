@@ -85,13 +85,95 @@ app = FastAPI(
 )
 
 
+def _resolve_trace_identifiers(request: Request) -> tuple[str, str]:
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    traceparent = request.headers.get("traceparent", "")
+    trace_parts = traceparent.split("-")
+    trace_id = trace_parts[1] if traceparent.startswith("00-") and len(trace_parts) >= 2 else request_id
+    return request_id, trace_id
+
+
+def _resolve_path_template(request: Request, fallback: str) -> str:
+    route = request.scope.get("route")
+    if route is not None and hasattr(route, "path"):
+        return route.path
+    return fallback
+
+
+def _build_request_log_fields(
+    request: Request,
+    *,
+    path_template: str,
+    status_code: int,
+    duration_ms: float,
+    request_id: str,
+    trace_id: str,
+    client_ip: str,
+    user_agent: str,
+) -> dict[str, object]:
+    return {
+        "method": request.method,
+        "path_template": path_template,
+        "status_code": status_code,
+        "duration_ms": duration_ms,
+        "query_string": _redact_query_string(request.url.query),
+        "content_length": request.headers.get("content-length", "0"),
+        "auth_header_present": "authorization" in request.headers,
+        "cookie_header_present": "cookie" in request.headers,
+        "endpoint_class": "detailed"
+        if any(path_template.startswith(prefix) for prefix in DETAILED_LOG_PATH_PREFIXES)
+        else "standard",
+        "is_quiet": path_template in QUIET_LOG_PATHS,
+        "request_id": request_id,
+        "trace_id": trace_id,
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+    }
+
+
+def _log_request_completion(fields: dict[str, object]) -> None:
+    should_log_request = not (
+        fields["is_quiet"]
+        and int(fields["status_code"]) < 400
+        and float(fields["duration_ms"]) < SLOW_REQUEST_THRESHOLD_MS
+    )
+    if not should_log_request:
+        return
+
+    message = (
+        "http_request_complete method=%s path=%s status=%s duration_ms=%.2f "
+        "slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s "
+        "client_ip=%s user_agent=%s content_length=%s auth_header_present=%s "
+        "cookie_header_present=%s query=%s"
+    )
+    log_args = (
+        fields["method"],
+        fields["path_template"],
+        fields["status_code"],
+        float(fields["duration_ms"]),
+        SLOW_REQUEST_THRESHOLD_MS,
+        fields["endpoint_class"],
+        fields["request_id"],
+        fields["trace_id"],
+        fields["client_ip"],
+        fields["user_agent"],
+        fields["content_length"],
+        fields["auth_header_present"],
+        fields["cookie_header_present"],
+        fields["query_string"],
+    )
+
+    if float(fields["duration_ms"]) >= SLOW_REQUEST_THRESHOLD_MS:
+        logger.warning(message, *log_args)
+        return
+    logger.info(message, *log_args)
+
+
 @app.middleware("http")
 async def observability_middleware(request: Request, call_next):
     """Add trace-correlated request/latency/error logging."""
     start = time.perf_counter()
-    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-    traceparent = request.headers.get("traceparent", "")
-    trace_id = traceparent.split("-")[1] if traceparent.startswith("00-") and len(traceparent.split("-")) >= 2 else request_id
+    request_id, trace_id = _resolve_trace_identifiers(request)
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "unknown")
 
@@ -101,9 +183,7 @@ async def observability_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
         status_code = response.status_code
-        route = request.scope.get("route")
-        if route is not None and hasattr(route, "path"):
-            path_template = route.path
+        path_template = _resolve_path_template(request, path_template)
     except Exception:
         duration = time.perf_counter() - start
         logger.exception(
@@ -121,54 +201,21 @@ async def observability_middleware(request: Request, call_next):
 
     duration = time.perf_counter() - start
     duration_ms = duration * 1000
-    query_string = _redact_query_string(request.url.query)
-    content_length = request.headers.get("content-length", "0")
-    auth_header_present = "authorization" in request.headers
-    cookie_header_present = "cookie" in request.headers
-    endpoint_class = "detailed" if any(path_template.startswith(prefix) for prefix in DETAILED_LOG_PATH_PREFIXES) else "standard"
-    is_quiet = path_template in QUIET_LOG_PATHS
+    log_fields = _build_request_log_fields(
+        request,
+        path_template=path_template,
+        status_code=status_code,
+        duration_ms=duration_ms,
+        request_id=request_id,
+        trace_id=trace_id,
+        client_ip=client_ip,
+        user_agent=user_agent,
+    )
 
     response.headers["x-request-id"] = request_id
     response.headers["x-trace-id"] = trace_id
 
-    should_log_request = not (is_quiet and status_code < 400 and duration_ms < SLOW_REQUEST_THRESHOLD_MS)
-    if should_log_request:
-        if duration_ms >= SLOW_REQUEST_THRESHOLD_MS:
-            logger.warning(
-                "http_request_complete method=%s path=%s status=%s duration_ms=%.2f slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s client_ip=%s user_agent=%s content_length=%s auth_header_present=%s cookie_header_present=%s query=%s",
-                request.method,
-                path_template,
-                status_code,
-                duration_ms,
-                SLOW_REQUEST_THRESHOLD_MS,
-                endpoint_class,
-                request_id,
-                trace_id,
-                client_ip,
-                user_agent,
-                content_length,
-                auth_header_present,
-                cookie_header_present,
-                query_string,
-            )
-        else:
-            logger.info(
-                "http_request_complete method=%s path=%s status=%s duration_ms=%.2f slow_threshold_ms=%.2f endpoint_class=%s request_id=%s trace_id=%s client_ip=%s user_agent=%s content_length=%s auth_header_present=%s cookie_header_present=%s query=%s",
-                request.method,
-                path_template,
-                status_code,
-                duration_ms,
-                SLOW_REQUEST_THRESHOLD_MS,
-                endpoint_class,
-                request_id,
-                trace_id,
-                client_ip,
-                user_agent,
-                content_length,
-                auth_header_present,
-                cookie_header_present,
-                query_string,
-            )
+    _log_request_completion(log_fields)
     return response
 
 # Configure CORS

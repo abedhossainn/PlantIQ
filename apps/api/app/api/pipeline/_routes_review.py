@@ -86,6 +86,73 @@ def _section_payload(section: dict, content: str, checklist: dict, page_numbers:
     }
 
 
+async def _parse_optimized_chunk_update_request(request: Request) -> OptimizedChunkUpdate:
+    try:
+        return OptimizedChunkUpdate.model_validate(await request.json())
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="heading and markdown_content are required",
+        )
+
+
+def _get_target_editable_chunk(editable_chunks: list[dict], chunk_id: str) -> dict:
+    target_chunk = next((chunk for chunk in editable_chunks if chunk["id"] == chunk_id), None)
+    if target_chunk is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Optimized chunk not found",
+        )
+    return target_chunk
+
+
+def _apply_optimized_chunk_update(target_chunk: dict, payload: OptimizedChunkUpdate) -> None:
+    target_chunk["heading"] = payload.heading.strip()
+    target_chunk["markdown_content"] = payload.markdown_content.strip()
+    target_chunk["table_facts"] = [fact.strip() for fact in payload.table_facts if fact.strip()]
+    target_chunk["ambiguity_flags"] = [flag.strip() for flag in payload.ambiguity_flags if flag.strip()]
+    target_chunk["source_pages"] = _extract_page_numbers_from_chunk(
+        target_chunk,
+        target_chunk["markdown_content"],
+    )
+
+
+def _load_editable_optimized_chunk_bundle(work_dir: Path) -> tuple[dict, str, list[dict], Path, Path]:
+    (
+        optimized_payload,
+        document_name,
+        editable_chunks,
+        optimized_json_path,
+        optimized_markdown_path,
+    ) = _build_editable_optimized_chunks(work_dir)
+    return (
+        optimized_payload,
+        document_name,
+        editable_chunks,
+        optimized_json_path,
+        optimized_markdown_path,
+    )
+
+
+def _persist_optimized_chunk_updates(
+    *,
+    optimized_payload: dict,
+    document_name: str,
+    editable_chunks: list[dict],
+    optimized_json_path: Path,
+    optimized_markdown_path: Path,
+    work_dir: Path,
+) -> None:
+    _save_optimized_chunks(
+        optimized_payload=optimized_payload,
+        document_name=document_name,
+        editable_chunks=editable_chunks,
+        optimized_json_path=optimized_json_path,
+        optimized_markdown_path=optimized_markdown_path,
+        work_dir=work_dir,
+    )
+
+
 @router.get("/documents/{document_id}/sections")
 async def get_document_sections(
     document_id: UUID4,
@@ -310,13 +377,7 @@ async def update_document_optimized_chunk(
         detail="Optimized output can only be edited before QA has passed",
     )
 
-    try:
-        payload = OptimizedChunkUpdate.model_validate(await request.json())
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="heading and markdown_content are required",
-        )
+    payload = await _parse_optimized_chunk_update_request(request)
 
     try:
         work_dir = _find_document_workspace(document_id, require_document_dir=True)
@@ -326,24 +387,12 @@ async def update_document_optimized_chunk(
             editable_chunks,
             optimized_json_path,
             optimized_markdown_path,
-        ) = _build_editable_optimized_chunks(work_dir)
+        ) = _load_editable_optimized_chunk_bundle(work_dir)
 
-        target_chunk = next((chunk for chunk in editable_chunks if chunk["id"] == chunk_id), None)
-        if target_chunk is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Optimized chunk not found",
-            )
+        target_chunk = _get_target_editable_chunk(editable_chunks, chunk_id)
+        _apply_optimized_chunk_update(target_chunk, payload)
 
-        target_chunk["heading"] = payload.heading.strip()
-        target_chunk["markdown_content"] = payload.markdown_content.strip()
-        target_chunk["table_facts"] = [fact.strip() for fact in payload.table_facts if fact.strip()]
-        target_chunk["ambiguity_flags"] = [flag.strip() for flag in payload.ambiguity_flags if flag.strip()]
-        target_chunk["source_pages"] = _extract_page_numbers_from_chunk(
-            target_chunk, target_chunk["markdown_content"]
-        )
-
-        _save_optimized_chunks(
+        _persist_optimized_chunk_updates(
             optimized_payload=optimized_payload,
             document_name=document_name,
             editable_chunks=editable_chunks,

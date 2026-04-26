@@ -539,40 +539,88 @@ class PipelineService(PipelineStatusMixin):
         initial_status: PipelineStatusResponse,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream normalized ingestion SSE events with history replay."""
-        history = list(cls._event_history.get(document_id, []))
-        if history:
-            for event in history:
-                yield event
-            if history[-1].get("event") in {"complete", "error"}:
-                return
-        else:
-            for event in cls._build_initial_events(document_id, initial_status):
-                yield event
-            if initial_status.status in {PipelineStatus.VALIDATION_COMPLETE, PipelineStatus.FAILED}:
-                return
+        should_continue = cls._replay_history_or_initial_events(
+            document_id=document_id,
+            initial_status=initial_status,
+        )
+        async for event in should_continue:
+            yield event
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        subscribers = cls._event_subscribers.setdefault(document_id, set())
-        subscribers.add(queue)
+        if should_continue.is_terminal:
+            return
+
+        queue = cls._subscribe_event_queue(document_id)
 
         try:
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=14.0)
                 except asyncio.TimeoutError:
-                    yield {
-                        "event": "ping",
-                        "document_id": document_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
+                    yield cls._build_ping_event(document_id)
                     continue
                 yield event
-                if event.get("event") in {"complete", "error"}:
+                if cls._is_terminal_event(event):
                     return
         finally:
-            subscribers.discard(queue)
-            if not subscribers:
-                cls._event_subscribers.pop(document_id, None)
+            cls._unsubscribe_event_queue(document_id=document_id, queue=queue)
+
+    @classmethod
+    def _is_terminal_event(cls, event: dict[str, Any]) -> bool:
+        return event.get("event") in {"complete", "error"}
+
+    @classmethod
+    def _build_ping_event(cls, document_id: str) -> dict[str, Any]:
+        return {
+            "event": "ping",
+            "document_id": document_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    class _ReplayResult:
+        def __init__(self, events: list[dict[str, Any]], is_terminal: bool):
+            self.events = events
+            self.is_terminal = is_terminal
+
+        def __aiter__(self):
+            async def _generator():
+                for event in self.events:
+                    yield event
+
+            return _generator()
+
+    @classmethod
+    def _replay_history_or_initial_events(
+        cls,
+        *,
+        document_id: str,
+        initial_status: PipelineStatusResponse,
+    ) -> _ReplayResult:
+        history = list(cls._event_history.get(document_id, []))
+        if history:
+            return cls._ReplayResult(
+                events=history,
+                is_terminal=cls._is_terminal_event(history[-1]),
+            )
+
+        initial_events = cls._build_initial_events(document_id, initial_status)
+        is_terminal = initial_status.status in {PipelineStatus.VALIDATION_COMPLETE, PipelineStatus.FAILED}
+        return cls._ReplayResult(events=initial_events, is_terminal=is_terminal)
+
+    @classmethod
+    def _subscribe_event_queue(cls, document_id: str) -> asyncio.Queue[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        subscribers = cls._event_subscribers.setdefault(document_id, set())
+        subscribers.add(queue)
+        return queue
+
+    @classmethod
+    def _unsubscribe_event_queue(cls, *, document_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        subscribers = cls._event_subscribers.get(document_id)
+        if not subscribers:
+            return
+        subscribers.discard(queue)
+        if not subscribers:
+            cls._event_subscribers.pop(document_id, None)
 
     @classmethod
     def _build_initial_events(

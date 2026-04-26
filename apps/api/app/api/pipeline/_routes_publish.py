@@ -42,6 +42,83 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _raise_missing_post_optimization_qa_report() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Post-optimization QA report not found; "
+            "run QA rescore on the optimized output first"
+        ),
+    )
+
+
+async def _attempt_qa_report_autogen(
+    *,
+    document_id: UUID4,
+    document_status: str,
+    db: AsyncSession,
+) -> None:
+    target_status = (
+        PipelineStatus.QA_REVIEW.value
+        if document_status == PipelineStatus.OPTIMIZATION_COMPLETE.value
+        else document_status
+    )
+    try:
+        await _compute_and_persist_qa_report(
+            document_id=document_id,
+            db=db,
+            persisted_status=target_status,
+        )
+    except HTTPException as exc:
+        logger.warning(
+            "Unable to auto-generate QA report for %s during artifact fetch: %s",
+            document_id,
+            exc.detail,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unexpected failure auto-generating QA report for %s: %s",
+            document_id,
+            exc,
+        )
+
+
+async def _resolve_qa_report_artifact_path(
+    *,
+    document_id: UUID4,
+    document_status: str,
+    db: AsyncSession,
+) -> Path:
+    allow_legacy_qa_fallback = not is_post_optimization_lifecycle(document_status)
+    artifact_path = get_artifacts_path(
+        str(document_id),
+        ArtifactType.QA_REPORT.value,
+        allow_legacy_qa_fallback=allow_legacy_qa_fallback,
+    )
+    if artifact_path.exists():
+        return artifact_path
+
+    if allow_legacy_qa_fallback:
+        _raise_artifact_not_found(ArtifactType.QA_REPORT)
+
+    if document_status in _QA_REPORT_AUTOGEN_ELIGIBLE_STATUSES:
+        await _attempt_qa_report_autogen(
+            document_id=document_id,
+            document_status=document_status,
+            db=db,
+        )
+        artifact_path = get_artifacts_path(
+            str(document_id),
+            ArtifactType.QA_REPORT.value,
+            allow_legacy_qa_fallback=False,
+        )
+
+    if artifact_path.exists():
+        return artifact_path
+
+    _raise_missing_post_optimization_qa_report()
+
+
 @router.post("/documents/{document_id}/publish", response_model=DocumentPublishResponse)
 async def publish_document(
     document_id: UUID4,
@@ -244,55 +321,11 @@ async def get_document_artifact(
         document_status = await _require_document_status(document_id, db)
 
         if artifact_type == ArtifactType.QA_REPORT:
-            allow_legacy_qa_fallback = not is_post_optimization_lifecycle(document_status)
-            artifact_path = get_artifacts_path(
-                str(document_id),
-                artifact_type.value,
-                allow_legacy_qa_fallback=allow_legacy_qa_fallback,
+            artifact_path = await _resolve_qa_report_artifact_path(
+                document_id=document_id,
+                document_status=document_status,
+                db=db,
             )
-            if not artifact_path.exists():
-                if not allow_legacy_qa_fallback:
-                    if document_status in _QA_REPORT_AUTOGEN_ELIGIBLE_STATUSES:
-                        target_status = (
-                            PipelineStatus.QA_REVIEW.value
-                            if document_status == PipelineStatus.OPTIMIZATION_COMPLETE.value
-                            else document_status
-                        )
-                        try:
-                            await _compute_and_persist_qa_report(
-                                document_id=document_id,
-                                db=db,
-                                persisted_status=target_status,
-                            )
-                            artifact_path = get_artifacts_path(
-                                str(document_id),
-                                artifact_type.value,
-                                allow_legacy_qa_fallback=False,
-                            )
-                        except HTTPException as exc:
-                            logger.warning(
-                                "Unable to auto-generate QA report for %s during artifact fetch: %s",
-                                document_id,
-                                exc.detail,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Unexpected failure auto-generating QA report for %s: %s",
-                                document_id,
-                                exc,
-                            )
-
-                    if artifact_path.exists():
-                        return _build_artifact_file_response(artifact_path)
-
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=(
-                            "Post-optimization QA report not found; "
-                            "run QA rescore on the optimized output first"
-                        ),
-                    )
-                _raise_artifact_not_found(artifact_type)
         else:
             artifact_path = await PipelineService.get_artifact(
                 document_id=str(document_id),

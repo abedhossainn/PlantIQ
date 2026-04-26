@@ -138,28 +138,45 @@ async def _apply_document_reconciliation_updates(
 
 
 def _map_document_row(row: dict) -> dict:
+    row_id = str(row["id"])
     return {
-        "id": str(row["id"]),
-        "title": row["title"] or f"Document {str(row['id'])[:8]}…",
+        "id": row_id,
+        "title": _display_document_title(row_id, row.get("title")),
         "version": row["version"] or "1.0",
         "system": row["system"] or "—",
         "documentType": row["document_type"] or "PDF",
         "status": row["status"],
         "uploadedBy": row["uploaded_by"] or "—",
-        "uploadedAt": row["uploaded_at"].isoformat() if row["uploaded_at"] else None,
+        "uploadedAt": _iso_or_none(row.get("uploaded_at")),
         "notes": row["notes"],
         "totalPages": row["total_pages"],
         "totalSections": row["total_sections"],
         "reviewProgress": row["review_progress"],
-        "qaScore": float(row["qa_score"]) if row["qa_score"] is not None else None,
-        "approvedBy": str(row["approved_by"]) if row["approved_by"] else None,
-        "approvedAt": row["approved_at"].isoformat() if row["approved_at"] else None,
+        "qaScore": _float_or_none(row.get("qa_score")),
+        "approvedBy": _str_or_none(row.get("approved_by")),
+        "approvedAt": _iso_or_none(row.get("approved_at")),
         "publicationStatus": _normalize_publication_status(row["status"], row["publication_status"]),
-        "publishedAt": row["published_at"].isoformat() if row["published_at"] else None,
+        "publishedAt": _iso_or_none(row.get("published_at")),
         "publicationError": row["publication_error"],
         "indexedChunkCount": row["indexed_chunk_count"],
         "qdrantCollection": row["qdrant_collection"],
     }
+
+
+def _display_document_title(row_id: str, title: str | None) -> str:
+    return title or f"Document {row_id[:8]}…"
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _float_or_none(value: float | None) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _str_or_none(value: object | None) -> str | None:
+    return str(value) if value else None
 
 
 def _is_recently_updated(updated_at: datetime | str | None) -> bool:
