@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 FIGURE_DESCRIPTION_PATTERN = re.compile(r'\*\*\[Figure\s+(\d+):(.*?)\]\*\*', re.IGNORECASE | re.DOTALL)
+MARKDOWN_IMAGE_PATTERN = re.compile(r'!\[(.*?)\]\((.*?)\)')
 
 
 @dataclass
@@ -144,34 +145,30 @@ def serialize_table_markdown(headers: List[str], rows: List[List[str]]) -> str:
     return '\n'.join(lines)
 
 
+_EMPTY_CELL_VALUES = {"-", "N/A", ""}
+
+
+def _row_facts(row: List[str], headers: List[str]) -> List[str]:
+    """Return key facts derived from a single table row."""
+    first_col = row[0].strip() if row else ""
+    if not first_col or len(row) < 2:
+        return []
+    return [
+        f"{first_col}: {header} = {value}"
+        for header, cell in zip(headers[1:], row[1:])
+        if (value := cell.strip()) not in _EMPTY_CELL_VALUES
+    ]
+
+
 def extract_table_key_facts(headers: List[str], rows: List[List[str]]) -> List[str]:
     """
     Extract key facts from table as bullet points
     These will be placed before the table for better retrieval
     """
-    key_facts = []
-    
     if not headers or not rows:
-        return key_facts
-    
-    # Strategy 1: For each row, create a fact combining first column with other columns
-    for row in rows:
-        if len(row) < 2:
-            continue
-        
-        first_col = row[0].strip()
-        if not first_col:
-            continue
-        
-        # Create facts for non-empty cells
-        for i, (header, value) in enumerate(zip(headers[1:], row[1:]), 1):
-            value = value.strip()
-            if value and value != '-' and value != 'N/A':
-                fact = f"{first_col}: {header} = {value}"
-                key_facts.append(fact)
-    
-    # Limit to most important facts
-    return key_facts[:10]  # Keep top 10 facts
+        return []
+    facts = [fact for row in rows for fact in _row_facts(row, headers)]
+    return facts[:10]  # Keep top 10 facts
 
 
 def format_table_for_rag(table: TableData) -> str:
@@ -203,6 +200,93 @@ def format_table_for_rag(table: TableData) -> str:
     return '\n'.join(lines)
 
 
+def _extract_preceding_context(markdown_content: str, start_index: int, window: int = 200) -> str:
+    """Return preceding text context for pattern-derived metadata extraction."""
+    context_start = max(0, start_index - window)
+    return markdown_content[context_start:start_index]
+
+
+def _extract_page_number_from_context(context: str) -> int:
+    """Extract page number from nearby context, or 0 when unavailable."""
+    page_match = re.search(r'[Pp]age\s+(\d+)', context)
+    return int(page_match.group(1)) if page_match else 0
+
+
+def _extract_figure_caption_from_context(context: str) -> Optional[str]:
+    """Extract optional figure caption from nearby context."""
+    caption_match = re.search(r'[Ff]igure\s+\d+[:\.]?\s*([^\n]*)(?:\n|$)', context)
+    return caption_match.group(1).strip() if caption_match else None
+
+
+def _log_figure_found(figure: FigureData) -> None:
+    """Log standardized discovery message for extracted figures."""
+    logger.info(f"✅ Found {figure.figure_id}: {figure.description[:50]}...")
+
+
+def _build_figure_from_image_match(match: re.Match[str], idx: int, markdown_content: str) -> FigureData:
+    """Build FigureData from classic markdown image syntax."""
+    alt_text = match.group(1)
+    file_path = match.group(2)
+    context = _extract_preceding_context(markdown_content, match.start())
+    page_number = _extract_page_number_from_context(context)
+    caption = _extract_figure_caption_from_context(context)
+
+    return FigureData(
+        figure_id=f"figure_{idx:03d}",
+        page_number=page_number,
+        caption=caption,
+        description=alt_text,
+        key_facts=[],
+        file_path=file_path,
+        alt_text=alt_text,
+        source_location=f"Page {page_number}" if page_number else "Unknown",
+    )
+
+
+def _build_figure_from_description_match(
+    match: re.Match[str],
+    offset: int,
+    relative_idx: int,
+    markdown_content: str,
+) -> FigureData:
+    """Build FigureData from description-mode figure syntax."""
+    description = re.sub(r'\s+', ' ', match.group(2)).strip()
+    context = _extract_preceding_context(markdown_content, match.start())
+    page_number = _extract_page_number_from_context(context)
+    caption = f"Figure {match.group(1)}"
+
+    return FigureData(
+        figure_id=f"figure_{offset + relative_idx:03d}",
+        page_number=page_number,
+        caption=caption,
+        description=description,
+        key_facts=[],
+        file_path=None,
+        alt_text=description,
+        source_location=f"Page {page_number}" if page_number else "Unknown",
+    )
+
+
+def _extract_classic_markdown_figures(markdown_content: str) -> List[FigureData]:
+    """Extract figures from markdown image tags."""
+    figures: List[FigureData] = []
+    for idx, match in enumerate(MARKDOWN_IMAGE_PATTERN.finditer(markdown_content), 1):
+        figure = _build_figure_from_image_match(match, idx, markdown_content)
+        figures.append(figure)
+        _log_figure_found(figure)
+    return figures
+
+
+def _extract_description_mode_figures(markdown_content: str, offset: int) -> List[FigureData]:
+    """Extract figures from description-mode figure markers."""
+    figures: List[FigureData] = []
+    for relative_idx, match in enumerate(FIGURE_DESCRIPTION_PATTERN.finditer(markdown_content), 1):
+        figure = _build_figure_from_description_match(match, offset, relative_idx, markdown_content)
+        figures.append(figure)
+        _log_figure_found(figure)
+    return figures
+
+
 def extract_figures_from_markdown(markdown_content: str) -> List[FigureData]:
     """
     Extract figure references from markdown
@@ -210,68 +294,28 @@ def extract_figures_from_markdown(markdown_content: str) -> List[FigureData]:
     """
     logger.info("🖼️  Extracting figures from markdown...")
     
-    figures = []
-    
-    # Pattern 1: classic markdown image refs ![alt text](path)
-    pattern = r'!\[(.*?)\]\((.*?)\)'
-    matches = list(re.finditer(pattern, markdown_content))
-    
-    for idx, match in enumerate(matches, 1):
-        alt_text = match.group(1)
-        file_path = match.group(2)
-        
-        # Try to extract page number from surrounding context
-        context_start = max(0, match.start() - 200)
-        context = markdown_content[context_start:match.start()]
-        
-        page_match = re.search(r'[Pp]age\s+(\d+)', context)
-        page_number = int(page_match.group(1)) if page_match else 0
-        
-        # Extract caption from surrounding text
-        caption_match = re.search(r'[Ff]igure\s+\d+[:\.]?\s*(.*?)(?:\n|$)', context)
-        caption = caption_match.group(1).strip() if caption_match else None
-        
-        figure = FigureData(
-            figure_id=f"figure_{idx:03d}",
-            page_number=page_number,
-            caption=caption,
-            description=alt_text,
-            key_facts=[],  # Will be populated by VLM
-            file_path=file_path,
-            alt_text=alt_text,
-            source_location=f"Page {page_number}" if page_number else "Unknown"
-        )
-        
-        figures.append(figure)
-        logger.info(f"✅ Found {figure.figure_id}: {alt_text[:50]}...")
-
-    # Pattern 2: description-mode figures **[Figure N: description]**
-    offset = len(figures)
-    for relative_idx, match in enumerate(FIGURE_DESCRIPTION_PATTERN.finditer(markdown_content), 1):
-        description = re.sub(r'\s+', ' ', match.group(2)).strip()
-        context_start = max(0, match.start() - 200)
-        context = markdown_content[context_start:match.start()]
-
-        page_match = re.search(r'[Pp]age\s+(\d+)', context)
-        page_number = int(page_match.group(1)) if page_match else 0
-        caption = f"Figure {match.group(1)}"
-
-        figure = FigureData(
-            figure_id=f"figure_{offset + relative_idx:03d}",
-            page_number=page_number,
-            caption=caption,
-            description=description,
-            key_facts=[],
-            file_path=None,
-            alt_text=description,
-            source_location=f"Page {page_number}" if page_number else "Unknown"
-        )
-
-        figures.append(figure)
-        logger.info(f"✅ Found {figure.figure_id}: {description[:50]}...")
+    classic_figures = _extract_classic_markdown_figures(markdown_content)
+    description_figures = _extract_description_mode_figures(markdown_content, offset=len(classic_figures))
+    figures = classic_figures + description_figures
     
     logger.info(f"✅ Total figures found: {len(figures)}")
     return figures
+
+
+_GENERIC_FIGURE_TERMS = frozenset(['image', 'picture', 'figure', 'diagram'])
+_CONTENT_INDICATOR_WORDS = ('shows', 'displays', 'illustrates', 'depicts')
+
+
+def _description_text_issues(description: Optional[str]) -> List[str]:
+    """Return issue strings for a figure description string alone."""
+    if not description or len(description) < 10:
+        return ["Description too short or missing"]
+    issues = []
+    if description.lower() in _GENERIC_FIGURE_TERMS:
+        issues.append("Description is too generic")
+    if not any(word in description.lower() for word in _CONTENT_INDICATOR_WORDS):
+        issues.append("Description should explain what the figure shows")
+    return issues
 
 
 def validate_figure_description(figure: FigureData) -> Tuple[bool, List[str]]:
@@ -279,28 +323,10 @@ def validate_figure_description(figure: FigureData) -> Tuple[bool, List[str]]:
     Validate figure has proper description
     Returns (is_valid, issues)
     """
-    issues = []
-    
-    # Check if description exists
-    if not figure.description or len(figure.description) < 10:
-        issues.append("Description too short or missing")
-    
-    # Check for generic descriptions
-    generic_terms = ['image', 'picture', 'figure', 'diagram']
-    if figure.description.lower() in generic_terms:
-        issues.append("Description is too generic")
-    
-    # Check if description mentions key facts
-    if figure.description and not any(word in figure.description.lower() for word in ['shows', 'displays', 'illustrates', 'depicts']):
-        issues.append("Description should explain what the figure shows")
-    
-    # Check source location
+    issues = _description_text_issues(figure.description)
     if not figure.source_location or figure.source_location == "Unknown":
         issues.append("Source page number missing")
-    
-    is_valid = len(issues) == 0
-    
-    return is_valid, issues
+    return len(issues) == 0, issues
 
 
 def enhance_figure_description(
@@ -394,108 +420,120 @@ def optimize_document_tables_and_figures(
     return optimized
 
 
+def _invalid_figure_entries(figures: List[FigureData]) -> List[Dict]:
+    """Return a list of validation failure records for figures that fail validation."""
+    results = []
+    for figure in figures:
+        is_valid, issues = validate_figure_description(figure)
+        if not is_valid:
+            results.append({"figure_id": figure.figure_id, "issues": issues})
+    return results
+
+
+def _count_tables_with_facts(tables: List[TableData]) -> int:
+    """Count tables that include extracted key facts."""
+    return sum(1 for table in tables if table.key_facts)
+
+
+def _count_figures_with_descriptions(figures: List[FigureData]) -> int:
+    """Count figures with non-trivial descriptions."""
+    return sum(1 for figure in figures if figure.description and len(figure.description) > 10)
+
+
+def _build_table_figure_summary(tables: List[TableData], figures: List[FigureData]) -> Dict[str, int]:
+    """Build aggregate counts for table/figure reporting."""
+    return {
+        "total_tables": len(tables),
+        "total_figures": len(figures),
+        "tables_with_facts": _count_tables_with_facts(tables),
+        "figures_with_descriptions": _count_figures_with_descriptions(figures),
+    }
+
+
+def _build_table_figure_report_payload(tables: List[TableData], figures: List[FigureData]) -> Dict:
+    """Build JSON payload for table/figure quality report."""
+    return {
+        "summary": _build_table_figure_summary(tables, figures),
+        "tables": [asdict(table) for table in tables],
+        "figures": [asdict(figure) for figure in figures],
+        "validation": {"invalid_figures": _invalid_figure_entries(figures)},
+    }
+
+
 def generate_table_figure_report(
     tables: List[TableData],
     figures: List[FigureData],
     output_path: str
 ):
     """Generate report on table and figure quality"""
-    report = {
-        "summary": {
-            "total_tables": len(tables),
-            "total_figures": len(figures),
-            "tables_with_facts": sum(1 for t in tables if t.key_facts),
-            "figures_with_descriptions": sum(1 for f in figures if f.description and len(f.description) > 10)
-        },
-        "tables": [asdict(t) for t in tables],
-        "figures": [asdict(f) for f in figures],
-        "validation": {
-            "invalid_figures": []
-        }
-    }
-    
-    # Validate figures
-    for figure in figures:
-        is_valid, issues = validate_figure_description(figure)
-        if not is_valid:
-            report["validation"]["invalid_figures"].append({
-                "figure_id": figure.figure_id,
-                "issues": issues
-            })
-    
+    report = _build_table_figure_report_payload(tables, figures)
+
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(report, f, indent=2)
-    
+
     logger.info(f"💾 Table/Figure report saved: {output_path}")
+
+
+def _run_extract_action(args) -> int:
+    if not args.pdf:
+        logger.error("❌ --pdf required for extract action")
+        return 1
+    tables = extract_tables_from_pdf(args.pdf)
+    report = {"tables": [asdict(t) for t in tables]}
+    with open(args.output, 'w') as f:
+        json.dump(report, f, indent=2)
+    logger.info(f"💾 Tables saved: {args.output}")
+    return 0
+
+
+def _run_validate_action(args) -> int:
+    if not args.markdown:
+        logger.error("❌ --markdown required for validate action")
+        return 1
+    with open(args.markdown, 'r', encoding='utf-8') as f:
+        content = f.read()
+    figures = extract_figures_from_markdown(content)
+    for figure in figures:
+        is_valid, issues = validate_figure_description(figure)
+        status = "✅" if is_valid else "❌"
+        logger.info(f"{status} {figure.figure_id}: {', '.join(issues) if issues else 'OK'}")
+    return 0
+
+
+def _run_optimize_action(args) -> int:
+    if not args.pdf or not args.markdown:
+        logger.error("❌ --pdf and --markdown required for optimize action")
+        return 1
+    with open(args.markdown, 'r', encoding='utf-8') as f:
+        markdown_content = f.read()
+    optimize_document_tables_and_figures(markdown_content, args.pdf)
+    logger.info("✅ Optimization complete (report generated)")
+    return 0
 
 
 def main():
     """CLI entry point"""
     import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Enhanced Table and Figure Handling"
-    )
+
+    parser = argparse.ArgumentParser(description="Enhanced Table and Figure Handling")
     parser.add_argument("action", choices=["extract", "validate", "optimize"],
-                       help="Action to perform")
+                        help="Action to perform")
     parser.add_argument("--pdf", help="PDF path")
     parser.add_argument("--markdown", help="Markdown path")
     parser.add_argument("--output", default="table_figure_report.json", help="Output path")
-    
+
     args = parser.parse_args()
-    
+
     logger.info("=" * 80)
     logger.info("📊 Enhanced Table and Figure Handling")
     logger.info("=" * 80)
-    
-    if args.action == "extract":
-        if not args.pdf:
-            logger.error("❌ --pdf required for extract action")
-            return 1
-        
-        tables = extract_tables_from_pdf(args.pdf)
-        
-        # Save tables report
-        report = {"tables": [asdict(t) for t in tables]}
-        with open(args.output, 'w') as f:
-            json.dump(report, f, indent=2)
-        
-        logger.info(f"💾 Tables saved: {args.output}")
-        return 0
-    
-    elif args.action == "validate":
-        if not args.markdown:
-            logger.error("❌ --markdown required for validate action")
-            return 1
-        
-        with open(args.markdown, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        figures = extract_figures_from_markdown(content)
-        
-        # Validate all figures
-        for figure in figures:
-            is_valid, issues = validate_figure_description(figure)
-            status = "✅" if is_valid else "❌"
-            logger.info(f"{status} {figure.figure_id}: {', '.join(issues) if issues else 'OK'}")
-        
-        return 0
-    
-    elif args.action == "optimize":
-        if not args.pdf or not args.markdown:
-            logger.error("❌ --pdf and --markdown required for optimize action")
-            return 1
-        
-        with open(args.markdown, 'r', encoding='utf-8') as f:
-            markdown_content = f.read()
-        
-        optimize_document_tables_and_figures(markdown_content, args.pdf)
-        
-        # This is a placeholder - full optimization would modify the markdown
-        logger.info("✅ Optimization complete (report generated)")
-        return 0
-    
-    return 0
+
+    _action_handlers = {
+        "extract": _run_extract_action,
+        "validate": _run_validate_action,
+        "optimize": _run_optimize_action,
+    }
+    return _action_handlers[args.action](args)
 
 
 if __name__ == "__main__":
