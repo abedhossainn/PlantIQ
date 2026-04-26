@@ -73,6 +73,141 @@ class QdrantService:
             return False
     
     @classmethod
+    def _resolve_search_params(
+        cls,
+        top_k: Optional[int],
+        score_threshold: Optional[float],
+    ) -> tuple[int, float]:
+        resolved_top_k = top_k if top_k is not None else settings.RAG_TOP_K
+        resolved_score_threshold = (
+            score_threshold if score_threshold is not None else settings.RAG_SCORE_THRESHOLD
+        )
+        return resolved_top_k, resolved_score_threshold
+
+    @classmethod
+    def _clean_values(cls, values: Optional[List[str]]) -> List[str]:
+        return [value.strip() for value in (values or []) if value and value.strip()]
+
+    @classmethod
+    def _workspace_aliases(cls, value: str) -> List[str]:
+        trimmed = value.strip()
+        if not trimmed:
+            return []
+        variants = {
+            trimmed,
+            trimmed.lower(),
+            trimmed.upper(),
+            trimmed.title(),
+        }
+        return [variant for variant in variants if variant]
+
+    @classmethod
+    def _build_filter_conditions(
+        cls,
+        document_filter: Optional[List[str]],
+        system_filter: Optional[List[str]],
+        document_type_filter: Optional[List[str]],
+    ) -> list[models.FieldCondition]:
+        filter_conditions: list[models.FieldCondition] = []
+
+        if document_filter:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="document_id",
+                    match=models.MatchAny(any=document_filter),
+                )
+            )
+        if system_filter:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="system",
+                    match=models.MatchAny(any=system_filter),
+                )
+            )
+
+        normalized_document_types = cls._clean_values(document_type_filter)
+        if normalized_document_types:
+            filter_conditions.append(
+                models.FieldCondition(
+                    key="document_type",
+                    match=models.MatchAny(any=normalized_document_types),
+                )
+            )
+
+        return filter_conditions
+
+    @classmethod
+    def _build_workspace_conditions(
+        cls,
+        workspace_filter: Optional[str],
+        include_shared_documents: bool,
+    ) -> list[models.FieldCondition]:
+        workspace_conditions: list[models.FieldCondition] = []
+        if not workspace_filter or not workspace_filter.strip():
+            return workspace_conditions
+
+        workspace_aliases = cls._workspace_aliases(workspace_filter)
+        if workspace_aliases:
+            workspace_conditions.extend(
+                [
+                    models.FieldCondition(
+                        key="workspace",
+                        match=models.MatchAny(any=workspace_aliases),
+                    ),
+                    models.FieldCondition(
+                        key="system",
+                        match=models.MatchAny(any=workspace_aliases),
+                    ),
+                ]
+            )
+
+        if include_shared_documents:
+            workspace_conditions.extend(
+                [
+                    models.FieldCondition(
+                        key="is_shared",
+                        match=models.MatchValue(value=True),
+                    ),
+                    models.FieldCondition(
+                        key="workspace",
+                        match=models.MatchAny(any=["shared", "global", "cross-functional"]),
+                    ),
+                ]
+            )
+
+        return workspace_conditions
+
+    @classmethod
+    def _build_query_filter(
+        cls,
+        filter_conditions: list[models.FieldCondition],
+        workspace_conditions: list[models.FieldCondition],
+    ) -> Optional[models.Filter]:
+        if not filter_conditions and not workspace_conditions:
+            return None
+        return models.Filter(
+            must=filter_conditions or None,
+            should=workspace_conditions or None,
+        )
+
+    @classmethod
+    def _to_rag_contexts(cls, points: list[Any]) -> List[RAGContext]:
+        contexts: list[RAGContext] = []
+        for result in points:
+            payload = result.payload
+            contexts.append(
+                RAGContext(
+                    chunk_id=str(result.id),
+                    content=payload.get("content", ""),
+                    document_id=payload.get("document_id"),
+                    document_title=payload.get("document_title", "Unknown"),
+                    metadata=payload,
+                    score=result.score,
+                )
+            )
+        return contexts
+
+    @classmethod
     async def search_similar(
         cls,
         query_vector: List[float],
@@ -101,91 +236,18 @@ class QdrantService:
             List of retrieved contexts with metadata
         """
         client = cls.get_client()
-        
-        if top_k is None:
-            top_k = settings.RAG_TOP_K
-        if score_threshold is None:
-            score_threshold = settings.RAG_SCORE_THRESHOLD
-        
-        # Build filter conditions
-        filter_conditions = []
-        workspace_conditions = []
+        top_k, score_threshold = cls._resolve_search_params(top_k, score_threshold)
 
-        def _clean_values(values: Optional[List[str]]) -> List[str]:
-            return [value.strip() for value in (values or []) if value and value.strip()]
-
-        def _workspace_aliases(value: str) -> List[str]:
-            trimmed = value.strip()
-            if not trimmed:
-                return []
-            variants = {
-                trimmed,
-                trimmed.lower(),
-                trimmed.upper(),
-                trimmed.title(),
-            }
-            return [variant for variant in variants if variant]
-
-        if document_filter:
-            filter_conditions.append(
-                models.FieldCondition(
-                    key="document_id",
-                    match=models.MatchAny(any=document_filter)
-                )
-            )
-        if system_filter:
-            filter_conditions.append(
-                models.FieldCondition(
-                    key="system",
-                    match=models.MatchAny(any=system_filter)
-                )
-            )
-        if document_type_filter:
-            normalized_document_types = _clean_values(document_type_filter)
-            if normalized_document_types:
-                filter_conditions.append(
-                    models.FieldCondition(
-                        key="document_type",
-                        match=models.MatchAny(any=normalized_document_types)
-                    )
-                )
-
-        if workspace_filter and workspace_filter.strip():
-            workspace_aliases = _workspace_aliases(workspace_filter)
-            if workspace_aliases:
-                workspace_conditions.extend(
-                    [
-                        models.FieldCondition(
-                            key="workspace",
-                            match=models.MatchAny(any=workspace_aliases)
-                        ),
-                        models.FieldCondition(
-                            key="system",
-                            match=models.MatchAny(any=workspace_aliases)
-                        ),
-                    ]
-                )
-
-            if include_shared_documents:
-                workspace_conditions.extend(
-                    [
-                        models.FieldCondition(
-                            key="is_shared",
-                            match=models.MatchValue(value=True)
-                        ),
-                        models.FieldCondition(
-                            key="workspace",
-                            match=models.MatchAny(any=["shared", "global", "cross-functional"])
-                        ),
-                    ]
-                )
-        
-        query_filter = None
-        if filter_conditions or workspace_conditions:
-            query_filter = models.Filter(
-                must=filter_conditions or None,
-                should=workspace_conditions or None,
-            )
+        filter_conditions = cls._build_filter_conditions(
+            document_filter=document_filter,
+            system_filter=system_filter,
+            document_type_filter=document_type_filter,
+        )
+        workspace_conditions = cls._build_workspace_conditions(
+            workspace_filter=workspace_filter,
+            include_shared_documents=include_shared_documents,
+        )
+        query_filter = cls._build_query_filter(filter_conditions, workspace_conditions)
         
         try:
             # Perform vector search (qdrant-client >= 1.10 uses query_points)
@@ -197,21 +259,8 @@ class QdrantService:
                 query_filter=query_filter,
                 with_payload=True,
             )
-            
-            # Convert to RAGContext objects
-            contexts = []
-            for result in response.points:
-                payload = result.payload
-                contexts.append(
-                    RAGContext(
-                        chunk_id=str(result.id),
-                        content=payload.get("content", ""),
-                        document_id=payload.get("document_id"),
-                        document_title=payload.get("document_title", "Unknown"),
-                        metadata=payload,
-                        score=result.score,
-                    )
-                )
+
+            contexts = cls._to_rag_contexts(response.points)
             
             logger.info("Found %s similar chunks", len(contexts))
             return contexts

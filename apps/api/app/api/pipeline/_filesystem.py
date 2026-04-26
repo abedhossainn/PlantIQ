@@ -162,6 +162,39 @@ def _find_optimized_artifact_paths(work_dir: Path) -> tuple[Optional[Path], Opti
     )
 
 
+def _unique_cleanup_roots() -> list[Path]:
+    roots: list[Path] = []
+    for root in [*_candidate_work_roots(), Path(settings.ARTIFACTS_DIR).expanduser().resolve()]:
+        resolved = root.resolve(strict=False)
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def _manifest_matches_document(
+    *,
+    manifest_payload: dict,
+    document_id_str: str,
+    normalized_file_path: str,
+    normalized_title: str,
+) -> bool:
+    manifest_pdf_path = str(manifest_payload.get("pdf_path") or "").strip()
+    manifest_document_id = str(manifest_payload.get("document_id") or "").strip()
+    manifest_document_name = str(manifest_payload.get("document_name") or "").strip()
+
+    matches_document = manifest_document_id == document_id_str
+    matches_file_path = bool(normalized_file_path) and manifest_pdf_path == normalized_file_path
+    matches_title = bool(normalized_title) and manifest_document_name == normalized_title
+    return matches_document or matches_file_path or matches_title
+
+
+def _add_flat_artifact_family(root: Path, stem: str, add_path) -> None:
+    for suffix in _FLAT_ARTIFACT_SUFFIXES:
+        add_path(root / f"{stem}{suffix}")
+    for directory_suffix in _FLAT_ARTIFACT_DIRECTORIES:
+        add_path(root / f"{stem}{directory_suffix}")
+
+
 # ---------------------------------------------------------------------------
 # Storage cleanup
 # ---------------------------------------------------------------------------
@@ -189,35 +222,21 @@ def _collect_document_cleanup_paths(
     if normalized_file_path:
         _add(Path(normalized_file_path))
 
-    cleanup_roots: list[Path] = []
-    for root in [*_candidate_work_roots(), Path(settings.ARTIFACTS_DIR).expanduser().resolve()]:
-        resolved = root.resolve(strict=False)
-        if resolved not in cleanup_roots:
-            cleanup_roots.append(resolved)
-
-    for root in cleanup_roots:
+    for root in _unique_cleanup_roots():
         _add(root / document_id_str)
 
         for manifest_path in sorted(root.glob("*_manifest.json")):
             manifest_payload = _load_artifact_manifest(manifest_path)
-            manifest_pdf_path = str(manifest_payload.get("pdf_path") or "").strip()
-            manifest_document_id = str(manifest_payload.get("document_id") or "").strip()
-            manifest_document_name = str(manifest_payload.get("document_name") or "").strip()
-
-            if not any(
-                [
-                    manifest_document_id == document_id_str,
-                    normalized_file_path and manifest_pdf_path == normalized_file_path,
-                    normalized_title and manifest_document_name == normalized_title,
-                ]
+            if not _manifest_matches_document(
+                manifest_payload=manifest_payload,
+                document_id_str=document_id_str,
+                normalized_file_path=normalized_file_path,
+                normalized_title=normalized_title,
             ):
                 continue
 
             stem = manifest_path.name[: -len("_manifest.json")]
-            for suffix in _FLAT_ARTIFACT_SUFFIXES:
-                _add(root / f"{stem}{suffix}")
-            for directory_suffix in _FLAT_ARTIFACT_DIRECTORIES:
-                _add(root / f"{stem}{directory_suffix}")
+            _add_flat_artifact_family(root, stem, _add)
 
     return paths
 

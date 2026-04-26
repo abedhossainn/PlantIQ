@@ -75,6 +75,43 @@ def _build_qa_sections_from_pages(review_dir: Path, page_manifest: dict) -> list
     return sections
 
 
+def _chunk_content(chunk: dict) -> str:
+    content = str(chunk.get("content") or chunk.get("markdown") or "").strip()
+    return content or json.dumps(chunk, indent=2)
+
+
+def _chunk_heading(chunk: dict, index: int) -> str:
+    heading = str(
+        chunk.get("heading")
+        or chunk.get("title")
+        or chunk.get("question")
+        or f"Chunk {index}"
+    ).strip()
+    return heading or f"Chunk {index}"
+
+
+def _chunk_section(chunk: dict, index: int) -> dict:
+    content = _chunk_content(chunk)
+    return {
+        "heading": _chunk_heading(chunk, index),
+        "content": content,
+        "has_tables": "|" in content or bool(chunk.get("table_facts")),
+        "table_facts": chunk.get("table_facts") or chunk.get("facts") or [],
+    }
+
+
+def _sections_from_chunks(chunks: object) -> list[dict]:
+    if not isinstance(chunks, list) or not chunks:
+        return []
+
+    sections: list[dict] = []
+    for index, chunk in enumerate(chunks, start=1):
+        if not isinstance(chunk, dict):
+            continue
+        sections.append(_chunk_section(chunk, index))
+    return sections
+
+
 def _build_qa_sections_from_optimized_output(work_dir: Path) -> list[dict]:
     try:
         optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
@@ -84,29 +121,7 @@ def _build_qa_sections_from_optimized_output(work_dir: Path) -> list[dict]:
             detail=str(exc),
         ) from exc
 
-    sections: list[dict] = []
-    chunks = optimized_payload.get("chunks") or []
-    if isinstance(chunks, list) and chunks:
-        for index, chunk in enumerate(chunks, start=1):
-            if not isinstance(chunk, dict):
-                continue
-            content = str(chunk.get("content") or chunk.get("markdown") or "").strip()
-            if not content:
-                content = json.dumps(chunk, indent=2)
-            heading = str(
-                chunk.get("heading")
-                or chunk.get("title")
-                or chunk.get("question")
-                or f"Chunk {index}"
-            ).strip()
-            sections.append(
-                {
-                    "heading": heading,
-                    "content": content,
-                    "has_tables": "|" in content or bool(chunk.get("table_facts")),
-                    "table_facts": chunk.get("table_facts") or chunk.get("facts") or [],
-                }
-            )
+    sections = _sections_from_chunks(optimized_payload.get("chunks") or [])
 
     if sections:
         return sections

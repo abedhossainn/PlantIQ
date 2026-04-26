@@ -188,6 +188,23 @@ def _build_review_progress(pages: list[ReviewPageResponse]) -> ReviewProgressRes
     )
 
 
+def _build_evidence_images(
+    thumbnail_url: Optional[str],
+    evidence_images: list[str],
+) -> list[str]:
+    resolved_images: list[str] = []
+    if thumbnail_url:
+        resolved_images.append(thumbnail_url)
+    for image_path in evidence_images:
+        if image_path not in resolved_images:
+            resolved_images.append(image_path)
+    return resolved_images
+
+
+def _build_validation_issues(issues: object) -> list[ValidationIssueResponse]:
+    return [ValidationIssueResponse(**issue) for issue in (issues or [])]
+
+
 def _build_page_response(
     document_id: UUID4,
     review_dir: Path,
@@ -207,17 +224,12 @@ def _build_page_response(
         else None
     )
 
-    evidence_images = []
-    if thumbnail_url:
-        evidence_images.append(thumbnail_url)
-    for image_path in page_entry.get("evidence_images") or []:
-        if image_path not in evidence_images:
-            evidence_images.append(image_path)
+    evidence_images = _build_evidence_images(
+        thumbnail_url,
+        page_entry.get("evidence_images") or [],
+    )
 
-    validation_issues = [
-        ValidationIssueResponse(**issue)
-        for issue in (page_entry.get("validation_issues") or [])
-    ]
+    validation_issues = _build_validation_issues(page_entry.get("validation_issues"))
 
     evidence_model = PageEvidenceResponse(
         page_number=page_number,

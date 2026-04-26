@@ -54,6 +54,38 @@ def _safe_subpath(base: Path, rel: str) -> Path:
     return resolved
 
 
+def _section_page_numbers(sec: dict, content: str, page_entries: list[dict]) -> list[int]:
+    raw_page_numbers = sec.get("page_numbers", [])
+    page_numbers = [int(page) for page in raw_page_numbers]
+    if page_numbers:
+        return page_numbers
+
+    pages_match = re.search(r"<!-- Pages: ([0-9, ]+) -->", content)
+    if pages_match:
+        return [
+            int(page.strip())
+            for page in pages_match.group(1).split(",")
+            if page.strip().isdigit()
+        ]
+
+    return _derive_section_page_numbers(content, page_entries)
+
+
+def _section_payload(section: dict, content: str, checklist: dict, page_numbers: list[int]) -> dict:
+    page_start = page_numbers[0] if page_numbers else None
+    page_end = page_numbers[-1] if page_numbers else None
+    sec_id = section.get("section_id", "")
+    return {
+        "id": sec_id,
+        "heading": section.get("heading", sec_id),
+        "status": section.get("status", "PENDING").lower(),
+        "content": content,
+        "checklist": checklist,
+        "pageRange": {"start": page_start, "end": page_end},
+        "pageNumbers": page_numbers,
+    }
+
+
 @router.get("/documents/{document_id}/sections")
 async def get_document_sections(
     document_id: UUID4,
@@ -75,43 +107,14 @@ async def get_document_sections(
         page_entries = page_manifest.get("pages", [])
         sections_out = []
         for sec in manifest.get("sections", []):
-            sec_id = sec.get("section_id", "")
-            content = ""
             content_path = _safe_subpath(review_dir, sec.get("file", ""))
-            if content_path.exists():
-                content = content_path.read_text(encoding="utf-8")
+            content = content_path.read_text(encoding="utf-8") if content_path.exists() else ""
 
-            checklist: dict = {}
             checklist_path = _safe_subpath(review_dir, sec.get("checklist", ""))
-            if checklist_path.exists():
-                checklist = _load_json_file(checklist_path)
+            checklist = _load_json_file(checklist_path) if checklist_path.exists() else {}
 
-            page_numbers = [int(page) for page in sec.get("page_numbers", [])]
-            if not page_numbers:
-                pages_match = re.search(r"<!-- Pages: ([0-9, ]+) -->", content)
-                if pages_match:
-                    page_numbers = [
-                        int(page.strip())
-                        for page in pages_match.group(1).split(",")
-                        if page.strip().isdigit()
-                    ]
-            if not page_numbers:
-                page_numbers = _derive_section_page_numbers(content, page_entries)
-
-            page_start = page_numbers[0] if page_numbers else None
-            page_end = page_numbers[-1] if page_numbers else None
-
-            sections_out.append(
-                {
-                    "id": sec_id,
-                    "heading": sec.get("heading", sec_id),
-                    "status": sec.get("status", "PENDING").lower(),
-                    "content": content,
-                    "checklist": checklist,
-                    "pageRange": {"start": page_start, "end": page_end},
-                    "pageNumbers": page_numbers,
-                }
-            )
+            page_numbers = _section_page_numbers(sec, content, page_entries)
+            sections_out.append(_section_payload(sec, content, checklist, page_numbers))
         return {"documentName": manifest.get("document_name", ""), "sections": sections_out}
     except HTTPException:
         raise
