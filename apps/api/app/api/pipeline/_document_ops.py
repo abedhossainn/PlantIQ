@@ -9,7 +9,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import BackgroundTasks, HTTPException, status
@@ -49,6 +49,261 @@ from ._filesystem import (
 from ._review import _ensure_page_review_manifest
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_repo_root_on_syspath() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+
+
+def _resolve_optimization_context(
+    *,
+    work_root: Path,
+    document_id: str,
+) -> tuple[Path | None, Path, str, str]:
+    manifest_path = _find_manifest_path(work_root)
+    validation_path = get_artifacts_path(document_id, "validation")
+    if not validation_path.exists():
+        raise FileNotFoundError("Validation artifact not found for optimization")
+
+    manifest = _load_optional_json(manifest_path)
+    document_name = str(
+        manifest.get("document_name")
+        or validation_path.name.replace("_validation.json", "")
+    )
+    pdf_path = manifest.get("pdf_path")
+    if not pdf_path:
+        raise FileNotFoundError("Manifest is missing source PDF path")
+
+    return manifest_path, validation_path, document_name, str(pdf_path)
+
+
+def _attach_optimization_log_handler(document_id: str, loop: asyncio.AbstractEventLoop) -> OptimizationLogHandler:
+    handler = OptimizationLogHandler(document_id, loop)
+    for logger_name in (
+        "pipeline.src.cli.hitl_pipeline",
+        "pipeline.src.cli.text_reformatter",
+        "pipeline.src.utils.progress_tracker",
+    ):
+        logging.getLogger(logger_name).addHandler(handler)
+    return handler
+
+
+def _detach_optimization_log_handler(handler: OptimizationLogHandler) -> None:
+    for logger_name in (
+        "pipeline.src.cli.hitl_pipeline",
+        "pipeline.src.cli.text_reformatter",
+        "pipeline.src.utils.progress_tracker",
+    ):
+        logging.getLogger(logger_name).removeHandler(handler)
+
+
+async def _set_optimization_completed_status(document_id: str) -> None:
+    async with _pipeline_pkg().AsyncSessionLocal() as db:
+        await _set_document_status(
+            db,
+            document_id,
+            PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            review_progress=100,
+            optimization_completed_at=_SET_NOW,
+            optimization_error=_CLEAR,
+        )
+
+
+async def _set_optimization_failed_status(document_id: str, message: str) -> None:
+    async with _pipeline_pkg().AsyncSessionLocal() as db:
+        await _set_document_status(
+            db,
+            document_id,
+            PipelineStatus.FAILED.value,
+            review_progress=100,
+            notes=message,
+            optimization_completed_at=_SET_NOW,
+            optimization_error=message,
+        )
+
+
+def _build_qdrant_chunks(
+    *,
+    document_id: str,
+    document_title: str,
+    system: Optional[str],
+    document_type: Optional[str],
+    publishable_chunks: list[dict[str, Any]],
+    embeddings: list[list[float]],
+) -> list[dict[str, object]]:
+    workspace = str(system or "").strip()
+    normalized_workspace = workspace.lower() if workspace else None
+    is_shared_document = normalized_workspace in {"shared", "global", "cross-functional"}
+
+    qdrant_chunks: list[dict[str, object]] = []
+    for index, (chunk, vector) in enumerate(zip(publishable_chunks, embeddings, strict=True), start=1):
+        source_pages = [int(page) for page in chunk.get("source_pages") or []]
+        point_id = str(uuid5(NAMESPACE_URL, f"{document_id}:{chunk['id'] or index}"))
+        qdrant_chunks.append(
+            {
+                "id": point_id,
+                "vector": vector,
+                "payload": {
+                    "chunk_id": chunk["id"],
+                    "document_id": document_id,
+                    "document_title": document_title,
+                    "system": system,
+                    "workspace": normalized_workspace,
+                    "document_type": document_type,
+                    "is_shared": is_shared_document,
+                    "content": chunk["markdown_content"],
+                    "section_heading": chunk["heading"],
+                    "page_number": source_pages[0] if source_pages else None,
+                    "source_pages": source_pages,
+                    "table_facts": chunk.get("table_facts") or [],
+                    "ambiguity_flags": chunk.get("ambiguity_flags") or [],
+                },
+            }
+        )
+    return qdrant_chunks
+
+
+def _iter_artifact_paths(pattern: str):
+    seen: set[Path] = set()
+    for root in _candidate_work_roots():
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob(pattern)):
+            if not path.is_file():
+                continue
+            resolved = path.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            yield path
+
+
+def _index_total_pages(index: dict[str, dict[str, Any]]) -> None:
+    for manifest_path in _iter_artifact_paths("*_manifest.json"):
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        name = data.get("document_name") or data.get("document", "")
+        if name:
+            index.setdefault(name, {})["total_pages"] = data.get("pdf_page_count")
+
+
+def _index_total_sections(index: dict[str, dict[str, Any]]) -> None:
+    for pipeline_results_path in _iter_artifact_paths("*_pipeline_results.json"):
+        try:
+            data = json.loads(pipeline_results_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        name = data.get("document", "")
+        if not name:
+            continue
+
+        total_sections = (data.get("stages", {}).get("review_workspace") or {}).get("total_sections")
+        if total_sections is not None:
+            index.setdefault(name, {})["total_sections"] = total_sections
+
+
+def _index_qa_scores(index: dict[str, dict[str, Any]]) -> None:
+    for qa_pattern in ("*_qa_report.json", "*_qa_pre_review.json"):
+        for qa_path in _iter_artifact_paths(qa_pattern):
+            _index_qa_score_from_path(index, qa_pattern, qa_path)
+
+
+def _index_qa_score_from_path(
+    index: dict[str, dict[str, Any]],
+    qa_pattern: str,
+    qa_path: Path,
+) -> None:
+    try:
+        data = json.loads(qa_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    name = data.get("document_name") or data.get("document", "")
+    if not name:
+        return
+
+    score = (data.get("metrics") or {}).get("overall_confidence_score")
+    if score is None:
+        return
+
+    should_set_score = (
+        "qa_score" not in index.setdefault(name, {})
+        or qa_pattern == "*_qa_report.json"
+    )
+    if should_set_score:
+        index.setdefault(name, {})["qa_score"] = score
+
+
+def _apply_metadata_enrichment(
+    docs: list[dict[str, Any]],
+    index: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    enriched: list[dict[str, Any]] = []
+    updates: list[dict[str, Any]] = []
+
+    for doc in docs:
+        meta = index.get(doc["title"], {})
+        new_doc = dict(doc)
+        changed = False
+
+        if doc["totalPages"] is None and "total_pages" in meta:
+            new_doc["totalPages"] = meta["total_pages"]
+            changed = True
+        if doc["totalSections"] is None and "total_sections" in meta:
+            new_doc["totalSections"] = meta["total_sections"]
+            changed = True
+        if doc["qaScore"] is None and "qa_score" in meta:
+            new_doc["qaScore"] = float(meta["qa_score"])
+            changed = True
+
+        if changed:
+            updates.append(
+                {
+                    "doc_id": doc["id"],
+                    "tp": new_doc["totalPages"],
+                    "ts": new_doc["totalSections"],
+                    "qs": new_doc["qaScore"],
+                }
+            )
+
+        enriched.append(new_doc)
+
+    return enriched, updates
+
+
+async def _persist_metadata_updates(db: AsyncSession, updates: list[dict[str, Any]]) -> None:
+    if not updates:
+        return
+
+    from sqlalchemy import text as _text
+
+    for update_payload in updates:
+        try:
+            await db.execute(
+                _text(
+                    """
+                    UPDATE documents
+                    SET total_pages    = COALESCE(total_pages,    :tp),
+                        total_sections = COALESCE(total_sections, :ts),
+                        qa_score       = COALESCE(qa_score,       :qs),
+                        updated_at     = NOW()
+                    WHERE id = :doc_id
+                    """
+                ),
+                update_payload,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist metadata for %s: %s", update_payload["doc_id"], exc)
+
+    try:
+        await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to commit metadata updates: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -100,22 +355,11 @@ async def _execute_optimization_stage(
     closed_stream = False
     started_monotonic = time.monotonic()
     try:
-        if str(REPO_ROOT) not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT))
-
-        manifest_path = _find_manifest_path(work_root)
-        validation_path = get_artifacts_path(document_id, "validation")
-        if not validation_path.exists():
-            raise FileNotFoundError("Validation artifact not found for optimization")
-
-        manifest = _load_optional_json(manifest_path)
-        document_name = str(
-            manifest.get("document_name")
-            or validation_path.name.replace("_validation.json", "")
+        _ensure_repo_root_on_syspath()
+        manifest_path, validation_path, document_name, pdf_path = _resolve_optimization_context(
+            work_root=work_root,
+            document_id=document_id,
         )
-        pdf_path = manifest.get("pdf_path")
-        if not pdf_path:
-            raise FileNotFoundError("Manifest is missing source PDF path")
 
         from pipeline.src.cli.hitl_pipeline import HITLPipeline  # noqa: WPS433
         from pipeline.src.lineage.lineage_tracker import (  # noqa: WPS433
@@ -142,14 +386,7 @@ async def _execute_optimization_stage(
         pipeline_runner = HITLPipeline(str(work_root))
 
         _loop = asyncio.get_event_loop()
-        _opt_handler = OptimizationLogHandler(document_id, _loop)
-        _opt_logger_names = [
-            "pipeline.src.cli.hitl_pipeline",
-            "pipeline.src.cli.text_reformatter",
-            "pipeline.src.utils.progress_tracker",
-        ]
-        for _lname in _opt_logger_names:
-            logging.getLogger(_lname).addHandler(_opt_handler)
+        _opt_handler = _attach_optimization_log_handler(document_id, _loop)
 
         _emit_optimization_log(document_id, "INFO", "Stage 2: Text Generation")
         result = None
@@ -157,13 +394,12 @@ async def _execute_optimization_stage(
             result = await asyncio.to_thread(
                 pipeline_runner.run_post_approval_reformatting,
                 doc_name=document_name,
-                pdf_path=str(pdf_path),
+                pdf_path=pdf_path,
                 validation_report_path=str(validation_path),
                 optimization_prep_path=optimization_prep_path,
             )
         finally:
-            for _lname in _opt_logger_names:
-                logging.getLogger(_lname).removeHandler(_opt_handler)
+            _detach_optimization_log_handler(_opt_handler)
 
         if result.get("status") != "complete":
             _emit_optimization_log(
@@ -193,15 +429,7 @@ async def _execute_optimization_stage(
             manifest_record = update_manifest_timestamp(manifest_record, "reformatting", reviewer)
             save_manifest(manifest_record, str(manifest_path))
 
-        async with _pipeline_pkg().AsyncSessionLocal() as db:
-            await _set_document_status(
-                db,
-                document_id,
-                PipelineStatus.OPTIMIZATION_COMPLETE.value,
-                review_progress=100,
-                optimization_completed_at=_SET_NOW,
-                optimization_error=_CLEAR,
-            )
+        await _set_optimization_completed_status(document_id)
 
         OptimizationLogManager.close(document_id, "optimization-complete")
         closed_stream = True
@@ -211,16 +439,7 @@ async def _execute_optimization_stage(
         if not closed_stream:
             OptimizationLogManager.close(document_id, "failed")
         logger.error("Optimization stage failed for %s: %s", document_id, exc, exc_info=True)
-        async with _pipeline_pkg().AsyncSessionLocal() as db:
-            await _set_document_status(
-                db,
-                document_id,
-                PipelineStatus.FAILED.value,
-                review_progress=100,
-                notes=str(exc),
-                optimization_completed_at=_SET_NOW,
-                optimization_error=str(exc),
-            )
+        await _set_optimization_failed_status(document_id, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -248,35 +467,14 @@ async def _publish_document_to_rag(
     if not await QdrantService.delete_document_chunks(document_id):
         raise RuntimeError("Failed to clear existing Qdrant chunks for this document")
 
-    workspace = str(system or "").strip()
-    normalized_workspace = workspace.lower() if workspace else None
-    is_shared_document = normalized_workspace in {"shared", "global", "cross-functional"}
-
-    qdrant_chunks: list[dict[str, object]] = []
-    for index, (chunk, vector) in enumerate(zip(publishable_chunks, embeddings, strict=True), start=1):
-        source_pages = [int(page) for page in chunk.get("source_pages") or []]
-        point_id = str(uuid5(NAMESPACE_URL, f"{document_id}:{chunk['id'] or index}"))
-        qdrant_chunks.append(
-            {
-                "id": point_id,
-                "vector": vector,
-                "payload": {
-                    "chunk_id": chunk["id"],
-                    "document_id": document_id,
-                    "document_title": document_title,
-                    "system": system,
-                    "workspace": normalized_workspace,
-                    "document_type": document_type,
-                    "is_shared": is_shared_document,
-                    "content": chunk["markdown_content"],
-                    "section_heading": chunk["heading"],
-                    "page_number": source_pages[0] if source_pages else None,
-                    "source_pages": source_pages,
-                    "table_facts": chunk.get("table_facts") or [],
-                    "ambiguity_flags": chunk.get("ambiguity_flags") or [],
-                },
-            }
-        )
+    qdrant_chunks = _build_qdrant_chunks(
+        document_id=document_id,
+        document_title=document_title,
+        system=system,
+        document_type=document_type,
+        publishable_chunks=publishable_chunks,
+        embeddings=embeddings,
+    )
 
     if not await QdrantService.upsert_chunks(qdrant_chunks):
         raise RuntimeError("Failed to upsert optimized chunks into Qdrant")
@@ -391,110 +589,14 @@ async def _approve_for_optimization(
 
 async def _enrich_metadata_from_artifacts(docs: list, db: AsyncSession) -> list:
     """Read pipeline artifact files to populate totalPages/totalSections/qaScore for docs with NULL metadata."""
-    import json as _json
-    from sqlalchemy import text as _text
-
-    index: dict[str, dict] = {}
-
-    def _iter_artifact_paths(pattern: str):
-        seen: set[Path] = set()
-        for root in _candidate_work_roots():
-            if not root.exists():
-                continue
-            for path in sorted(root.rglob(pattern)):
-                if not path.is_file():
-                    continue
-                resolved = path.resolve(strict=False)
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                yield path
-
-    for m_path in _iter_artifact_paths("*_manifest.json"):
-        try:
-            data = _json.loads(m_path.read_text(encoding="utf-8"))
-            name = data.get("document_name") or data.get("document", "")
-            if name:
-                index.setdefault(name, {})["total_pages"] = data.get("pdf_page_count")
-        except Exception:
-            pass
-
-    for pr_path in _iter_artifact_paths("*_pipeline_results.json"):
-        try:
-            data = _json.loads(pr_path.read_text(encoding="utf-8"))
-            name = data.get("document", "")
-            if name:
-                total_sections = (data.get("stages", {}).get("review_workspace") or {}).get("total_sections")
-                if total_sections is not None:
-                    index.setdefault(name, {})["total_sections"] = total_sections
-        except Exception:
-            pass
-
-    for qa_pattern in ("*_qa_report.json", "*_qa_pre_review.json"):
-        for qa_path in _iter_artifact_paths(qa_pattern):
-            try:
-                data = _json.loads(qa_path.read_text(encoding="utf-8"))
-                name = data.get("document_name") or data.get("document", "")
-                if name:
-                    score = (data.get("metrics") or {}).get("overall_confidence_score")
-                    if score is not None and (
-                        "qa_score" not in index.setdefault(name, {})
-                        or qa_pattern == "*_qa_report.json"
-                    ):
-                        index.setdefault(name, {})["qa_score"] = score
-            except Exception:
-                pass
+    index: dict[str, dict[str, Any]] = {}
+    _index_total_pages(index)
+    _index_total_sections(index)
+    _index_qa_scores(index)
 
     if not index:
         return docs
-
-    enriched = []
-    updates: list[dict] = []
-    for doc in docs:
-        title = doc["title"]
-        meta = index.get(title, {})
-        new_doc = dict(doc)
-        changed = False
-        if doc["totalPages"] is None and "total_pages" in meta:
-            new_doc["totalPages"] = meta["total_pages"]
-            changed = True
-        if doc["totalSections"] is None and "total_sections" in meta:
-            new_doc["totalSections"] = meta["total_sections"]
-            changed = True
-        if doc["qaScore"] is None and "qa_score" in meta:
-            new_doc["qaScore"] = float(meta["qa_score"])
-            changed = True
-        if changed:
-            updates.append(
-                {
-                    "doc_id": doc["id"],
-                    "tp": new_doc["totalPages"],
-                    "ts": new_doc["totalSections"],
-                    "qs": new_doc["qaScore"],
-                }
-            )
-        enriched.append(new_doc)
-
-    for u in updates:
-        try:
-            await db.execute(
-                _text(
-                    """
-                    UPDATE documents
-                    SET total_pages    = COALESCE(total_pages,    :tp),
-                        total_sections = COALESCE(total_sections, :ts),
-                        qa_score       = COALESCE(qa_score,       :qs),
-                        updated_at     = NOW()
-                    WHERE id = :doc_id
-                    """
-                ),
-                u,
-            )
-        except Exception as exc:
-            logger.warning("Failed to persist metadata for %s: %s", u["doc_id"], exc)
-    try:
-        await db.commit()
-    except Exception as exc:
-        logger.warning("Failed to commit metadata updates: %s", exc)
+    enriched, updates = _apply_metadata_enrichment(docs, index)
+    await _persist_metadata_updates(db, updates)
 
     return enriched

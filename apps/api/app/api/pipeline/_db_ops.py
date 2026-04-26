@@ -14,6 +14,43 @@ from ...models.pipeline import ArtifactType
 from ._constants import _CLEAR, _LIST_DOCUMENTS_SQL, _SET_NOW, _UNCHANGED
 
 
+def _apply_nullable_field_assignment(
+    *,
+    assignments: list[str],
+    params: dict[str, object],
+    column_name: str,
+    param_name: str,
+    value: object,
+) -> None:
+    if value is _CLEAR:
+        assignments.append(f"{column_name} = NULL")
+        return
+    if value is _UNCHANGED:
+        return
+    assignments.append(f"{column_name} = :{param_name}")
+    params[param_name] = value
+
+
+def _apply_timestamp_field_assignment(
+    *,
+    assignments: list[str],
+    params: dict[str, object],
+    column_name: str,
+    param_name: str,
+    value: object,
+) -> None:
+    if value is _SET_NOW:
+        assignments.append(f"{column_name} = NOW()")
+        return
+    if value is _CLEAR:
+        assignments.append(f"{column_name} = NULL")
+        return
+    if value is _UNCHANGED:
+        return
+    assignments.append(f"{column_name} = :{param_name}")
+    params[param_name] = value
+
+
 # ---------------------------------------------------------------------------
 # Status transition helpers
 # ---------------------------------------------------------------------------
@@ -45,11 +82,15 @@ async def _set_document_status(
     if review_progress is not None:
         assignments.append("review_progress = :review_progress")
         params["review_progress"] = review_progress
-    if qa_score is _CLEAR:
-        assignments.append("qa_score = NULL")
-    elif qa_score is not _UNCHANGED:
-        assignments.append("qa_score = :qa_score")
-        params["qa_score"] = qa_score
+
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="qa_score",
+        param_name="qa_score",
+        value=qa_score,
+    )
+
     if approved_by is not None:
         assignments.append("approved_by = :approved_by")
         params["approved_by"] = approved_by
@@ -58,59 +99,63 @@ async def _set_document_status(
     if notes is not None:
         assignments.append("notes = :notes")
         params["notes"] = notes
-    if optimization_started_at is _SET_NOW:
-        assignments.append("optimization_started_at = NOW()")
-    elif optimization_started_at is _CLEAR:
-        assignments.append("optimization_started_at = NULL")
-    elif optimization_started_at is not _UNCHANGED:
-        assignments.append("optimization_started_at = :optimization_started_at")
-        params["optimization_started_at"] = optimization_started_at
 
-    if optimization_completed_at is _SET_NOW:
-        assignments.append("optimization_completed_at = NOW()")
-    elif optimization_completed_at is _CLEAR:
-        assignments.append("optimization_completed_at = NULL")
-    elif optimization_completed_at is not _UNCHANGED:
-        assignments.append("optimization_completed_at = :optimization_completed_at")
-        params["optimization_completed_at"] = optimization_completed_at
-
-    if optimization_error is _CLEAR:
-        assignments.append("optimization_error = NULL")
-    elif optimization_error is not _UNCHANGED:
-        assignments.append("optimization_error = :optimization_error")
-        params["optimization_error"] = optimization_error
-
-    if publication_status is _CLEAR:
-        assignments.append("publication_status = NULL")
-    elif publication_status is not _UNCHANGED:
-        assignments.append("publication_status = :publication_status")
-        params["publication_status"] = publication_status
-
-    if published_at is _SET_NOW:
-        assignments.append("published_at = NOW()")
-    elif published_at is _CLEAR:
-        assignments.append("published_at = NULL")
-    elif published_at is not _UNCHANGED:
-        assignments.append("published_at = :published_at")
-        params["published_at"] = published_at
-
-    if publication_error is _CLEAR:
-        assignments.append("publication_error = NULL")
-    elif publication_error is not _UNCHANGED:
-        assignments.append("publication_error = :publication_error")
-        params["publication_error"] = publication_error
-
-    if indexed_chunk_count is _CLEAR:
-        assignments.append("indexed_chunk_count = NULL")
-    elif indexed_chunk_count is not _UNCHANGED:
-        assignments.append("indexed_chunk_count = :indexed_chunk_count")
-        params["indexed_chunk_count"] = indexed_chunk_count
-
-    if qdrant_collection is _CLEAR:
-        assignments.append("qdrant_collection = NULL")
-    elif qdrant_collection is not _UNCHANGED:
-        assignments.append("qdrant_collection = :qdrant_collection")
-        params["qdrant_collection"] = qdrant_collection
+    _apply_timestamp_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="optimization_started_at",
+        param_name="optimization_started_at",
+        value=optimization_started_at,
+    )
+    _apply_timestamp_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="optimization_completed_at",
+        param_name="optimization_completed_at",
+        value=optimization_completed_at,
+    )
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="optimization_error",
+        param_name="optimization_error",
+        value=optimization_error,
+    )
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="publication_status",
+        param_name="publication_status",
+        value=publication_status,
+    )
+    _apply_timestamp_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="published_at",
+        param_name="published_at",
+        value=published_at,
+    )
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="publication_error",
+        param_name="publication_error",
+        value=publication_error,
+    )
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="indexed_chunk_count",
+        param_name="indexed_chunk_count",
+        value=indexed_chunk_count,
+    )
+    _apply_nullable_field_assignment(
+        assignments=assignments,
+        params=params,
+        column_name="qdrant_collection",
+        param_name="qdrant_collection",
+        value=qdrant_collection,
+    )
 
     await db.execute(
         _text(f"UPDATE documents SET {', '.join(assignments)} WHERE id = :doc_id"),

@@ -144,7 +144,22 @@ class PipelineStatusMixin:
 
         if not row:
             raise ValueError(f"Document {document_id} not found")
+        status_payload = cls._status_payload_from_row(row)
+        status_payload = await cls._reconcile_stale_ingestion_status(
+            document_id=document_id,
+            db=db,
+            status_payload=status_payload,
+        )
+        status_payload = await cls._reconcile_optimization_completion_status(
+            document_id=document_id,
+            db=db,
+            status_payload=status_payload,
+        )
 
+        return cls._build_pipeline_status_response(document_id, status_payload)
+
+    @classmethod
+    def _status_payload_from_row(cls, row: Any) -> dict[str, Any]:
         (
             status,
             created_at,
@@ -159,99 +174,151 @@ class PipelineStatusMixin:
             indexed_chunk_count,
             qdrant_collection,
         ) = row
+        return {
+            "status": status,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "notes": notes,
+            "optimization_started_at": optimization_started_at,
+            "optimization_completed_at": optimization_completed_at,
+            "optimization_error": optimization_error,
+            "publication_status": publication_status,
+            "published_at": published_at,
+            "publication_error": publication_error,
+            "indexed_chunk_count": indexed_chunk_count,
+            "qdrant_collection": qdrant_collection,
+        }
 
-        if cls._is_stale_ingestion_status(
+    @classmethod
+    async def _reconcile_stale_ingestion_status(
+        cls,
+        *,
+        document_id: str,
+        db: AsyncSession,
+        status_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not cls._is_stale_ingestion_status(
             document_id=document_id,
-            status_value=status,
-            updated_at=updated_at,
+            status_value=status_payload["status"],
+            updated_at=status_payload["updated_at"],
         ):
-            stale_error = (
-                "Ingestion appears to have stopped unexpectedly because no active "
-                "pipeline process is running. Please reprocess this document."
-            )
+            return status_payload
 
-            await db.execute(
-                text(
-                    """
-                    UPDATE documents
-                    SET status = :failed_status,
-                        notes = :notes,
-                        updated_at = NOW()
-                    WHERE id = :doc_id
-                    """
-                ),
-                {
-                    "doc_id": document_id,
-                    "failed_status": PipelineStatus.FAILED.value,
-                    "notes": stale_error,
-                },
-            )
-            await db.commit()
+        stale_error = (
+            "Ingestion appears to have stopped unexpectedly because no active "
+            "pipeline process is running. Please reprocess this document."
+        )
 
-            status = PipelineStatus.FAILED.value
-            notes = stale_error
-            updated_at = datetime.now(timezone.utc)
+        await db.execute(
+            text(
+                """
+                UPDATE documents
+                SET status = :failed_status,
+                    notes = :notes,
+                    updated_at = NOW()
+                WHERE id = :doc_id
+                """
+            ),
+            {
+                "doc_id": document_id,
+                "failed_status": PipelineStatus.FAILED.value,
+                "notes": stale_error,
+            },
+        )
+        await db.commit()
 
-            cls._publish_event(
-                document_id,
-                IngestionErrorEvent(
-                    document_id=document_id,
-                    job_id=cls._job_ids_by_document.get(document_id),
-                    stage="monitoring",
-                    progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
-                    message="Document ingestion stalled.",
-                    error=stale_error,
-                ),
-            )
+        status_payload["status"] = PipelineStatus.FAILED.value
+        status_payload["notes"] = stale_error
+        status_payload["updated_at"] = datetime.now(timezone.utc)
 
-        if status in {
+        cls._publish_event(
+            document_id,
+            IngestionErrorEvent(
+                document_id=document_id,
+                job_id=cls._job_ids_by_document.get(document_id),
+                stage="monitoring",
+                progress=cls._status_progress_map[PipelineStatus.EXTRACTING.value],
+                message="Document ingestion stalled.",
+                error=stale_error,
+            ),
+        )
+
+        return status_payload
+
+    @classmethod
+    async def _reconcile_optimization_completion_status(
+        cls,
+        *,
+        document_id: str,
+        db: AsyncSession,
+        status_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if status_payload["status"] not in {
             PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
             PipelineStatus.OPTIMIZING.value,
         }:
-            artifact_status = _read_valid_optimized_artifact_metadata(document_id)
-            if artifact_status is not None:
-                artifact_completed_at = (
-                    datetime.fromisoformat(str(artifact_status["completed_at"]))
-                    if artifact_status.get("completed_at")
-                    else None
-                )
-                artifact_is_newer_than_current_run = (
-                    artifact_completed_at is not None
-                    and optimization_started_at is not None
-                    and artifact_completed_at >= optimization_started_at
-                )
+            return status_payload
 
-                if optimization_started_at is None or artifact_is_newer_than_current_run:
-                    status = PipelineStatus.OPTIMIZATION_COMPLETE.value
-                    if optimization_started_at is None and artifact_status["started_at"]:
-                        optimization_started_at = datetime.fromisoformat(
-                            str(artifact_status["started_at"])
-                        )
-                    if optimization_completed_at is None and artifact_status["completed_at"]:
-                        optimization_completed_at = artifact_completed_at
-                    optimization_error = None
+        artifact_status = _read_valid_optimized_artifact_metadata(document_id)
+        if artifact_status is None:
+            return status_payload
 
-                    await db.execute(
-                        text(
-                            """
-                            UPDATE documents
-                            SET status = :status,
-                                optimization_started_at = COALESCE(optimization_started_at, :optimization_started_at),
-                                optimization_completed_at = COALESCE(optimization_completed_at, :optimization_completed_at),
-                                optimization_error = NULL,
-                                updated_at = NOW()
-                            WHERE id = :doc_id
-                            """
-                        ),
-                        {
-                            "doc_id": document_id,
-                            "status": status,
-                            "optimization_started_at": optimization_started_at,
-                            "optimization_completed_at": optimization_completed_at,
-                        },
-                    )
-                    await db.commit()
+        artifact_completed_at = (
+            datetime.fromisoformat(str(artifact_status["completed_at"]))
+            if artifact_status.get("completed_at")
+            else None
+        )
+        optimization_started_at = status_payload["optimization_started_at"]
+        artifact_is_newer_than_current_run = (
+            artifact_completed_at is not None
+            and optimization_started_at is not None
+            and artifact_completed_at >= optimization_started_at
+        )
 
+        if optimization_started_at is not None and not artifact_is_newer_than_current_run:
+            return status_payload
+
+        if optimization_started_at is None and artifact_status["started_at"]:
+            optimization_started_at = datetime.fromisoformat(str(artifact_status["started_at"]))
+
+        optimization_completed_at = status_payload["optimization_completed_at"]
+        if optimization_completed_at is None and artifact_status["completed_at"]:
+            optimization_completed_at = artifact_completed_at
+
+        status_payload["status"] = PipelineStatus.OPTIMIZATION_COMPLETE.value
+        status_payload["optimization_started_at"] = optimization_started_at
+        status_payload["optimization_completed_at"] = optimization_completed_at
+        status_payload["optimization_error"] = None
+
+        await db.execute(
+            text(
+                """
+                UPDATE documents
+                SET status = :status,
+                    optimization_started_at = COALESCE(optimization_started_at, :optimization_started_at),
+                    optimization_completed_at = COALESCE(optimization_completed_at, :optimization_completed_at),
+                    optimization_error = NULL,
+                    updated_at = NOW()
+                WHERE id = :doc_id
+                """
+            ),
+            {
+                "doc_id": document_id,
+                "status": status_payload["status"],
+                "optimization_started_at": status_payload["optimization_started_at"],
+                "optimization_completed_at": status_payload["optimization_completed_at"],
+            },
+        )
+        await db.commit()
+        return status_payload
+
+    @classmethod
+    def _build_pipeline_status_response(
+        cls,
+        document_id: str,
+        status_payload: dict[str, Any],
+    ) -> PipelineStatusResponse:
+        status = status_payload["status"]
         progress = cls._status_progress_map.get(status, 0)
         stage = cls._status_stage_map.get(status)
 
@@ -261,17 +328,27 @@ class PipelineStatusMixin:
             PipelineStatus.OPTIMIZATION_COMPLETE.value,
             PipelineStatus.FAILED.value,
         }
-        started_at = (optimization_started_at or created_at) if status in optimization_statuses else created_at
-        completed_at = (
-            optimization_completed_at
-            if status in {
+        started_at = (
+            status_payload["optimization_started_at"] or status_payload["created_at"]
+            if status in optimization_statuses
+            else status_payload["created_at"]
+        )
+        if (
+            status in {
                 PipelineStatus.OPTIMIZATION_COMPLETE.value,
                 PipelineStatus.FAILED.value,
-            } and optimization_completed_at is not None
-            else (updated_at if progress == 100 or status == PipelineStatus.FAILED.value else None)
+            }
+            and status_payload["optimization_completed_at"] is not None
+        ):
+            completed_at = status_payload["optimization_completed_at"]
+        elif progress == 100 or status == PipelineStatus.FAILED.value:
+            completed_at = status_payload["updated_at"]
+        else:
+            completed_at = None
+        error = status_payload["optimization_error"] or (
+            status_payload["notes"] if status == PipelineStatus.FAILED.value else None
         )
-        error = optimization_error or (notes if status == PipelineStatus.FAILED.value else None)
-        normalized_publication_status = publication_status
+        normalized_publication_status = status_payload["publication_status"]
         if normalized_publication_status is None and status == PipelineStatus.FINAL_APPROVED.value:
             normalized_publication_status = PublicationStatus.PENDING.value
 
@@ -285,8 +362,8 @@ class PipelineStatusMixin:
             completed_at=completed_at,
             error=error,
             publication_status=normalized_publication_status,
-            published_at=published_at,
-            publication_error=publication_error,
-            indexed_chunk_count=indexed_chunk_count,
-            qdrant_collection=qdrant_collection,
+            published_at=status_payload["published_at"],
+            publication_error=status_payload["publication_error"],
+            indexed_chunk_count=status_payload["indexed_chunk_count"],
+            qdrant_collection=status_payload["qdrant_collection"],
         )

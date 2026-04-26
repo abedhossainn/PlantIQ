@@ -34,49 +34,64 @@ def _optimized_output_has_usable_content(payload: dict[str, Any]) -> bool:
     return False
 
 
-def _read_valid_optimized_artifact_metadata(document_id: str) -> dict[str, Optional[str]] | None:
+def _resolve_document_work_dir(document_id: str) -> Path | None:
     if not _UUID_RE.match(document_id):
         return None
     work_dir = Path(settings.PIPELINE_WORK_DIR).expanduser().resolve() / document_id
     if not work_dir.exists():
+        return None
+    return work_dir
+
+
+def _first_candidate_path(candidates: list[Path]) -> Path | None:
+    return candidates[0] if candidates else None
+
+
+def _read_markdown_content(markdown_path: Path | None) -> str:
+    if markdown_path and markdown_path.is_file():
+        return markdown_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _read_optimized_json_payload(json_path: Path | None) -> dict[str, Any]:
+    if not json_path or not json_path.is_file():
+        return {}
+    try:
+        return json.loads(json_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _collect_mtime_sources(paths: tuple[Path | None, ...]) -> list[float]:
+    return [path.stat().st_mtime for path in paths if path is not None and path.exists()]
+
+
+def _read_valid_optimized_artifact_metadata(document_id: str) -> dict[str, Optional[str]] | None:
+    work_dir = _resolve_document_work_dir(document_id)
+    if work_dir is None:
         return None
 
     optimized_json_candidates = sorted(work_dir.glob("*_rag_optimized.json"))
     optimized_markdown_candidates = sorted(work_dir.glob("*_rag_optimized.md"))
     optimization_prep_candidates = sorted(work_dir.glob("*_optimization_prep.json"))
 
-    optimized_json_path = optimized_json_candidates[0] if optimized_json_candidates else None
-    optimized_markdown_path = optimized_markdown_candidates[0] if optimized_markdown_candidates else None
-    optimization_prep_path = optimization_prep_candidates[0] if optimization_prep_candidates else None
+    optimized_json_path = _first_candidate_path(optimized_json_candidates)
+    optimized_markdown_path = _first_candidate_path(optimized_markdown_candidates)
+    optimization_prep_path = _first_candidate_path(optimization_prep_candidates)
 
-    markdown_content = ""
-    if optimized_markdown_path and optimized_markdown_path.is_file():
-        markdown_content = optimized_markdown_path.read_text(encoding="utf-8").strip()
+    markdown_content = _read_markdown_content(optimized_markdown_path)
 
-    payload: dict[str, Any] = {}
-    if optimized_json_path and optimized_json_path.is_file():
-        try:
-            payload = json.loads(optimized_json_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
+    payload = _read_optimized_json_payload(optimized_json_path)
 
-        payload_markdown = payload.get("markdown")
-        if isinstance(payload_markdown, str) and payload_markdown.strip():
-            markdown_content = payload_markdown.strip()
+    payload_markdown = payload.get("markdown")
+    if isinstance(payload_markdown, str) and payload_markdown.strip():
+        markdown_content = payload_markdown.strip()
 
     if not _optimized_output_has_usable_content(payload) and not markdown_content:
         return None
 
-    completion_sources = [
-        path.stat().st_mtime
-        for path in (optimized_json_path, optimized_markdown_path)
-        if path is not None and path.exists()
-    ]
-    started_sources = [
-        path.stat().st_mtime
-        for path in (optimization_prep_path, optimized_json_path, optimized_markdown_path)
-        if path is not None and path.exists()
-    ]
+    completion_sources = _collect_mtime_sources((optimized_json_path, optimized_markdown_path))
+    started_sources = _collect_mtime_sources((optimization_prep_path, optimized_json_path, optimized_markdown_path))
     if not completion_sources:
         return None
 

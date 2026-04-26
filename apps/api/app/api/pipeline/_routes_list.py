@@ -37,6 +37,131 @@ _OPTIMIZATION_BLOCKED_STATUSES = {
 }
 
 
+def _collect_document_reconciliation_ids(rows: list[dict]) -> tuple[list[str], list[str], list[str]]:
+    stale_document_ids: list[str] = []
+    stale_optimization_document_ids: list[str] = []
+    reconciled_optimization_document_ids: list[str] = []
+
+    for row in rows:
+        row_id = str(row["id"])
+        row_status = row["status"]
+        row_updated_at = row["updated_at"]
+
+        if PipelineService._is_stale_ingestion_status(
+            document_id=row_id,
+            status_value=row_status,
+            updated_at=row_updated_at,
+        ):
+            stale_document_ids.append(row_id)
+
+        if row_status not in _OPTIMIZATION_BLOCKED_STATUSES:
+            continue
+        if OptimizationLogManager.is_active(row_id):
+            continue
+
+        artifact_metadata = _read_valid_optimized_artifact_metadata(row_id)
+        if artifact_metadata and _artifact_completed_after_status_update(
+            artifact_completed_at=artifact_metadata.get("completed_at"),
+            status_updated_at=row_updated_at,
+        ):
+            reconciled_optimization_document_ids.append(row_id)
+            continue
+
+        if not _is_recently_updated(row_updated_at):
+            stale_optimization_document_ids.append(row_id)
+
+    return (
+        stale_document_ids,
+        stale_optimization_document_ids,
+        reconciled_optimization_document_ids,
+    )
+
+
+async def _apply_document_reconciliation_updates(
+    *,
+    db: AsyncSession,
+    stale_document_ids: list[str],
+    stale_optimization_document_ids: list[str],
+    reconciled_optimization_document_ids: list[str],
+    stale_error: str,
+    stale_optimization_error: str,
+) -> None:
+    for stale_id in stale_document_ids:
+        await db.execute(
+            _text(
+                """
+                UPDATE documents
+                SET status = 'failed',
+                    notes = :notes,
+                    updated_at = NOW()
+                WHERE id = :doc_id
+                """
+            ),
+            {"doc_id": stale_id, "notes": stale_error},
+        )
+
+    for stale_id in stale_optimization_document_ids:
+        await db.execute(
+            _text(
+                """
+                UPDATE documents
+                SET status = 'failed',
+                    notes = :notes,
+                    optimization_completed_at = COALESCE(optimization_completed_at, NOW()),
+                    optimization_error = COALESCE(optimization_error, :notes),
+                    updated_at = NOW()
+                WHERE id = :doc_id
+                """
+            ),
+            {"doc_id": stale_id, "notes": stale_optimization_error},
+        )
+
+    for reconciled_id in reconciled_optimization_document_ids:
+        await db.execute(
+            _text(
+                """
+                UPDATE documents
+                SET status = :status,
+                    optimization_completed_at = COALESCE(optimization_completed_at, NOW()),
+                    optimization_error = NULL,
+                    updated_at = NOW()
+                WHERE id = :doc_id
+                """
+            ),
+            {
+                "doc_id": reconciled_id,
+                "status": PipelineStatus.OPTIMIZATION_COMPLETE.value,
+            },
+        )
+
+    await db.commit()
+
+
+def _map_document_row(row: dict) -> dict:
+    return {
+        "id": str(row["id"]),
+        "title": row["title"] or f"Document {str(row['id'])[:8]}…",
+        "version": row["version"] or "1.0",
+        "system": row["system"] or "—",
+        "documentType": row["document_type"] or "PDF",
+        "status": row["status"],
+        "uploadedBy": row["uploaded_by"] or "—",
+        "uploadedAt": row["uploaded_at"].isoformat() if row["uploaded_at"] else None,
+        "notes": row["notes"],
+        "totalPages": row["total_pages"],
+        "totalSections": row["total_sections"],
+        "reviewProgress": row["review_progress"],
+        "qaScore": float(row["qa_score"]) if row["qa_score"] is not None else None,
+        "approvedBy": str(row["approved_by"]) if row["approved_by"] else None,
+        "approvedAt": row["approved_at"].isoformat() if row["approved_at"] else None,
+        "publicationStatus": _normalize_publication_status(row["status"], row["publication_status"]),
+        "publishedAt": row["published_at"].isoformat() if row["published_at"] else None,
+        "publicationError": row["publication_error"],
+        "indexedChunkCount": row["indexed_chunk_count"],
+        "qdrantCollection": row["qdrant_collection"],
+    }
+
+
 def _is_recently_updated(updated_at: datetime | str | None) -> bool:
     """Return True when the row was updated within the stale grace interval."""
     if updated_at is None:
@@ -131,112 +256,24 @@ async def list_documents(
             "optimization process is running. Please retry optimization or delete this document."
         )
 
-        stale_document_ids: list[str] = []
-        stale_optimization_document_ids: list[str] = []
-        reconciled_optimization_document_ids: list[str] = []
-        for row in rows:
-            row_id = str(row["id"])
-            row_status = row["status"]
-            row_updated_at = row["updated_at"]
-            if PipelineService._is_stale_ingestion_status(
-                document_id=row_id,
-                status_value=row_status,
-                updated_at=row_updated_at,
-            ):
-                stale_document_ids.append(row_id)
-
-            if row_status in _OPTIMIZATION_BLOCKED_STATUSES:
-                if OptimizationLogManager.is_active(row_id):
-                    continue
-
-                artifact_metadata = _read_valid_optimized_artifact_metadata(row_id)
-                if artifact_metadata and _artifact_completed_after_status_update(
-                    artifact_completed_at=artifact_metadata.get("completed_at"),
-                    status_updated_at=row_updated_at,
-                ):
-                    reconciled_optimization_document_ids.append(row_id)
-                    continue
-
-                if not _is_recently_updated(row_updated_at):
-                    stale_optimization_document_ids.append(row_id)
+        (
+            stale_document_ids,
+            stale_optimization_document_ids,
+            reconciled_optimization_document_ids,
+        ) = _collect_document_reconciliation_ids(rows)
 
         if stale_document_ids or stale_optimization_document_ids or reconciled_optimization_document_ids:
-            for stale_id in stale_document_ids:
-                await db.execute(
-                    _text(
-                        """
-                        UPDATE documents
-                        SET status = 'failed',
-                            notes = :notes,
-                            updated_at = NOW()
-                        WHERE id = :doc_id
-                        """
-                    ),
-                    {"doc_id": stale_id, "notes": stale_error},
-                )
-
-            for stale_id in stale_optimization_document_ids:
-                await db.execute(
-                    _text(
-                        """
-                        UPDATE documents
-                        SET status = 'failed',
-                            notes = :notes,
-                            optimization_completed_at = COALESCE(optimization_completed_at, NOW()),
-                            optimization_error = COALESCE(optimization_error, :notes),
-                            updated_at = NOW()
-                        WHERE id = :doc_id
-                        """
-                    ),
-                    {"doc_id": stale_id, "notes": stale_optimization_error},
-                )
-
-            for reconciled_id in reconciled_optimization_document_ids:
-                await db.execute(
-                    _text(
-                        """
-                        UPDATE documents
-                        SET status = :status,
-                            optimization_completed_at = COALESCE(optimization_completed_at, NOW()),
-                            optimization_error = NULL,
-                            updated_at = NOW()
-                        WHERE id = :doc_id
-                        """
-                    ),
-                    {
-                        "doc_id": reconciled_id,
-                        "status": PipelineStatus.OPTIMIZATION_COMPLETE.value,
-                    },
-                )
-
-            await db.commit()
+            await _apply_document_reconciliation_updates(
+                db=db,
+                stale_document_ids=stale_document_ids,
+                stale_optimization_document_ids=stale_optimization_document_ids,
+                reconciled_optimization_document_ids=reconciled_optimization_document_ids,
+                stale_error=stale_error,
+                stale_optimization_error=stale_optimization_error,
+            )
             rows = await _fetch_document_rows(db)
 
-        docs = [
-            {
-                "id": str(row["id"]),
-                "title": row["title"] or f"Document {str(row['id'])[:8]}…",
-                "version": row["version"] or "1.0",
-                "system": row["system"] or "—",
-                "documentType": row["document_type"] or "PDF",
-                "status": row["status"],
-                "uploadedBy": row["uploaded_by"] or "—",
-                "uploadedAt": row["uploaded_at"].isoformat() if row["uploaded_at"] else None,
-                "notes": row["notes"],
-                "totalPages": row["total_pages"],
-                "totalSections": row["total_sections"],
-                "reviewProgress": row["review_progress"],
-                "qaScore": float(row["qa_score"]) if row["qa_score"] is not None else None,
-                "approvedBy": str(row["approved_by"]) if row["approved_by"] else None,
-                "approvedAt": row["approved_at"].isoformat() if row["approved_at"] else None,
-                "publicationStatus": _normalize_publication_status(row["status"], row["publication_status"]),
-                "publishedAt": row["published_at"].isoformat() if row["published_at"] else None,
-                "publicationError": row["publication_error"],
-                "indexedChunkCount": row["indexed_chunk_count"],
-                "qdrantCollection": row["qdrant_collection"],
-            }
-            for row in rows
-        ]
+        docs = [_map_document_row(row) for row in rows]
         if any(d["totalPages"] is None or d["totalSections"] is None or d["qaScore"] is None for d in docs):
             docs = await _enrich_metadata_from_artifacts(docs, db)
         return docs
