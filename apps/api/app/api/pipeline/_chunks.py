@@ -60,27 +60,34 @@ def _optimized_chunk_id(chunk: dict, index: int) -> str:
     return f"chunk_{index:03d}"
 
 
-def _coerce_optimized_chunk(chunk: dict, index: int) -> dict:
-    content = str(
+def _extract_chunk_markdown_content(chunk: dict) -> str:
+    return str(
         chunk.get("content") or chunk.get("markdown") or chunk.get("body") or chunk.get("text") or ""
     ).strip()
-    heading = str(
+
+
+def _extract_chunk_heading(chunk: dict, index: int) -> str:
+    return str(
         chunk.get("heading")
         or chunk.get("title")
         or chunk.get("question")
         or f"Chunk {index}"
     ).strip()
 
-    table_facts = [
-        str(fact).strip()
-        for fact in (chunk.get("table_facts") or chunk.get("facts") or [])
-        if str(fact).strip()
+
+def _extract_non_empty_string_list(values: list[object]) -> list[str]:
+    return [
+        str(value).strip()
+        for value in values
+        if str(value).strip()
     ]
-    ambiguity_flags = [
-        str(flag).strip()
-        for flag in (chunk.get("ambiguity_flags") or chunk.get("ambiguities") or [])
-        if str(flag).strip()
-    ]
+
+
+def _coerce_optimized_chunk(chunk: dict, index: int) -> dict:
+    content = _extract_chunk_markdown_content(chunk)
+    heading = _extract_chunk_heading(chunk, index)
+    table_facts = _extract_non_empty_string_list(chunk.get("table_facts") or chunk.get("facts") or [])
+    ambiguity_flags = _extract_non_empty_string_list(chunk.get("ambiguity_flags") or chunk.get("ambiguities") or [])
 
     return {
         "id": _optimized_chunk_id(chunk, index),

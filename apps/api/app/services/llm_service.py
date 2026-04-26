@@ -19,6 +19,7 @@ from ..core.config import settings
 logger = logging.getLogger(__name__)
 
 OLLAMA_GENERATE_ENDPOINT = "/api/generate"
+STREAMING_BACKEND_RETRY_MESSAGE = "LLM streaming backend not reachable yet (attempt %s); retrying in %.1fs"
 
 
 class LLMConfigurationError(RuntimeError):
@@ -212,6 +213,244 @@ class LLMService:
                 )
                 await asyncio.sleep(interval)
 
+    @staticmethod
+    def _resolve_generation_overrides(
+        max_tokens: Optional[int],
+        temperature: Optional[float],
+        top_p: Optional[float],
+    ) -> tuple[int, float, float]:
+        resolved_max_tokens = settings.LLM_MAX_TOKENS if max_tokens is None else max_tokens
+        resolved_temperature = settings.LLM_TEMPERATURE if temperature is None else temperature
+        resolved_top_p = settings.LLM_TOP_P if top_p is None else top_p
+        return resolved_max_tokens, resolved_temperature, resolved_top_p
+
+    @staticmethod
+    def _extract_completion_text(result: dict) -> str:
+        choices = result.get("choices") if isinstance(result, dict) else None
+        if not isinstance(choices, list) or not choices:
+            raise LLMUnavailableError("LLM response did not include completion choices.")
+
+        first_choice = choices[0]
+        text = first_choice.get("text", "") if isinstance(first_choice, dict) else ""
+        if not text:
+            raise LLMUnavailableError("LLM returned an empty completion text response.")
+        return text.strip()
+
+    @classmethod
+    async def _generate_with_ollama(
+        cls,
+        *,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+    ) -> str:
+        payload = cls._build_ollama_generate_payload(
+            model=model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stream=False,
+        )
+        response = await cls._post_with_startup_retry(OLLAMA_GENERATE_ENDPOINT, payload)
+        result = response.json() or {}
+        text = str(result.get("response") or "").strip()
+        if not text:
+            raise LLMUnavailableError("LLM returned an empty completion text response.")
+        logger.info("Generated %s characters", len(text))
+        return text
+
+    @classmethod
+    async def _generate_with_openai_completions(
+        cls,
+        *,
+        model: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: Optional[List[str]],
+    ) -> str:
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": top_p,
+            "stop": stop or [],
+        }
+        response = await cls._post_with_startup_retry("/v1/completions", payload)
+        text = cls._extract_completion_text(response.json())
+        logger.info("Generated %s characters", len(text))
+        return text
+
+    @classmethod
+    async def _stream_ollama_with_retry(
+        cls,
+        *,
+        client: httpx.AsyncClient,
+        payload: dict,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: Optional[List[str]],
+    ) -> AsyncIterator[str]:
+        deadline, interval = cls._build_stream_retry_window()
+        attempt = 0
+
+        while True:
+            attempt += 1
+            try:
+                async with client.stream("POST", OLLAMA_GENERATE_ENDPOINT, json=payload) as response:
+                    response.raise_for_status()
+
+                    yielded_any_token = False
+                    async for token in cls._iter_ollama_stream_tokens(response):
+                        yielded_any_token = True
+                        yield token
+
+                if not yielded_any_token:
+                    async for token in cls._yield_fallback_non_stream_text(
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        stop=stop,
+                    ):
+                        yield token
+                return
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                await cls._wait_or_raise_stream_retry(
+                    attempt=attempt,
+                    deadline=deadline,
+                    interval=interval,
+                    exc=exc,
+                )
+
+    @classmethod
+    async def _stream_openai_completions_with_retry(
+        cls,
+        *,
+        client: httpx.AsyncClient,
+        payload: dict,
+    ) -> AsyncIterator[str]:
+        deadline, interval = cls._build_stream_retry_window()
+        attempt = 0
+
+        while True:
+            attempt += 1
+            try:
+                async with client.stream("POST", "/v1/completions", json=payload) as response:
+                    response.raise_for_status()
+
+                    async for token in cls._iter_openai_stream_tokens(response):
+                        yield token
+                return
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                await cls._wait_or_raise_stream_retry(
+                    attempt=attempt,
+                    deadline=deadline,
+                    interval=interval,
+                    exc=exc,
+                )
+
+    @staticmethod
+    def _build_stream_retry_window() -> tuple[float, float]:
+        wait_seconds = max(0, settings.LLM_STARTUP_WAIT_SECONDS)
+        interval = max(0.1, settings.LLM_RETRY_INTERVAL_SECONDS)
+        return time.monotonic() + wait_seconds, interval
+
+    @classmethod
+    async def _wait_or_raise_stream_retry(
+        cls,
+        *,
+        attempt: int,
+        deadline: float,
+        interval: float,
+        exc: Exception,
+    ) -> None:
+        if time.monotonic() >= deadline:
+            logger.error("LLM streaming backend unavailable after %s attempts: %s", attempt, exc)
+            raise LLMUnavailableError(f"LLM streaming backend unavailable: {exc}") from exc
+        logger.info(STREAMING_BACKEND_RETRY_MESSAGE, attempt, interval)
+        await asyncio.sleep(interval)
+
+    @staticmethod
+    async def _iter_ollama_stream_tokens(response: httpx.Response) -> AsyncIterator[str]:
+        async for line in response.aiter_lines():
+            token, is_done = LLMService._parse_ollama_stream_line(line)
+            if token:
+                yield token
+            if is_done:
+                return
+
+    @staticmethod
+    def _parse_ollama_stream_line(line: str) -> tuple[str, bool]:
+        if not line:
+            return "", False
+
+        try:
+            chunk = json.loads(line)
+        except json.JSONDecodeError:
+            return "", False
+
+        text = str(chunk.get("response") or "")
+        return text, bool(chunk.get("done"))
+
+    @staticmethod
+    async def _iter_openai_stream_tokens(response: httpx.Response) -> AsyncIterator[str]:
+        async for line in response.aiter_lines():
+            token, is_done = LLMService._parse_openai_stream_line(line)
+            if token:
+                yield token
+            if is_done:
+                return
+
+    @staticmethod
+    def _parse_openai_stream_line(line: str) -> tuple[str, bool]:
+        if not line or not line.startswith("data: "):
+            return "", False
+
+        data = line[6:]
+        if data == "[DONE]":
+            return "", True
+
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            return "", False
+
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return "", False
+        first_choice = choices[0]
+        text = first_choice.get("text", "") if isinstance(first_choice, dict) else ""
+        return text, False
+
+    @classmethod
+    async def _yield_fallback_non_stream_text(
+        cls,
+        *,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        stop: Optional[List[str]],
+    ) -> AsyncIterator[str]:
+        logger.warning("Ollama stream produced no token text; falling back to non-stream generation")
+        fallback_text = await cls.generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+        )
+        if fallback_text:
+            yield fallback_text
+
     @classmethod
     async def generate(
         cls,
@@ -223,53 +462,28 @@ class LLMService:
     ) -> str:
         """Generate text completion (non-streaming)."""
         await cls._request_started()
-
-        if max_tokens is None:
-            max_tokens = settings.LLM_MAX_TOKENS
-        if temperature is None:
-            temperature = settings.LLM_TEMPERATURE
-        if top_p is None:
-            top_p = settings.LLM_TOP_P
+        max_tokens, temperature, top_p = cls._resolve_generation_overrides(max_tokens, temperature, top_p)
 
         runtime_model = await cls._resolve_generation_model()
 
         try:
             if settings.LLM_BACKEND.lower() == "ollama":
-                payload = cls._build_ollama_generate_payload(
+                return await cls._generate_with_ollama(
                     model=runtime_model,
                     prompt=prompt,
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    stream=False,
                 )
-                response = await cls._post_with_startup_retry(OLLAMA_GENERATE_ENDPOINT, payload)
-                result = response.json() or {}
-                text = str(result.get("response") or "")
-                if text:
-                    logger.info("Generated %s characters", len(text))
-                    return text.strip()
-                raise LLMUnavailableError("LLM returned an empty completion text response.")
 
-            payload = {
-                "model": runtime_model,
-                "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "stop": stop or [],
-            }
-            response = await cls._post_with_startup_retry("/v1/completions", payload)
-            result = response.json()
-
-            if "choices" in result and len(result["choices"]) > 0:
-                text = result["choices"][0].get("text", "")
-                if text:
-                    logger.info("Generated %s characters", len(text))
-                    return text.strip()
-                raise LLMUnavailableError("LLM returned an empty completion text response.")
-
-            raise LLMUnavailableError("LLM response did not include completion choices.")
+            return await cls._generate_with_openai_completions(
+                model=runtime_model,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+            )
         except (LLMConfigurationError, LLMUnavailableError):
             raise
         except httpx.HTTPError as exc:
@@ -293,22 +507,11 @@ class LLMService:
         """Generate text completion with streaming."""
         client = cls.get_client()
         await cls._request_started()
-
-        if max_tokens is None:
-            max_tokens = settings.LLM_MAX_TOKENS
-        if temperature is None:
-            temperature = settings.LLM_TEMPERATURE
-        if top_p is None:
-            top_p = settings.LLM_TOP_P
+        max_tokens, temperature, top_p = cls._resolve_generation_overrides(max_tokens, temperature, top_p)
 
         runtime_model = await cls._resolve_generation_model()
 
         try:
-            wait_seconds = max(0, settings.LLM_STARTUP_WAIT_SECONDS)
-            interval = max(0.1, settings.LLM_RETRY_INTERVAL_SECONDS)
-            deadline = time.monotonic() + wait_seconds
-            attempt = 0
-
             if settings.LLM_BACKEND.lower() == "ollama":
                 payload = cls._build_ollama_generate_payload(
                     model=runtime_model,
@@ -318,100 +521,29 @@ class LLMService:
                     top_p=top_p,
                     stream=True,
                 )
+                async for token in cls._stream_ollama_with_retry(
+                    client=client,
+                    payload=payload,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    stop=stop,
+                ):
+                    yield token
+                return
 
-                while True:
-                    attempt += 1
-                    yielded_any_token = False
-                    try:
-                        async with client.stream("POST", "/api/generate", json=payload) as response:
-                            response.raise_for_status()
-
-                            async for line in response.aiter_lines():
-                                if not line:
-                                    continue
-                                try:
-                                    chunk = json.loads(line)
-                                except json.JSONDecodeError:
-                                    continue
-
-                                text = str(chunk.get("response") or "")
-                                if text:
-                                    yielded_any_token = True
-                                    yield text
-
-                                if chunk.get("done"):
-                                    break
-
-                        if not yielded_any_token:
-                            logger.warning(
-                                "Ollama stream produced no token text; falling back to non-stream generation"
-                            )
-                            fallback_text = await cls.generate(
-                                prompt=prompt,
-                                max_tokens=max_tokens,
-                                temperature=temperature,
-                                top_p=top_p,
-                                stop=stop,
-                            )
-                            if fallback_text:
-                                yield fallback_text
-                        break
-                    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                        if time.monotonic() >= deadline:
-                            logger.error("LLM streaming backend unavailable after %s attempts: %s", attempt, exc)
-                            raise LLMUnavailableError(f"LLM streaming backend unavailable: {exc}") from exc
-                        logger.info(
-                            "LLM streaming backend not reachable yet (attempt %s); retrying in %.1fs",
-                            attempt,
-                            interval,
-                        )
-                        await asyncio.sleep(interval)
-            else:
-                payload = {
-                    "model": runtime_model,
-                    "prompt": prompt,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "stop": stop or [],
-                    "stream": True,
-                }
-
-                while True:
-                    attempt += 1
-                    try:
-                        async with client.stream("POST", "/v1/completions", json=payload) as response:
-                            response.raise_for_status()
-
-                            async for line in response.aiter_lines():
-                                if not line:
-                                    continue
-
-                                if line.startswith("data: "):
-                                    data = line[6:]
-
-                                    if data == "[DONE]":
-                                        break
-
-                                    try:
-                                        chunk = json.loads(data)
-                                        if "choices" in chunk and len(chunk["choices"]) > 0:
-                                            text = chunk["choices"][0].get("text", "")
-                                            if text:
-                                                yield text
-                                    except json.JSONDecodeError:
-                                        continue
-                        break
-                    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                        if time.monotonic() >= deadline:
-                            logger.error("LLM streaming backend unavailable after %s attempts: %s", attempt, exc)
-                            raise LLMUnavailableError(f"LLM streaming backend unavailable: {exc}") from exc
-                        logger.info(
-                            "LLM streaming backend not reachable yet (attempt %s); retrying in %.1fs",
-                            attempt,
-                            interval,
-                        )
-                        await asyncio.sleep(interval)
+            payload = {
+                "model": runtime_model,
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "stop": stop or [],
+                "stream": True,
+            }
+            async for token in cls._stream_openai_completions_with_retry(client=client, payload=payload):
+                yield token
         except (LLMConfigurationError, LLMUnavailableError):
             raise
         except httpx.HTTPError as exc:
