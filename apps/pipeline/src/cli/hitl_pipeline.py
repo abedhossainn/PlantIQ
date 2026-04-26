@@ -135,19 +135,25 @@ def _extract_checklist_notes(checklist_payload: dict[str, Any]) -> list[dict[str
     return notes
 
 
+def _checklist_ambiguity_flags(checklist_payload: dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    for key, item in checklist_payload.items():
+        if isinstance(item, dict) and not item.get("checked") and item.get("notes"):
+            flags.append(f"{key}: {item['notes']}")
+    return flags
+
+
+def _validation_ambiguity_flags(validation_issues: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(issue.get("description") or issue.get("evidence") or "")
+        for issue in validation_issues
+        if issue.get("severity") in {"critical", "major"}
+    ]
+
+
 def _extract_ambiguity_flags(checklist_payload: dict[str, Any], validation_issues: list[dict[str, Any]]) -> list[str]:
-    ambiguity_flags: list[str] = []
-    for checklist_key, checklist_item in checklist_payload.items():
-        if not isinstance(checklist_item, dict):
-            continue
-        if not checklist_item.get("checked") and checklist_item.get("notes"):
-            ambiguity_flags.append(f"{checklist_key}: {checklist_item['notes']}")
-
-    for issue in validation_issues:
-        if issue.get("severity") in {"critical", "major"}:
-            ambiguity_flags.append(str(issue.get("description") or issue.get("evidence") or ""))
-
-    return [flag for flag in ambiguity_flags if flag]
+    raw = _checklist_ambiguity_flags(checklist_payload) + _validation_ambiguity_flags(validation_issues)
+    return [flag for flag in raw if flag]
 
 
 def _dedupe_strings(values: list[str]) -> list[str]:
@@ -160,6 +166,84 @@ def _dedupe_strings(values: list[str]) -> list[str]:
         seen.add(cleaned)
         ordered.append(cleaned)
     return ordered
+
+
+def _collect_page_numbers(current_pages: list[dict[str, Any]]) -> list[int]:
+    return [int(page.get("page_number") or 0) for page in current_pages]
+
+
+def _collect_title_candidates(current_pages: list[dict[str, Any]]) -> list[str]:
+    return _dedupe_strings(
+        [
+            heading
+            for page in current_pages
+            for heading in (page.get("heading_candidates") or [])
+        ]
+    )
+
+
+def _collect_string_field_values(current_pages: list[dict[str, Any]], field_name: str) -> list[str]:
+    return _dedupe_strings(
+        [value for page in current_pages for value in (page.get(field_name) or [])]
+    )
+
+
+def _collect_dict_field_values(current_pages: list[dict[str, Any]], field_name: str) -> list[dict[str, Any]]:
+    return [
+        item
+        for page in current_pages
+        for item in (page.get(field_name) or [])
+        if isinstance(item, dict)
+    ]
+
+
+def _build_authoritative_markdown(current_pages: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        str(page.get("authoritative_markdown") or "").strip()
+        for page in current_pages
+        if str(page.get("authoritative_markdown") or "").strip()
+    ).strip()
+
+
+def _build_segment_payload(current_pages: list[dict[str, Any]], segment_index: int) -> dict[str, Any]:
+    """Build one optimization segment payload from grouped pages."""
+    page_numbers = _collect_page_numbers(current_pages)
+    title_candidates = _collect_title_candidates(current_pages)
+    segment_title = title_candidates[0] if title_candidates else f"Pages {page_numbers[0]}-{page_numbers[-1]}"
+
+    return {
+        "segment_id": f"segment_{segment_index:03d}",
+        "title": segment_title,
+        "page_numbers": page_numbers,
+        "page_range": {"start": page_numbers[0], "end": page_numbers[-1]},
+        "heading_candidates": title_candidates,
+        "table_facts": _collect_string_field_values(current_pages, "table_facts"),
+        "ambiguity_flags": _collect_string_field_values(current_pages, "ambiguity_flags"),
+        "citations": _collect_dict_field_values(current_pages, "citations"),
+        "reviewer_notes": _collect_dict_field_values(current_pages, "reviewer_notes"),
+        "pages": current_pages.copy(),
+        "authoritative_markdown": _build_authoritative_markdown(current_pages),
+    }
+
+
+def _should_flush_segment(
+    *,
+    current_pages: list[dict[str, Any]],
+    current_chars: int,
+    page_chars: int,
+    introduces_heading: bool,
+    max_pages_per_segment: int,
+    target_chars: int,
+    min_chars_before_split: int,
+) -> bool:
+    """Determine whether a segment boundary should be emitted before adding a page."""
+    if not current_pages:
+        return False
+
+    exceeds_page_budget = len(current_pages) >= max_pages_per_segment
+    exceeds_char_budget = current_chars + page_chars > target_chars
+    natural_heading_break = introduces_heading and current_chars >= min_chars_before_split
+    return exceeds_page_budget or exceeds_char_budget or natural_heading_break
 
 
 def _build_optimization_segments(
@@ -180,73 +264,170 @@ def _build_optimization_segments(
     current_pages: list[dict[str, Any]] = []
     current_chars = 0
 
-    def flush_segment() -> None:
-        nonlocal current_pages, current_chars
-        if not current_pages:
-            return
-
-        page_numbers = [int(page.get("page_number") or 0) for page in current_pages]
-        title_candidates = _dedupe_strings(
-            [
-                heading
-                for page in current_pages
-                for heading in (page.get("heading_candidates") or [])
-            ]
-        )
-        segment_title = title_candidates[0] if title_candidates else f"Pages {page_numbers[0]}-{page_numbers[-1]}"
-
-        segments.append(
-            {
-                "segment_id": f"segment_{len(segments) + 1:03d}",
-                "title": segment_title,
-                "page_numbers": page_numbers,
-                "page_range": {"start": page_numbers[0], "end": page_numbers[-1]},
-                "heading_candidates": title_candidates,
-                "table_facts": _dedupe_strings(
-                    [fact for page in current_pages for fact in (page.get("table_facts") or [])]
-                ),
-                "ambiguity_flags": _dedupe_strings(
-                    [flag for page in current_pages for flag in (page.get("ambiguity_flags") or [])]
-                ),
-                "citations": [
-                    citation
-                    for page in current_pages
-                    for citation in (page.get("citations") or [])
-                    if isinstance(citation, dict)
-                ],
-                "reviewer_notes": [
-                    note
-                    for page in current_pages
-                    for note in (page.get("reviewer_notes") or [])
-                    if isinstance(note, dict)
-                ],
-                "pages": current_pages.copy(),
-                "authoritative_markdown": "\n\n".join(
-                    str(page.get("authoritative_markdown") or "").strip()
-                    for page in current_pages
-                    if str(page.get("authoritative_markdown") or "").strip()
-                ).strip(),
-            }
-        )
-        current_pages = []
-        current_chars = 0
-
     for page in structured_pages:
         page_markdown = str(page.get("authoritative_markdown") or page.get("text_preview") or "")
         page_chars = max(len(page_markdown), 1)
         introduces_heading = bool(page.get("heading_candidates"))
-        exceeds_page_budget = len(current_pages) >= max_pages_per_segment
-        exceeds_char_budget = current_chars + page_chars > target_chars
-        natural_heading_break = bool(current_pages) and introduces_heading and current_chars >= min_chars_before_split
 
-        if current_pages and (exceeds_page_budget or exceeds_char_budget or natural_heading_break):
-            flush_segment()
+        if _should_flush_segment(
+            current_pages=current_pages,
+            current_chars=current_chars,
+            page_chars=page_chars,
+            introduces_heading=introduces_heading,
+            max_pages_per_segment=max_pages_per_segment,
+            target_chars=target_chars,
+            min_chars_before_split=min_chars_before_split,
+        ):
+            segments.append(_build_segment_payload(current_pages, len(segments) + 1))
+            current_pages = []
+            current_chars = 0
 
         current_pages.append(page)
         current_chars += page_chars
 
-    flush_segment()
+    if current_pages:
+        segments.append(_build_segment_payload(current_pages, len(segments) + 1))
+
     return segments
+
+
+def _build_validation_page_lookup(validation_report: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {
+        int(page.get("page_number") or 0): page
+        for page in validation_report.get("page_validations", [])
+    }
+
+
+def _select_page_records(records: list[dict[str, Any]], page_number: int) -> list[dict[str, Any]]:
+    return [record for record in records if int(record.get("page_number") or 0) == page_number]
+
+
+def _count_image_loss_pages(validation_report: Any) -> int:
+    return sum(
+        1 for pv in validation_report.page_validations
+        for issue in pv.issues
+        if issue.issue_type == "image_loss"
+    )
+
+
+def _get_validation_issues(
+    page_entry: dict[str, Any], validation_page: dict[str, Any]
+) -> list[dict[str, Any]]:
+    return page_entry.get("validation_issues") or validation_page.get("issues") or []
+
+
+def _get_text_preview(page_entry: dict[str, Any]) -> str:
+    return (
+        page_entry.get("text_preview")
+        or (page_entry.get("evidence") or {}).get("text_preview")
+        or ""
+    )
+
+
+def _get_source_mapping(
+    page_entry: dict[str, Any], page_number: int, document_name: str
+) -> dict[str, Any]:
+    return {
+        "validation_page_number": page_number,
+        "thumbnail_path": (page_entry.get("evidence") or {}).get("thumbnail_path"),
+        "citation_reference": f"{document_name}, Page {page_number}",
+    }
+
+
+def _build_table_facts(page_tables: list[dict[str, Any]]) -> list[str]:
+    return [fact for table in page_tables for fact in table.get("key_facts", [])]
+
+
+def _build_structured_page_record(
+    *,
+    page_entry: dict[str, Any],
+    review_root: Path,
+    validation_page: dict[str, Any],
+    all_tables: list[dict[str, Any]],
+    all_figures: list[dict[str, Any]],
+    document_name: str,
+) -> tuple[dict[str, Any], list[str]]:
+    page_number = int(page_entry.get("page_number") or 0)
+    authoritative_markdown = _load_review_markdown(review_root, page_entry)
+    checklist_payload = _load_review_checklist(review_root, page_entry)
+    validation_issues = _get_validation_issues(page_entry, validation_page)
+    checklist_notes = _extract_checklist_notes(checklist_payload)
+    ambiguity_flags = _extract_ambiguity_flags(checklist_payload, validation_issues)
+    page_tables = _select_page_records(all_tables, page_number)
+    page_figures = _select_page_records(all_figures, page_number)
+
+    return {
+        "page_id": page_entry.get("page_id", f"page_{page_number:03d}"),
+        "page_number": page_number,
+        "authoritative_markdown": authoritative_markdown,
+        "heading_candidates": _extract_heading_candidates(authoritative_markdown),
+        "text_preview": _get_text_preview(page_entry),
+        "review_checklist": checklist_payload,
+        "reviewer_notes": checklist_notes,
+        "ambiguity_flags": ambiguity_flags,
+        "validation_issues": validation_issues,
+        "source_mapping": _get_source_mapping(page_entry, page_number, document_name),
+        "table_records": page_tables,
+        "table_facts": _build_table_facts(page_tables),
+        "figure_records": page_figures,
+        "citations": [
+            {
+                "document_name": document_name,
+                "page_number": page_number,
+                "label": f"[Source: {document_name}, Page {page_number}]",
+            }
+        ],
+    }, ambiguity_flags
+
+
+def _build_structured_pages_and_ambiguities(
+    *,
+    page_manifest: dict[str, Any],
+    review_root: Path,
+    validation_pages: dict[int, dict[str, Any]],
+    all_tables: list[dict[str, Any]],
+    all_figures: list[dict[str, Any]],
+    document_name: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    structured_pages: list[dict[str, Any]] = []
+    unresolved_ambiguities: list[dict[str, Any]] = []
+
+    for page_entry in page_manifest.get("pages", []):
+        page_number = int(page_entry.get("page_number") or 0)
+        page_record, ambiguity_flags = _build_structured_page_record(
+            page_entry=page_entry,
+            review_root=review_root,
+            validation_page=validation_pages.get(page_number, {}),
+            all_tables=all_tables,
+            all_figures=all_figures,
+            document_name=document_name,
+        )
+        structured_pages.append(page_record)
+
+        if ambiguity_flags:
+            unresolved_ambiguities.append(
+                {
+                    "page_number": page_number,
+                    "page_id": page_record["page_id"],
+                    "flags": ambiguity_flags,
+                }
+            )
+
+    return structured_pages, unresolved_ambiguities
+
+
+def _build_source_artifacts_payload(
+    *,
+    page_manifest_path: Path,
+    validation_report: dict[str, Any],
+    document_name: str,
+    table_figure_report: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "page_review_manifest": str(page_manifest_path),
+        "validation_report": validation_report.get("document_name") or document_name,
+        "table_figure_report_present": bool(table_figure_report),
+    }
 
 
 def build_optimization_prep(
@@ -261,64 +442,18 @@ def build_optimization_prep(
     review_root = Path(review_dir)
     page_manifest_path = review_root / "page_review_manifest.json"
     page_manifest = _load_json_file(page_manifest_path)
-    validation_pages = {
-        int(page.get("page_number") or 0): page
-        for page in validation_report.get("page_validations", [])
-    }
+    validation_pages = _build_validation_page_lookup(validation_report)
     table_figure_report = table_figure_report or {}
     all_tables = table_figure_report.get("tables", []) or []
     all_figures = table_figure_report.get("figures", []) or []
-
-    structured_pages: list[dict[str, Any]] = []
-    unresolved_ambiguities: list[dict[str, Any]] = []
-
-    for page_entry in page_manifest.get("pages", []):
-        page_number = int(page_entry.get("page_number") or 0)
-        authoritative_markdown = _load_review_markdown(review_root, page_entry)
-        checklist_payload = _load_review_checklist(review_root, page_entry)
-        validation_page = validation_pages.get(page_number, {})
-        validation_issues = page_entry.get("validation_issues") or validation_page.get("issues") or []
-        checklist_notes = _extract_checklist_notes(checklist_payload)
-        ambiguity_flags = _extract_ambiguity_flags(checklist_payload, validation_issues)
-        page_tables = [table for table in all_tables if int(table.get("page_number") or 0) == page_number]
-        page_figures = [figure for figure in all_figures if int(figure.get("page_number") or 0) == page_number]
-
-        page_record = {
-            "page_id": page_entry.get("page_id", f"page_{page_number:03d}"),
-            "page_number": page_number,
-            "authoritative_markdown": authoritative_markdown,
-            "heading_candidates": _extract_heading_candidates(authoritative_markdown),
-            "text_preview": page_entry.get("text_preview") or (page_entry.get("evidence") or {}).get("text_preview") or "",
-            "review_checklist": checklist_payload,
-            "reviewer_notes": checklist_notes,
-            "ambiguity_flags": ambiguity_flags,
-            "validation_issues": validation_issues,
-            "source_mapping": {
-                "validation_page_number": page_number,
-                "thumbnail_path": (page_entry.get("evidence") or {}).get("thumbnail_path"),
-                "citation_reference": f"{document_name}, Page {page_number}",
-            },
-            "table_records": page_tables,
-            "table_facts": [fact for table in page_tables for fact in table.get("key_facts", [])],
-            "figure_records": page_figures,
-            "citations": [
-                {
-                    "document_name": document_name,
-                    "page_number": page_number,
-                    "label": f"[Source: {document_name}, Page {page_number}]",
-                }
-            ],
-        }
-        structured_pages.append(page_record)
-
-        if ambiguity_flags:
-            unresolved_ambiguities.append(
-                {
-                    "page_number": page_number,
-                    "page_id": page_record["page_id"],
-                    "flags": ambiguity_flags,
-                }
-            )
+    structured_pages, unresolved_ambiguities = _build_structured_pages_and_ambiguities(
+        page_manifest=page_manifest,
+        review_root=review_root,
+        validation_pages=validation_pages,
+        all_tables=all_tables,
+        all_figures=all_figures,
+        document_name=document_name,
+    )
 
     return {
         "schema_version": "1.0",
@@ -326,11 +461,12 @@ def build_optimization_prep(
         "document_name": document_name,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "review_workspace": str(review_root),
-        "source_artifacts": {
-            "page_review_manifest": str(page_manifest_path),
-            "validation_report": validation_report.get("document_name") or document_name,
-            "table_figure_report_present": bool(table_figure_report),
-        },
+        "source_artifacts": _build_source_artifacts_payload(
+            page_manifest_path=page_manifest_path,
+            validation_report=validation_report,
+            document_name=document_name,
+            table_figure_report=table_figure_report,
+        ),
         "validation_summary": validation_report.get("metadata", {}),
         "pages": structured_pages,
         "segments": _build_optimization_segments(structured_pages),
@@ -356,19 +492,77 @@ def _convert_pdf_to_markdown(*, pdf_path: str, output_path: str, image_mode: str
     )
 
 
+_CHUNK_CONTENT_KEYS = ("content", "markdown", "body", "text")
+
+
+def _chunk_has_content(chunk: Any) -> bool:
+    if isinstance(chunk, str):
+        return bool(chunk.strip())
+    if isinstance(chunk, dict):
+        return any(str(chunk.get(k) or "").strip() for k in _CHUNK_CONTENT_KEYS)
+    return False
+
+
 def _has_structurally_valid_optimized_output(result: dict[str, Any]) -> bool:
     chunks = result.get("chunks")
-    if isinstance(chunks, list):
-        for chunk in chunks:
-            if isinstance(chunk, str) and chunk.strip():
-                return True
-            if not isinstance(chunk, dict):
-                continue
-            if any(str(chunk.get(key) or "").strip() for key in ("content", "markdown", "body", "text")):
-                return True
-
+    if isinstance(chunks, list) and any(_chunk_has_content(c) for c in chunks):
+        return True
     markdown_content = result.get("markdown")
     return isinstance(markdown_content, str) and bool(markdown_content.strip())
+
+
+def _prepare_reformat_content(
+    optimization_prep_path: Optional[str],
+    markdown_path: Optional[str],
+) -> tuple[Optional[dict[str, Any]], str]:
+    """Load and return (optimization_prep, markdown_content) from available inputs."""
+    optimization_prep = None
+    markdown_content = ""
+
+    if optimization_prep_path:
+        with open(optimization_prep_path, 'r', encoding='utf-8') as f:
+            optimization_prep = json.load(f)
+        markdown_content = str(optimization_prep.get("combined_markdown") or "")
+
+    if not markdown_content and markdown_path:
+        with open(markdown_path, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+
+    if not markdown_content:
+        raise ValueError("No authoritative reviewed markdown available for optimization")
+
+    return optimization_prep, markdown_content
+
+
+def _build_qa_input_dicts(
+    sections: Any,
+    validation_report: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build input dictionaries for QA metrics computation."""
+    sections_for_qa = [
+        {
+            "heading": s.heading,
+            "content": s.content,
+            "has_tables": s.has_tables
+        }
+        for s in sections.sections
+    ]
+    validation_dict = {
+        "overall_confidence": validation_report.overall_confidence,
+        "page_validations": [
+            {
+                "issues": [
+                    {
+                        "issue_type": issue.issue_type,
+                        "severity": issue.severity
+                    }
+                    for issue in pv.issues
+                ]
+            }
+            for pv in validation_report.page_validations
+        ],
+    }
+    return sections_for_qa, validation_dict
 
 
 class HITLPipeline:
@@ -471,6 +665,169 @@ class HITLPipeline:
         """
         del pdf_path
         return None
+
+    @staticmethod
+    def _read_markdown_content(markdown_path: str) -> str:
+        with open(markdown_path, 'r', encoding='utf-8') as file_handle:
+            return file_handle.read()
+
+    def _run_optional_vlm_comparison(self, *, markdown_path: str, pdf_path: str, validation_report) -> None:
+        logger.info("\n📊 Step 2b: Running VLM deep comparison (this takes ~70-80 min)...")
+        logger.info("⚠️  Note: You can skip VLM comparison by pressing Ctrl+C")
+        logger.info("         Basic validation is already complete.")
+        _emit_event("progress", "validation", "Running VLM deep comparison (this may take ~70 min)...", 40)
+
+        try:
+            from ..validation.vlm_comparison import compare_with_vlm
+
+            markdown_content = self._read_markdown_content(markdown_path)
+            vlm_result = compare_with_vlm(markdown_content, pdf_path)
+            if vlm_result and 'format_issues' in vlm_result:
+                validation_report.metadata['vlm_validation'] = vlm_result
+                logger.info("✅ VLM validation complete")
+            _emit_event("progress", "validation", "VLM deep comparison complete.", 55)
+        except KeyboardInterrupt:
+            logger.warning("⚠️  VLM comparison skipped by user")
+            _emit_event("progress", "validation", "VLM comparison skipped by user.", 55)
+        except Exception as exc:
+            logger.warning(f"⚠️  VLM comparison failed (continuing with basic validation): {exc}")
+            _emit_event("progress", "validation", f"VLM comparison skipped: {exc}", 55)
+
+    def _execute_image_description_subprocess(
+        self,
+        *,
+        image_description_cmd: list[str],
+        image_loss_count: int,
+        markdown_path: str,
+        markdown_enhanced_path: Path,
+        pdf_path: str,
+        vlm_model: str,
+        docling_version: str,
+        validation_path: Path,
+        validation_report: Any,
+        manifest: Any,
+        manifest_path: Path,
+        reviewer: str,
+        page_markdown_map: Optional[Dict[int, str]],
+    ) -> tuple[str, dict[str, Any], Any, Any]:
+        """Execute the image description subprocess and return updated pipeline state."""
+        updated_markdown_path = markdown_path
+        stage_result: dict[str, Any]
+
+        try:
+            result = subprocess.run(
+                image_description_cmd,
+                capture_output=True,
+                text=True,
+                timeout=2400,
+                cwd=str(Path(__file__).resolve().parents[3]),
+                env=os.environ.copy(),
+            )
+
+            if result.returncode == 0:
+                logger.info("✅ Image descriptions generated")
+                updated_markdown_path = str(markdown_enhanced_path)
+                validation_report, manifest = self._run_validation_stage(
+                    pdf_path=pdf_path,
+                    markdown_path=updated_markdown_path,
+                    vlm_model=vlm_model,
+                    docling_version=docling_version,
+                    validation_path=validation_path,
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    reviewer=reviewer,
+                    page_markdown_map=page_markdown_map,
+                )
+                stage_result = {
+                    "status": "complete",
+                    "output": str(markdown_enhanced_path),
+                    "pages_processed": image_loss_count,
+                }
+                _emit_event("progress", "validation",
+                            f"Image descriptions generated for {image_loss_count} pages.", 64)
+            else:
+                failure_output = (result.stderr or result.stdout or "")[:500]
+                logger.warning(f"⚠️  Image description failed: {failure_output}")
+                logger.info("   Continuing with original markdown...")
+                stage_result = {"status": "failed", "error": failure_output}
+                _emit_event("progress", "validation", "Image description failed, using original markdown.", 64)
+        except subprocess.TimeoutExpired:
+            logger.warning("⚠️  Image description timed out - continuing with original markdown")
+            stage_result = {"status": "timeout"}
+            _emit_event("progress", "validation", "Image description timed out, continuing.", 64)
+        except Exception as exc:
+            logger.warning(f"⚠️  Image description error: {exc}")
+            stage_result = {"status": "error", "error": str(exc)}
+            _emit_event("progress", "validation", f"Image description error: {exc}", 64)
+
+        return updated_markdown_path, stage_result, validation_report, manifest
+
+    def _run_image_description_stage(
+        self,
+        *,
+        doc_name: str,
+        pdf_path: str,
+        markdown_path: str,
+        validation_path: Path,
+        validation_report,
+        manifest,
+        manifest_path: Path,
+        reviewer: str,
+        page_markdown_map: Optional[Dict[int, str]],
+        vlm_model: str,
+        docling_version: str,
+    ) -> tuple[str, str, dict[str, Any], Any, Any]:
+        image_loss_count = _count_image_loss_pages(validation_report)
+
+        if image_loss_count <= 0:
+            logger.info("✅ No image loss detected - skipping image description")
+            _emit_event("progress", "validation", "No image loss detected, skipping description generation.", 64)
+            markdown_content = self._read_markdown_content(markdown_path)
+            return (
+                markdown_path,
+                markdown_content,
+                {"status": "skipped", "reason": "no_image_loss"},
+                validation_report,
+                manifest,
+            )
+
+        logger.info(f"📊 Detected {image_loss_count} pages with image loss")
+        logger.info(f"🤖 Generating image descriptions with {vlm_model}...")
+        logger.info("   This takes ~20-30 min...")
+        _emit_event("progress", "validation",
+                    f"Detected {image_loss_count} pages with image loss. Generating descriptions (~20-30 min)...", 56)
+
+        markdown_enhanced_path = self.work_dir / f"{doc_name}_with_images.md"
+        image_description_cmd = [
+            sys.executable,
+            "-m",
+            "pipeline.src.validation.vlm_image_describer",
+            "--pdf", pdf_path,
+            "--markdown", markdown_path,
+            "--validation", str(validation_path),
+            "--output", str(markdown_enhanced_path),
+            "--preset", "quality",
+        ]
+        updated_markdown_path, stage_result, validation_report, manifest = (
+            self._execute_image_description_subprocess(
+                image_description_cmd=image_description_cmd,
+                image_loss_count=image_loss_count,
+                markdown_path=markdown_path,
+                markdown_enhanced_path=markdown_enhanced_path,
+                pdf_path=pdf_path,
+                vlm_model=vlm_model,
+                docling_version=docling_version,
+                validation_path=validation_path,
+                validation_report=validation_report,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                reviewer=reviewer,
+                page_markdown_map=page_markdown_map,
+            )
+        )
+
+        markdown_content = self._read_markdown_content(updated_markdown_path)
+        return updated_markdown_path, markdown_content, stage_result, validation_report, manifest
     
     def run_full_pipeline(
         self,
@@ -563,36 +920,13 @@ class HITLPipeline:
         _emit_event("progress", "validation",
                     f"Per-page evidence extracted "
                     f"({validation_report.metadata.get('total_issues', 0)} issues found).", 38)
-        
+
         # Second: Deep VLM comparison (optional - can be skipped for speed)
-        logger.info("\n📊 Step 2b: Running VLM deep comparison (this takes ~70-80 min)...")
-        logger.info("⚠️  Note: You can skip VLM comparison by pressing Ctrl+C")
-        logger.info("         Basic validation is already complete.")
-        _emit_event("progress", "validation", "Running VLM deep comparison (this may take ~70 min)...", 40)
-        
-        try:
-            # Import the VLM comparison function
-            from ..validation.vlm_comparison import compare_with_vlm
-            
-            # Load markdown for VLM
-            with open(markdown_path, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            
-            # Run VLM comparison
-            vlm_result = compare_with_vlm(markdown_content, pdf_path)
-            
-            # Merge VLM results into validation report
-            if vlm_result and 'format_issues' in vlm_result:
-                validation_report.metadata['vlm_validation'] = vlm_result
-                logger.info("✅ VLM validation complete")
-            _emit_event("progress", "validation", "VLM deep comparison complete.", 55)
-            
-        except KeyboardInterrupt:
-            logger.warning("⚠️  VLM comparison skipped by user")
-            _emit_event("progress", "validation", "VLM comparison skipped by user.", 55)
-        except Exception as e:
-            logger.warning(f"⚠️  VLM comparison failed (continuing with basic validation): {e}")
-            _emit_event("progress", "validation", f"VLM comparison skipped: {e}", 55)
+        self._run_optional_vlm_comparison(
+            markdown_path=markdown_path,
+            pdf_path=pdf_path,
+            validation_report=validation_report,
+        )
         
         results["stages"]["validation"] = {
             "status": "complete",
@@ -608,117 +942,32 @@ class HITLPipeline:
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 2b: VLM Image Description Generation", 55,
                     step="Stage 2b: VLM Image Description Generation")
-        
-        # Count image loss issues
-        image_loss_count = sum(
-            1 for pv in validation_report.page_validations
-            for issue in pv.issues
-            if issue.issue_type == "image_loss"
-        )
-        
-        if image_loss_count > 0:
-            logger.info(f"📊 Detected {image_loss_count} pages with image loss")
-            logger.info(f"🤖 Generating image descriptions with {vlm_model}...")
-            logger.info("   This takes ~20-30 min...")
-            _emit_event("progress", "validation",
-                        f"Detected {image_loss_count} pages with image loss. Generating descriptions (~20-30 min)...", 56)
-            
-            # Create enhanced markdown with image descriptions
-            markdown_enhanced_path = self.work_dir / f"{doc_name}_with_images.md"
-            
-            try:
-                image_description_cmd = [
-                    sys.executable,
-                    "-m",
-                    "pipeline.src.validation.vlm_image_describer",
-                    "--pdf", pdf_path,
-                    "--markdown", markdown_path,
-                    "--validation", str(validation_path),
-                    "--output", str(markdown_enhanced_path),
-                    "--preset", "quality",
-                ]
-                result = subprocess.run(
-                    image_description_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=2400,
-                    cwd=str(Path(__file__).resolve().parents[3]),
-                    env=os.environ.copy(),
-                )
-                
-                if result.returncode == 0:
-                    logger.info("✅ Image descriptions generated")
-                    # Use enhanced markdown for rest of pipeline
-                    markdown_path = str(markdown_enhanced_path)
-                    with open(markdown_path) as f:
-                        markdown_content = f.read()
 
-                    logger.info("📊 Re-running validation against final markdown with image descriptions...")
-                    validation_report, manifest = self._run_validation_stage(
-                        pdf_path=pdf_path,
-                        markdown_path=markdown_path,
-                        vlm_model=vlm_model,
-                        docling_version=docling_version,
-                        validation_path=validation_path,
-                        manifest=manifest,
-                        manifest_path=manifest_path,
-                        reviewer=reviewer,
-                        page_markdown_map=page_markdown_map,
-                    )
-                    results["stages"]["validation"] = {
-                        "status": "complete",
-                        "output": str(validation_path),
-                        "confidence": validation_report.overall_confidence,
-                        "total_issues": validation_report.metadata["total_issues"],
-                        "critical_issues": validation_report.metadata["critical_issues"],
-                        "validated_markdown": str(markdown_enhanced_path),
-                    }
-                    
-                    results["stages"]["image_descriptions"] = {
-                        "status": "complete",
-                        "output": str(markdown_enhanced_path),
-                        "pages_processed": image_loss_count
-                    }
-                    _emit_event("progress", "validation",
-                                f"Image descriptions generated for {image_loss_count} pages.", 64)
-                else:
-                    failure_output = (result.stderr or result.stdout or "")[:500]
-                    logger.warning(f"⚠️  Image description failed: {failure_output}")
-                    logger.info("   Continuing with original markdown...")
-                    with open(markdown_path, 'r', encoding='utf-8') as f:
-                        markdown_content = f.read()
-                    results["stages"]["image_descriptions"] = {
-                        "status": "failed",
-                        "error": failure_output
-                    }
-                    _emit_event("progress", "validation", "Image description failed, using original markdown.", 64)
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning("⚠️  Image description timed out - continuing with original markdown")
-                with open(markdown_path, 'r', encoding='utf-8') as f:
-                    markdown_content = f.read()
-                results["stages"]["image_descriptions"] = {
-                    "status": "timeout"
-                }
-                _emit_event("progress", "validation", "Image description timed out, continuing.", 64)
-            except Exception as e:
-                logger.warning(f"⚠️  Image description error: {e}")
-                with open(markdown_path, 'r', encoding='utf-8') as f:
-                    markdown_content = f.read()
-                results["stages"]["image_descriptions"] = {
-                    "status": "error",
-                    "error": str(e)
-                }
-                _emit_event("progress", "validation", f"Image description error: {e}", 64)
-        else:
-            logger.info("✅ No image loss detected - skipping image description")
-            _emit_event("progress", "validation", "No image loss detected, skipping description generation.", 64)
-            with open(markdown_path, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-            results["stages"]["image_descriptions"] = {
-                "status": "skipped",
-                "reason": "no_image_loss"
+        markdown_path, markdown_content, image_stage_result, validation_report, manifest = self._run_image_description_stage(
+            doc_name=doc_name,
+            pdf_path=pdf_path,
+            markdown_path=markdown_path,
+            validation_path=validation_path,
+            validation_report=validation_report,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            reviewer=reviewer,
+            page_markdown_map=page_markdown_map,
+            vlm_model=vlm_model,
+            docling_version=docling_version,
+        )
+
+        if image_stage_result.get("status") == "complete":
+            results["stages"]["validation"] = {
+                "status": "complete",
+                "output": str(validation_path),
+                "confidence": validation_report.overall_confidence,
+                "total_issues": validation_report.metadata["total_issues"],
+                "critical_issues": validation_report.metadata["critical_issues"],
+                "validated_markdown": image_stage_result.get("output"),
             }
+
+        results["stages"]["image_descriptions"] = image_stage_result
         
         # Stage 3: Table and figure extraction
         logger.info("\n" + "=" * 80)
@@ -799,30 +1048,7 @@ class HITLPipeline:
         _emit_event("stage_start", "validation", "Stage 6: Pre-Review QA Metrics", 85,
                     step="Stage 6: Pre-Review QA Metrics")
         
-        sections_for_qa = [
-            {
-                "heading": s.heading,
-                "content": s.content,
-                "has_tables": s.has_tables
-            }
-            for s in sections.sections
-        ]
-        
-        validation_dict = {
-            "overall_confidence": validation_report.overall_confidence,
-            "page_validations": [
-                {
-                    "issues": [
-                        {
-                            "issue_type": issue.issue_type,
-                            "severity": issue.severity
-                        }
-                        for issue in pv.issues
-                    ]
-                }
-                for pv in validation_report.page_validations
-            ]
-        }
+        sections_for_qa, validation_dict = _build_qa_input_dicts(sections, validation_report)
         
         qa_metrics = compute_qa_metrics(
             sections_for_qa,
@@ -935,21 +1161,10 @@ class HITLPipeline:
         try:
             # Import reformatter
             from ..cli.text_reformatter import reformat_with_qwen, save_output
-            optimization_prep = None
-            markdown_content = ""
+            optimization_prep, markdown_content = _prepare_reformat_content(
+                optimization_prep_path, markdown_path
+            )
 
-            if optimization_prep_path:
-                with open(optimization_prep_path, 'r', encoding='utf-8') as f:
-                    optimization_prep = json.load(f)
-                markdown_content = str(optimization_prep.get("combined_markdown") or "")
-
-            if not markdown_content and markdown_path:
-                with open(markdown_path, 'r', encoding='utf-8') as f:
-                    markdown_content = f.read()
-
-            if not markdown_content:
-                raise ValueError("No authoritative reviewed markdown available for optimization")
-            
             # Load validation report
             with open(validation_report_path, 'r') as f:
                 validation_data = json.load(f)
@@ -1010,10 +1225,117 @@ class HITLPipeline:
         return progress
 
 
+def _log_pipeline_banner() -> None:
+    logger.info("=" * 80)
+    logger.info("🚀 ENHANCED HITL PIPELINE ORCHESTRATOR")
+    logger.info("=" * 80)
+
+
+def _handle_run_action(args, pipeline: HITLPipeline) -> int:
+    if not args.pdf or not args.markdown:
+        logger.error("❌ --pdf and --markdown required for run action")
+        return 1
+
+    try:
+        results = pipeline.run_full_pipeline(
+            args.pdf,
+            args.markdown,
+            args.reviewer,
+            args.docling_version,
+            args.vlm_model,
+            args.reformatter_model,
+        )
+        logger.info("\n✅ Pipeline execution complete")
+
+        if results["summary"]["qa_decision"] == "approved":
+            logger.info("\n🎉 Document APPROVED!")
+            logger.info("   Next step: Run reformatting")
+            logger.info(f"   Command: python3 rag_hitl_pipeline.py reformat --doc-name \"{Path(args.pdf).stem}\"")
+        else:
+            logger.info("\n⚠️  Document needs review")
+            logger.info(f"   Review workspace: {results['stages']['review_workspace']['output']}")
+
+        return 0
+    except Exception as exc:
+        logger.error(f"❌ Pipeline failed: {exc}", exc_info=True)
+        return 1
+
+
+def _handle_status_action(args, pipeline: HITLPipeline) -> int:
+    if not args.doc_name:
+        logger.error("❌ --doc-name required for status action")
+        return 1
+
+    try:
+        status = pipeline.get_review_status(args.doc_name)
+        if "error" in status:
+            logger.error(f"❌ {status['error']}")
+            return 1
+        return 0
+    except Exception as exc:
+        logger.error(f"❌ Status check failed: {exc}")
+        return 1
+
+
+def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None]:
+    doc_name = args.doc_name or (Path(args.pdf).stem if args.pdf else None)
+    if not doc_name:
+        logger.error("❌ --doc-name or --pdf required for reformat action")
+        return None, None, None
+
+    workspace = Path(args.workspace)
+    validation_path = workspace / f"{doc_name}_validation.json"
+
+    markdown_path = args.markdown
+    if not markdown_path:
+        version_path = workspace / f"{doc_name}_versions" / f"{doc_name}_v1.md"
+        if version_path.exists():
+            markdown_path = str(version_path)
+        else:
+            logger.error("❌ --markdown required and could not auto-detect")
+            return None, None, None
+
+    return doc_name, str(validation_path), markdown_path
+
+
+def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
+    doc_name, validation_path, markdown_path = _resolve_reformat_inputs(args)
+    if not doc_name or not validation_path or not markdown_path:
+        return 1
+
+    if not args.pdf:
+        logger.error("❌ --pdf required for reformat action")
+        return 1
+
+    try:
+        logger.info(f"📄 Reformatting: {doc_name}")
+        logger.info(f"   PDF: {args.pdf}")
+        logger.info(f"   Markdown: {markdown_path}")
+        logger.info(f"   Validation: {validation_path}")
+
+        result = pipeline.run_post_approval_reformatting(
+            doc_name,
+            args.pdf,
+            validation_path,
+            markdown_path=markdown_path,
+        )
+
+        if result["status"] == "complete":
+            logger.info("\n✅ Reformatting complete!")
+            logger.info("   Ready for vector DB ingestion")
+            return 0
+
+        logger.error(f"\n❌ Reformatting failed: {result.get('message', 'Unknown error')}")
+        return 1
+    except Exception as exc:
+        logger.error(f"❌ Reformat failed: {exc}", exc_info=True)
+        return 1
+
+
 def main():
     """CLI entry point"""
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="Enhanced HITL Pipeline Orchestrator"
     )
@@ -1036,117 +1358,16 @@ def main():
         help="Text model override (defaults to TEXT_MODEL_ID from repo-root .env)",
     )
     parser.add_argument("--skip-vlm", action="store_true", help="Skip VLM deep comparison (faster)")
-    
+
     args = parser.parse_args()
-    
-    logger.info("=" * 80)
-    logger.info("🚀 ENHANCED HITL PIPELINE ORCHESTRATOR")
-    logger.info("=" * 80)
-    
+    _log_pipeline_banner()
     pipeline = HITLPipeline(args.workspace)
-    
+
     if args.action == "run":
-        if not args.pdf or not args.markdown:
-            logger.error("❌ --pdf and --markdown required for run action")
-            return 1
-        
-        try:
-            results = pipeline.run_full_pipeline(
-                args.pdf,
-                args.markdown,
-                args.reviewer,
-                args.docling_version,
-                args.vlm_model,
-                args.reformatter_model
-            )
-            
-            logger.info("\n✅ Pipeline execution complete")
-            
-            # Show next action based on QA decision
-            if results["summary"]["qa_decision"] == "approved":
-                logger.info("\n🎉 Document APPROVED!")
-                logger.info("   Next step: Run reformatting")
-                logger.info(f"   Command: python3 rag_hitl_pipeline.py reformat --doc-name \"{Path(args.pdf).stem}\"")
-            else:
-                logger.info("\n⚠️  Document needs review")
-                logger.info(f"   Review workspace: {results['stages']['review_workspace']['output']}")
-            
-            return 0
-            
-        except Exception as e:
-            logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
-            return 1
-    
-    elif args.action == "status":
-        if not args.doc_name:
-            logger.error("❌ --doc-name required for status action")
-            return 1
-        
-        try:
-            status = pipeline.get_review_status(args.doc_name)
-            
-            if "error" in status:
-                logger.error(f"❌ {status['error']}")
-                return 1
-            
-            return 0
-            
-        except Exception as e:
-            logger.error(f"❌ Status check failed: {e}")
-            return 1
-    
-    elif args.action == "reformat":
-        if not args.doc_name:
-            # Try to infer from PDF
-            if args.pdf:
-                args.doc_name = Path(args.pdf).stem
-            else:
-                logger.error("❌ --doc-name or --pdf required for reformat action")
-                return 1
-        
-        try:
-            # Find paths
-            workspace = Path(args.workspace)
-            validation_path = workspace / f"{args.doc_name}_validation.json"
-            
-            if not args.markdown:
-                # Try to find in workspace
-                version_path = workspace / f"{args.doc_name}_versions" / f"{args.doc_name}_v1.md"
-                if version_path.exists():
-                    args.markdown = str(version_path)
-                else:
-                    logger.error("❌ --markdown required and could not auto-detect")
-                    return 1
-            
-            if not args.pdf:
-                logger.error("❌ --pdf required for reformat action")
-                return 1
-            
-            logger.info(f"📄 Reformatting: {args.doc_name}")
-            logger.info(f"   PDF: {args.pdf}")
-            logger.info(f"   Markdown: {args.markdown}")
-            logger.info(f"   Validation: {validation_path}")
-            
-            result = pipeline.run_post_approval_reformatting(
-                args.doc_name,
-                args.pdf,
-                str(validation_path),
-                markdown_path=args.markdown,
-            )
-            
-            if result["status"] == "complete":
-                logger.info("\n✅ Reformatting complete!")
-                logger.info("   Ready for vector DB ingestion")
-                return 0
-            else:
-                logger.error(f"\n❌ Reformatting failed: {result.get('message', 'Unknown error')}")
-                return 1
-                
-        except Exception as e:
-            logger.error(f"❌ Reformat failed: {e}", exc_info=True)
-            return 1
-    
-    return 0
+        return _handle_run_action(args, pipeline)
+    if args.action == "status":
+        return _handle_status_action(args, pipeline)
+    return _handle_reformat_action(args, pipeline)
 
 
 if __name__ == "__main__":
