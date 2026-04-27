@@ -8,8 +8,11 @@ Endpoints:
 - GET /api/v1/auth/me - Get current user info
 - PATCH /api/v1/auth/me - Update own profile (full_name, department)
 - POST /api/v1/auth/me/change-password - Change own password
+- POST /api/v1/auth/admin/users - REMOVED (410 Gone) — LDAP is identity source of truth
+- GET /api/v1/auth/admin/users - List LDAP-backed users (admin only)
+- PATCH /api/v1/auth/admin/users/{user_id}/role - Update user role (admin only)
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 import logging
@@ -24,9 +27,12 @@ from ..models.auth import (
     LogoutRequest,
     UpdateProfileRequest,
     ChangePasswordRequest,
+    AdminUserResponse,
+    AdminUsersListResponse,
+    AdminUpdateRoleRequest,
 )
 from ..services.auth_service import AuthService
-from ..core.security import get_current_user_id
+from ..core.security import get_current_user_id, get_current_user_role, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -284,3 +290,145 @@ async def change_password(
     logger.info("Password changed for user_id: %s", user_id)
 
     return {"message": "Password changed successfully"}
+
+
+@router.post(
+    "/admin/users",
+    status_code=status.HTTP_410_GONE,
+    include_in_schema=True,
+    deprecated=True,
+)
+async def admin_create_user_deprecated():
+    """
+    **DEPRECATED — endpoint removed.**
+
+    User creation via the PlantIQ API is no longer permitted.
+    LDAP is the sole source of truth for identity existence.
+    Users are provisioned in LDAP/AD by the directory administrator;
+    PlantIQ syncs identity on first successful login.
+
+    To manage role assignments use:
+      PATCH /api/v1/auth/admin/users/{user_id}/role
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "ENDPOINT_REMOVED",
+            "message": (
+                "User creation via the PlantIQ API has been removed. "
+                "LDAP is the source of truth for identity existence. "
+                "Provision users in your LDAP/AD directory; PlantIQ syncs identity on first login."
+            ),
+        },
+    )
+
+
+@router.get("/admin/users", response_model=AdminUsersListResponse)
+async def admin_list_users(
+    page: int = Query(default=1, ge=1, description="1-based page number"),
+    page_size: int = Query(default=50, ge=1, le=200, description="Records per page"),
+    search: Optional[str] = Query(default=None, max_length=255, description="Substring filter on username or full_name"),
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    List LDAP-backed users known to PlantIQ (admin only).
+
+    Returns users who have logged in at least once (i.e. have a local profile
+    record created by the LDAP sync on first login).  This endpoint does NOT
+    create, import, or delete user accounts.
+
+    Supports pagination and optional substring search on username / full_name.
+    """
+    users, total = await AuthService.list_users(
+        db=db,
+        page=page,
+        page_size=page_size,
+        search=search or None,
+    )
+
+    items = [
+        AdminUserResponse(
+            id=u.id,
+            username=u.username,
+            email=u.email,
+            full_name=u.full_name,
+            role=u.role,
+            department=u.department,
+            status=u.status,
+        )
+        for u in users
+    ]
+
+    logger.info("Admin listed users: page=%s, page_size=%s, total=%s", page, page_size, total)
+
+    return AdminUsersListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.patch("/admin/users/{user_id}/role", response_model=AdminUserResponse)
+async def admin_update_user_role(
+    user_id: uuid.UUID,
+    request: AdminUpdateRoleRequest,
+    caller_user_id: uuid.UUID = Depends(get_current_user_id),
+    caller_role: str = Depends(get_current_user_role),
+    _admin_check: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Update the role of an existing LDAP-backed user (admin only).
+
+    Role escalation safeguards:
+    - Admins cannot update their own role.
+    - Only plantig_admin callers may assign the plantig_admin role.
+
+    Returns 404 if the target user has not yet logged in (no local profile).
+    Returns 403 if escalation rules are violated.
+    """
+    try:
+        user = await AuthService.update_user_role(
+            target_user_id=user_id,
+            new_role=request.role,
+            caller_user_id=caller_user_id,
+            caller_role=caller_role,
+            db=db,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "ROLE_ESCALATION_DENIED", "message": str(exc)},
+        )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "USER_NOT_FOUND",
+                "message": (
+                    "User not found in PlantIQ. "
+                    "The user must log in at least once via LDAP before their role can be managed here."
+                ),
+            },
+        )
+
+    logger.info(
+        "Admin %s updated role for user %s to %s",
+        caller_user_id,
+        user_id,
+        request.role,
+    )
+
+    return AdminUserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        department=user.department,
+        status=user.status,
+    )
+

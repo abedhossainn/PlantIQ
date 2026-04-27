@@ -75,7 +75,7 @@ async def test_ldap_authentication():
     """Test LDAP authentication (mock mode)."""
     print("\n👤 Testing LDAP Authentication (Mock Mode)...")
     
-    ldap = LDAPClient(use_mock=True)
+    ldap = LDAPClient()
     
     # Test successful authentication
     result = await ldap.authenticate("admin", "admin123")

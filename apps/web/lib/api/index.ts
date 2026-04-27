@@ -11,3 +11,4 @@ export * from './pipeline/index';
 export * from './chat';
 export * from './websocket';
 export * from './optimized-review';
+export * from './users';

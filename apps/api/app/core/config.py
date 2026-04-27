@@ -52,9 +52,21 @@ class Settings(BaseSettings):
     JWT_PUBLIC_KEY_PATH: str = str(REPO_ROOT / "backend" / "secrets" / "jwt-public.pem")
     
     # LDAP
-    LDAP_SERVER: str = Field(default="ldap://localhost:389", validation_alias="LDAP_SERVER")
+    # LDAP_SERVER and LDAP_SERVER_URL are accepted interchangeably.
+    LDAP_SERVER: str = Field(
+        default="ldap://localhost:389",
+        validation_alias=AliasChoices("LDAP_SERVER", "LDAP_SERVER_URL"),
+    )
     LDAP_BASE_DN: str = Field(default="dc=example,dc=com", validation_alias="LDAP_BASE_DN")
-    LDAP_MOCK: bool = Field(default=True, validation_alias="LDAP_MOCK")
+    # LDAP_MOCK and USE_MOCK_LDAP are accepted interchangeably.
+    LDAP_MOCK: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("LDAP_MOCK", "USE_MOCK_LDAP"),
+    )
+    # Bind credentials for LDAP service account (never log).
+    LDAP_BIND_DN: str = Field(default="", validation_alias="LDAP_BIND_DN")
+    LDAP_BIND_PASSWORD: str = Field(default="", validation_alias="LDAP_BIND_PASSWORD")
+    LDAP_USER_SEARCH_BASE: str = Field(default="", validation_alias="LDAP_USER_SEARCH_BASE")
     
     # Pipeline
     PIPELINE_WORK_DIR: str = Field(

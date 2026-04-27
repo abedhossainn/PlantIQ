@@ -432,3 +432,111 @@ class AuthService:
 
         logger.info("Password changed successfully for user %s", user_id)
         return True
+
+    @staticmethod
+    async def list_users(
+        db: AsyncSession,
+        page: int = 1,
+        page_size: int = 50,
+        search: Optional[str] = None,
+    ):
+        """List users stored in the local DB (LDAP-backed identities only).
+
+        Only users who have logged in via LDAP are present in the DB — the DB is
+        never the source of truth for identity existence, only for role mapping
+        and profile sync data.
+
+        Args:
+            db: Database session.
+            page: 1-based page number.
+            page_size: Maximum records per page (capped at 200).
+            search: Optional substring to filter on username or full_name.
+
+        Returns:
+            Tuple of (items: list[User], total: int).
+        """
+        from sqlalchemy import func, or_
+
+        page_size = min(page_size, 200)
+        offset = (max(page, 1) - 1) * page_size
+
+        base_query = select(User)
+        count_query = select(func.count()).select_from(User)
+
+        if search:
+            like_expr = f"%{search}%"
+            filter_clause = or_(
+                User.username.ilike(like_expr),
+                User.full_name.ilike(like_expr),
+            )
+            base_query = base_query.where(filter_clause)
+            count_query = count_query.where(filter_clause)
+
+        total_result = await db.execute(count_query)
+        total = total_result.scalar_one()
+
+        users_result = await db.execute(
+            base_query.order_by(User.username).offset(offset).limit(page_size)
+        )
+        users = list(users_result.scalars().all())
+        return users, total
+
+    @staticmethod
+    async def update_user_role(
+        target_user_id: uuid.UUID,
+        new_role: str,
+        caller_user_id: uuid.UUID,
+        caller_role: str,
+        db: AsyncSession,
+    ) -> Optional[User]:
+        """Update the role of an existing LDAP-backed user (admin only).
+
+        Role escalation safeguards:
+        - Caller cannot update their own role (self-escalation prevention).
+        - Only a plantig_admin / admin caller can assign the plantig_admin role.
+        - Caller must already hold an admin-tier role (enforced at endpoint level
+          via require_admin, but validated defensively here too).
+
+        Args:
+            target_user_id: UUID of the user whose role is being changed.
+            new_role: The new role value.
+            caller_user_id: UUID of the admin making the request.
+            caller_role: Role of the admin making the request (from JWT).
+            db: Database session.
+
+        Returns:
+            Updated User object, or None if the target user does not exist.
+
+        Raises:
+            PermissionError: If escalation rules are violated.
+        """
+        if target_user_id == caller_user_id:
+            raise PermissionError("Admins cannot update their own role.")
+
+        # Only plantig_admin callers may grant the plantig_admin role.
+        if new_role == "plantig_admin" and caller_role not in {"plantig_admin", "admin"}:
+            raise PermissionError(
+                "Insufficient privilege: only plantig_admin may assign plantig_admin role."
+            )
+
+        result = await db.execute(select(User).where(User.id == target_user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return None
+
+        old_role = user.role
+        user.role = new_role
+        user.updated_at = _utcnow_naive()
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info(
+            "Role updated for user %s (%s): %s → %s by admin %s",
+            user.username,
+            target_user_id,
+            old_role,
+            new_role,
+            caller_user_id,
+        )
+        return user
+

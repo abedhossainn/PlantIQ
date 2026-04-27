@@ -52,3 +52,38 @@ class RefreshTokenRequest(BaseModel):
 class LogoutRequest(BaseModel):
     """Logout request (token comes from HttpOnly cookie)."""
     pass  # Token extracted from cookie by endpoint
+
+
+# ---------------------------------------------------------------------------
+# Admin — user listing (LDAP-backed identities only; read-only)
+# ---------------------------------------------------------------------------
+
+class AdminUserResponse(BaseModel):
+    """Single user record returned by admin listing or role-update endpoints."""
+    id: UUID
+    username: str
+    email: str
+    full_name: str
+    role: str
+    department: Optional[str]
+    status: str
+
+
+class AdminUsersListResponse(BaseModel):
+    """Paginated list of users returned by GET /api/v1/auth/admin/users."""
+    items: List[AdminUserResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+# ---------------------------------------------------------------------------
+# Admin — role update (the only writable operation allowed on LDAP identities)
+# ---------------------------------------------------------------------------
+
+_VALID_ROLES = r"^(admin|user|reviewer|plantig_admin|plantig_reviewer)$"
+
+
+class AdminUpdateRoleRequest(BaseModel):
+    """Request body for PATCH /api/v1/auth/admin/users/{user_id}/role."""
+    role: str = Field(..., pattern=_VALID_ROLES)

@@ -1,0 +1,76 @@
+# PlantIQ local dev LDAP seed — dc=plantiq,dc=local
+# DEV/DEMO ONLY — do not use in production.
+# Applied by osixia/openldap on first start via --copy-service bootstrap.
+# The root DN (dc=plantiq,dc=local) is created automatically by the container.
+
+# ── Organisational Units ─────────────────────────────────────────────────────
+
+dn: ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=plantiq,dc=local
+objectClass: top
+objectClass: organizationalUnit
+ou: groups
+
+# ── Demo users ───────────────────────────────────────────────────────────────
+# Passwords are dev placeholders — change for any non-local environment.
+
+dn: uid=alice,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: alice
+cn: Alice Admin
+sn: Admin
+givenName: Alice
+mail: alice@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1001
+gidNumber: 1001
+homeDirectory: /home/alice
+
+dn: uid=bob,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: bob
+cn: Bob Operator
+sn: Operator
+givenName: Bob
+mail: bob@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1002
+gidNumber: 1002
+homeDirectory: /home/bob
+
+dn: uid=carol,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: carol
+cn: Carol Reviewer
+sn: Reviewer
+givenName: Carol
+mail: carol@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1003
+gidNumber: 1003
+homeDirectory: /home/carol
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+
+dn: cn=plantiq-admins,ou=groups,dc=plantiq,dc=local
+objectClass: top
+objectClass: groupOfNames
+cn: plantiq-admins
+member: uid=alice,ou=users,dc=plantiq,dc=local
+
+dn: cn=plantiq-users,ou=groups,dc=plantiq,dc=local
+objectClass: top
+objectClass: groupOfNames
+cn: plantiq-users
+member: uid=bob,ou=users,dc=plantiq,dc=local
+member: uid=carol,ou=users,dc=plantiq,dc=local

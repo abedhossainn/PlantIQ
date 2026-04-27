@@ -56,7 +56,14 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
    - Rolling quality snapshots and negative-pattern flagging in `answer_quality_snapshots`
    - Admin/reviewer metrics panel at `GET /api/v1/chat/feedback/metrics` (role-gated)
 
-5. **Hybrid retrieval with explainability (Candidate 4 — Option B)**
+5. **LDAP-backed user management (identity source of truth)**
+   - LDAP is the authoritative source for user identities; the PlantIQ UI cannot create or delete users
+   - `GET /api/v1/auth/admin/users` returns paginated list of LDAP-backed users (admin only)
+   - `PATCH /api/v1/auth/admin/users/{user_id}/role` allows role updates only (no self-update; non-admin cannot assign `plantiq_admin`)
+   - `POST /api/v1/auth/admin/users` removed and returns **410 Gone** — user creation must go through LDAP/AD provisioning
+   - Admin UI shows users sourced from LDAP; role-only editing is the only permitted mutation
+
+6. **Hybrid retrieval with explainability (Candidate 4 — Option B)**
    - BM25 lexical and dense vector retrieval run as independent branches
    - Application-layer weighted-RRF fusion with one-branch-failure fallback
    - Per-result provenance attribution (lexical score, vector score, fusion weight) preserved in retrieval diagnostics
@@ -87,6 +94,9 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 | POST | `/api/v1/chat/query` | user+ | Scoped RAG query (SSE stream) |
 | POST | `/api/v1/chat/feedback` | user+ | Submit thumbs up/down feedback on an answer |
 | GET | `/api/v1/chat/feedback/metrics` | admin/reviewer | Aggregate feedback quality metrics |
+| GET | `/api/v1/auth/admin/users` | admin | Paginated list of LDAP-backed users |
+| PATCH | `/api/v1/auth/admin/users/{user_id}/role` | admin | Update a user's role (role updates only) |
+| ~~POST~~ | ~~`/api/v1/auth/admin/users`~~ | — | **410 Gone** — user creation via UI removed; provision through LDAP/AD |
 
 See [docs/api/chat_feedback.md](docs/api/chat_feedback.md) for full request/response contracts.
 
@@ -158,6 +168,30 @@ llm-rag-chatbot/
 - `make docker-build`
 - `make docker-up`
 
+### Local LDAP (dev)
+
+The stack starts a local OpenLDAP container (`bitnami/openldap:2.6`, `dc=plantiq,dc=local`) seeded with demo users from [`infra/docker/ldap/seed.ldif`](infra/docker/ldap/seed.ldif).
+
+**Verify LDAP is healthy after `make docker-up`:**
+
+```bash
+# List all users (anonymous read — confirms server is up and seed applied)
+docker exec plantiq-ldap ldapsearch -x -H ldap://localhost:1389 \
+  -b "ou=users,dc=plantiq,dc=local"
+
+# Authenticated search (bind as admin)
+docker exec plantiq-ldap ldapsearch -x -H ldap://localhost:1389 \
+  -D "cn=admin,dc=plantiq,dc=local" \
+  -w "PlantIQ_Dev_Admin_2026" \
+  -b "ou=users,dc=plantiq,dc=local" uid mail
+```
+
+**Seed demo users:** `alice` / `bob` / `carol` — password `DemoPass@2026` for all.
+
+**Toggle mock mode** (bypass real LDAP for unit tests): set `LDAP_MOCK=true` in `.env`.
+
+**Production AD wiring:** Replace the `LDAP_*` vars in `.env` with real AD values (see commented production profile in `.env.example`). Remove the `ldap` service from compose or leave it stopped.
+
 ### 4) View runtime logs
 
 - `make docker-logs`
@@ -209,15 +243,16 @@ llm-rag-chatbot/
 
 ## Known gaps (Beta)
 
-1. **Production AD integration** is not fully closed for enterprise rollout.
-2. **Final enterprise hardening** remains in progress (auth/governance/runtime hardening tasks).
-3. **Code-quality hardening** is active via remediation waves across backend/pipeline/frontend.
+1. **Production AD/LDAP integration:** LDAP-backed user management is implemented for local/dev environments. Production binding to a real AD/LDAP server requires environment-specific `LDAP_SERVER_URL`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD`, and `LDAP_USER_SEARCH_BASE` to be configured.
+2. **User creation/deletion must go through LDAP/AD** — PlantIQ UI intentionally has no user-provisioning capability.
+3. **Final enterprise hardening** remains in progress (governance/runtime hardening tasks).
+4. **Code-quality hardening** is active via remediation waves across backend/pipeline/frontend.
 
 ---
 
 ## Immediate next priorities
 
-1. Complete production-grade AD/LDAP integration validation.
+1. Configure production LDAP/AD binding credentials and validate against real directory.
 2. Close remaining hardening tasks on ingestion/chat critical paths.
 3. Finish outstanding code-quality remediation waves (Sonar Waves 2–4) and re-verify regressions.
 4. Finalize Beta evidence packaging and readiness for final checkpoint signoff.

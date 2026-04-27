@@ -4,102 +4,127 @@
  * Users Administration Page
  *
  * Purpose:
- * - Displays user directory with role and status controls for admins.
- * - Supports local role/status overrides for prototype and demo workflows.
+ * - Displays user directory sourced from backend LDAP-backed endpoint.
+ * - Supports role updates only; user creation is managed exclusively through LDAP.
  * - Provides quick team-level metrics (active users, role distribution).
  *
  * Data source model:
- * - Starts from fixture data (`mockUsers`) for deterministic local behavior.
- * - Applies runtime overrides from localStorage for persistence across refreshes.
- * - Keeps view reactive without requiring live identity provider integration.
+ * - Users are fetched from GET /api/v1/auth/admin/users on mount.
+ * - Role changes are persisted via PATCH /api/v1/auth/admin/users/{id}/role.
  *
- * Persistence strategy:
- * - `plantiq-role-overrides`: record of userId -> role updates.
- * - `plantiq-status-overrides`: record of userId -> active/disabled state.
- * - On mount, merges override maps into fixture dataset.
+ * LDAP policy:
+ * - No user creation from the PlantIQ web UI.
+ * - No status toggling — account activation is managed in the identity directory.
+ * - Only role assignment is writable from this page.
  *
  * Security note:
- * - This page is UI-only administration for prototype mode.
- * - Authoritative access control must still be enforced server-side.
- *
- * Why localStorage here:
- * - Enables role/status UI demonstrations without backend write endpoints.
- * - Keeps changes stable during QA sessions and stakeholder demos.
+ * - Authoritative access control is enforced server-side.
+ * - Backend rejects self-role-escalation with 403.
  */
 
 import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/shared/AppLayout";
 import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Users, UserPlus, Mail, Building2, Clock, ShieldCheck, User2 } from "lucide-react";
-import { mockUsers as fixtureUsers } from "@/lib/fixtures";
+import { Users, Mail, Building2, Clock, ShieldCheck, User2, AlertCircle, Loader2 } from "lucide-react";
+import { getAdminUsers, patchUserRole, ApiError } from "@/lib/api";
 import type { User } from "@/types";
 
 type Role = "admin" | "user";
 
-export default function UsersPage() {
-  // `userList` is the rendered source-of-truth after applying local overrides.
-  const [userList, setUserList] = useState<User[]>(fixtureUsers);
-  // Tracks role edits so UI can surface unsaved/modified state if needed.
-  const [changedRoles, setChangedRoles] = useState<Record<string, Role>>({});
+function mapApiUserToUser(u: {
+  id: string;
+  username: string;
+  email: string;
+  full_name: string;
+  role: string;
+  department: string | null;
+  status: string;
+}): User {
+  return {
+    id: u.id,
+    username: u.username,
+    email: u.email,
+    fullName: u.full_name,
+    role: u.role as User["role"],
+    department: u.department ?? "",
+    status: u.status as "active" | "disabled",
+    lastLogin: null,
+  };
+}
 
-  // Load persisted role / status overrides from localStorage on mount
+export default function UsersPage() {
+  const [userList, setUserList] = useState<User[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Per-user role change error (keyed by user ID)
+  const [roleErrors, setRoleErrors] = useState<Record<string, string>>({});
+
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const roles = JSON.parse(localStorage.getItem("plantiq-role-overrides") ?? "{}");
-      const statuses = JSON.parse(localStorage.getItem("plantiq-status-overrides") ?? "{}");
-      const hasOverrides = Object.keys(roles).length > 0 || Object.keys(statuses).length > 0;
-      if (hasOverrides) {
-        setUserList((prev) =>
-          prev.map((u) => ({
-            ...u,
-            ...(roles[u.id] ? { role: roles[u.id] as Role } : {}),
-            ...(statuses[u.id] ? { status: statuses[u.id] as "active" | "disabled" } : {}),
-          }))
-        );
-        setChangedRoles(roles);
+    let cancelled = false;
+
+    async function loadUsers() {
+      setIsLoading(true);
+      setFetchError(null);
+      try {
+        const response = await getAdminUsers();
+        if (!cancelled) {
+          setUserList(response.items.map(mapApiUserToUser));
+        }
+      } catch {
+        if (!cancelled) {
+          setFetchError("Failed to load users. Please refresh the page.");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     }
+
+    loadUsers();
+    return () => { cancelled = true; };
   }, []);
 
   const admins = userList.filter((u) => u.role === "admin");
   const users = userList.filter((u) => u.role === "user");
-
   const totalActive = userList.filter((u) => u.status === "active").length;
 
-  function changeRole(userId: string, newRole: Role) {
-    // Optimistically update UI before persistence for snappy interaction.
-    setChangedRoles((prev) => ({ ...prev, [userId]: newRole }));
+  async function changeRole(userId: string, newRole: Role) {
+    // Capture previous role for rollback on error.
+    const prevUser = userList.find((u) => u.id === userId);
+    const prevRole = prevUser?.role as Role | undefined;
+
+    // Optimistic update
     setUserList((prev) =>
       prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
     );
-    // Persist to localStorage
-    if (typeof window !== "undefined") {
-      const stored = JSON.parse(localStorage.getItem("plantiq-role-overrides") ?? "{}");
-      stored[userId] = newRole;
-      localStorage.setItem("plantiq-role-overrides", JSON.stringify(stored));
-    }
-  }
+    setRoleErrors((prev) => {
+      const next = { ...prev };
+      delete next[userId];
+      return next;
+    });
 
-  function toggleStatus(userId: string) {
-    // Toggle account status in-memory and persist override locally.
-    // Backend integration can replace this path in production mode.
-    setUserList((prev) =>
-      prev.map((u) =>
-        u.id === userId
-          ? { ...u, status: u.status === "active" ? "disabled" : "active" }
-          : u
-      )
-    );
-    // Persist to localStorage
-    if (typeof window !== "undefined") {
-      const stored = JSON.parse(localStorage.getItem("plantiq-status-overrides") ?? "{}");
-      const current = userList.find((u) => u.id === userId);
-      stored[userId] = current?.status === "active" ? "disabled" : "active";
-      localStorage.setItem("plantiq-status-overrides", JSON.stringify(stored));
+    try {
+      await patchUserRole(userId, newRole);
+    } catch (err) {
+      // Revert optimistic update
+      if (prevRole) {
+        setUserList((prev) =>
+          prev.map((u) => (u.id === userId ? { ...u, role: prevRole } : u))
+        );
+      }
+      let message = "Role update failed. Please try again.";
+      if (err instanceof ApiError) {
+        if (err.status === 403) {
+          message = "You cannot change your own role.";
+        } else if (err.status === 404) {
+          message = "User not found.";
+        }
+      }
+      setRoleErrors((prev) => ({ ...prev, [userId]: message }));
     }
   }
 
@@ -114,35 +139,51 @@ export default function UsersPage() {
               User Management
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Manage accounts and role-based access for Cove Point LNG
+              Manage role-based access for Cove Point LNG
             </p>
           </div>
-          <Button className="gap-2 font-semibold">
-            <UserPlus className="h-4 w-4" />
-            Add User
-          </Button>
         </div>
+
 
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-5xl mx-auto space-y-6">
             <Card className="p-4 border border-amber-400/30 bg-amber-400/5">
-              <p className="text-sm font-semibold text-amber-300">Scope governance is enforced by backend policy</p>
+              <p className="text-sm font-semibold text-amber-300">Users are managed through the identity directory</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Role changes on this page are demo-oriented. Upload and chat access are authorized server-side by system/area scope rules, and users may still receive scope-denied responses when requesting restricted areas.
+                Accounts are provisioned and deactivated via LDAP. Only role assignments can be changed from this page.
+                Upload and chat access remain governed by server-side scope rules.
               </p>
             </Card>
 
-            {/* Role distribution stats */}
-            <div className="grid grid-cols-3 gap-4">
-              {[
-                { label: "Admins", count: admins.length, color: "text-primary", bg: "bg-primary/10 border-primary/30", icon: <ShieldCheck className="h-5 w-5 text-primary" /> },
-                { label: "Users", count: users.length, color: "text-zinc-300", bg: "bg-zinc-400/10 border-zinc-400/30", icon: <User2 className="h-5 w-5 text-zinc-400" /> },
-                { label: "Active", count: totalActive, color: "text-green-400", bg: "bg-green-400/10 border-green-400/30", icon: <Users className="h-5 w-5 text-green-400" /> },
-              ].map(({ label, count, color, bg, icon }) => (
-                <Card key={label} className={`p-4 border ${bg}`}>
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-card border border-border shrink-0">
-                      {icon}
+            {/* Fetch error */}
+            {fetchError && (
+              <Card className="p-4 border border-red-400/30 bg-red-400/5 flex items-center gap-3">
+                <AlertCircle className="h-5 w-5 text-red-400 shrink-0" />
+                <p className="text-sm text-red-400">{fetchError}</p>
+              </Card>
+            )}
+
+            {/* Loading state */}
+            {isLoading && (
+              <div className="flex items-center justify-center py-12 text-muted-foreground gap-2">
+                <Loader2 className="h-5 w-5 animate-spin" />
+                <span className="text-sm">Loading users…</span>
+              </div>
+            )}
+
+            {!isLoading && !fetchError && (
+              <>
+                {/* Role distribution stats */}
+                <div className="grid grid-cols-3 gap-4">
+                  {[
+                    { label: "Admins", count: admins.length, color: "text-primary", bg: "bg-primary/10 border-primary/30", icon: <ShieldCheck className="h-5 w-5 text-primary" /> },
+                    { label: "Users", count: users.length, color: "text-zinc-300", bg: "bg-zinc-400/10 border-zinc-400/30", icon: <User2 className="h-5 w-5 text-zinc-400" /> },
+                    { label: "Active", count: totalActive, color: "text-green-400", bg: "bg-green-400/10 border-green-400/30", icon: <Users className="h-5 w-5 text-green-400" /> },
+                  ].map(({ label, count, color, bg, icon }) => (
+                    <Card key={label} className={`p-4 border ${bg}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-card border border-border shrink-0">
+                          {icon}
                     </div>
                     <div>
                       <p className={`text-2xl font-bold leading-none ${color}`}>{count}</p>
@@ -155,25 +196,19 @@ export default function UsersPage() {
 
             {/* Users table */}
             <Card className="overflow-hidden border-border">
-              <div className="px-4 py-3 border-b border-border bg-muted/40 flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-border bg-muted/40">
                 <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
                   All Users ({userList.length})
                 </h2>
-                {Object.keys(changedRoles).length > 0 && (
-                  <Badge variant="outline" className="text-xs text-amber-400 border-amber-400/30 bg-amber-400/10">
-                    {Object.keys(changedRoles).length} role(s) changed
-                  </Badge>
-                )}
               </div>
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/30 hover:bg-muted/30 border-border">
                     <TableHead className="font-semibold text-foreground">User</TableHead>
-                    <TableHead className="font-semibold text-foreground w-36">Role</TableHead>
+                    <TableHead className="font-semibold text-foreground w-48">Role</TableHead>
                     <TableHead className="font-semibold text-foreground">Department</TableHead>
                     <TableHead className="font-semibold text-foreground">Last Login</TableHead>
                     <TableHead className="font-semibold text-foreground w-24 text-center">Status</TableHead>
-                    <TableHead className="font-semibold text-foreground text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -197,24 +232,32 @@ export default function UsersPage() {
                         </div>
                       </TableCell>
 
-                      {/* Role — inline dropdown (US-3.2) */}
+                      {/* Role — inline dropdown */}
                       <TableCell className="py-4">
-                        <Select
-                          value={u.role}
-                          onValueChange={(val) => changeRole(u.id, val as Role)}
-                        >
-                          <SelectTrigger className="h-8 text-xs w-[130px] bg-card border-border">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="admin">
-                              <span className="text-primary font-medium">Admin</span>
-                            </SelectItem>
-                            <SelectItem value="user">
-                              <span className="text-zinc-300 font-medium">User</span>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
+                        <div className="space-y-1">
+                          <Select
+                            value={u.role === "admin" || u.role === "user" ? u.role : "user"}
+                            onValueChange={(val) => changeRole(u.id, val as Role)}
+                          >
+                            <SelectTrigger className="h-8 text-xs w-[130px] bg-card border-border" aria-label={`Role for ${u.fullName}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="admin">
+                                <span className="text-primary font-medium">Admin</span>
+                              </SelectItem>
+                              <SelectItem value="user">
+                                <span className="text-zinc-300 font-medium">User</span>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          {roleErrors[u.id] && (
+                            <p className="text-xs text-red-400 flex items-center gap-1">
+                              <AlertCircle className="h-3 w-3 shrink-0" />
+                              {roleErrors[u.id]}
+                            </p>
+                          )}
+                        </div>
                       </TableCell>
 
                       {/* Department */}
@@ -233,7 +276,7 @@ export default function UsersPage() {
                         </span>
                       </TableCell>
 
-                      {/* Status */}
+                      {/* Status (read-only) */}
                       <TableCell className="py-4 text-center">
                         <Badge
                           variant="outline"
@@ -246,30 +289,17 @@ export default function UsersPage() {
                           {u.status === "active" ? "Active" : "Disabled"}
                         </Badge>
                       </TableCell>
-
-                      {/* Actions */}
-                      <TableCell className="py-4 text-right">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className={`text-xs h-8 px-3 ${
-                            u.status === "active"
-                              ? "text-red-400 border-red-400/30 hover:bg-red-400/10"
-                              : "text-green-400 border-green-400/30 hover:bg-green-400/10"
-                          }`}
-                          onClick={() => toggleStatus(u.id)}
-                        >
-                          {u.status === "active" ? "Disable" : "Enable"}
-                        </Button>
-                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
               </Table>
             </Card>
+          </>
+          )}
           </div>
         </div>
       </div>
     </AppLayout>
   );
 }
+
