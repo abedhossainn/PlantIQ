@@ -15,6 +15,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install API test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+
+      - name: Run backend unit tests with coverage
+        run: |
+          mkdir -p apps/api/tests/reports
+          pytest apps/api/tests \
+            --cov=apps/api/app \
+            --cov-report=xml:apps/api/tests/reports/coverage.xml \
+            --junitxml=apps/api/tests/reports/junit.xml
       
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -57,4 +75,7 @@ jobs:
             -Dsonar.login="${SONAR_TOKEN}" \
             -Dsonar.projectKey=PlantIQ \
             -Dsonar.sources=. \
+            -Dsonar.tests=apps/api/tests,apps/web/tests \
+            -Dsonar.python.coverage.reportPaths=apps/api/tests/reports/coverage.xml \
+            -Dsonar.python.xunit.reportPath=apps/api/tests/reports/junit.xml \
             -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/.metrics-venv/**,**/test_keys/**,**/.github/actions-runner/**
