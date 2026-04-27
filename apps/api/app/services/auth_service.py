@@ -179,14 +179,21 @@ class AuthService:
     @staticmethod
     async def _get_or_create_user(ldap_user, db: AsyncSession) -> User:
         """Get existing user or create new one from LDAP data."""
-        # Try to find existing user
+        # Try to find existing user by username first, then by email
         result = await db.execute(
             select(User).where(User.username == ldap_user.username)
         )
         user = result.scalar_one_or_none()
-        
+
+        if not user:
+            result = await db.execute(
+                select(User).where(User.email == ldap_user.email)
+            )
+            user = result.scalar_one_or_none()
+
         if user:
             # Update user info from LDAP
+            user.username = ldap_user.username
             user.email = ldap_user.email
             user.full_name = ldap_user.full_name
             user.department = ldap_user.department
