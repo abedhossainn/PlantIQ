@@ -36,7 +36,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Users, UserPlus, Mail, Building2, Clock, ShieldCheck, User2 } from "lucide-react";
 import { mockUsers as fixtureUsers } from "@/lib/fixtures";
-import { RoleBadge } from "@/components/shared/RoleBadge";
 import type { User } from "@/types";
 
 type Role = "admin" | "user";
@@ -46,8 +45,6 @@ export default function UsersPage() {
   const [userList, setUserList] = useState<User[]>(fixtureUsers);
   // Tracks role edits so UI can surface unsaved/modified state if needed.
   const [changedRoles, setChangedRoles] = useState<Record<string, Role>>({});
-  // Tracks active/disabled toggles similarly to roles.
-  const [toggledStatuses, setToggledStatuses] = useState<Record<string, "active" | "disabled">>({});
 
   // Load persisted role / status overrides from localStorage on mount
   useEffect(() => {
@@ -128,6 +125,13 @@ export default function UsersPage() {
 
         <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-6 max-w-5xl mx-auto space-y-6">
+            <Card className="p-4 border border-amber-400/30 bg-amber-400/5">
+              <p className="text-sm font-semibold text-amber-300">Scope governance is enforced by backend policy</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Role changes on this page are demo-oriented. Upload and chat access are authorized server-side by system/area scope rules, and users may still receive scope-denied responses when requesting restricted areas.
+              </p>
+            </Card>
+
             {/* Role distribution stats */}
             <div className="grid grid-cols-3 gap-4">
               {[

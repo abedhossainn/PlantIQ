@@ -18,17 +18,6 @@ export const WORKSPACE_OPTIONS = [
   "Mechanical",
 ];
 
-export const CHAT_DOCUMENT_TYPE_OPTIONS = [
-  "Operating Manual",
-  "Maintenance Manual",
-  "Troubleshooting Guide",
-  "Technical Manual",
-  "Technical Standard",
-  "P&ID Diagram",
-  "Procedure",
-  "Other",
-];
-
 export function getChatDiscoveryPreferencesKey(userId: string): string {
   return `chat_discovery_preferences:${userId}`;
 }

@@ -16,7 +16,16 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { CheckCircle2, Loader2, ArrowLeft, AlertCircle, XCircle, FileText } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ApiError, getPipelineStatus, uploadDocument, streamIngestionEvents, type PipelineStatus, type IngestionSSEEvent } from "@/lib/api";
+import {
+  ApiError,
+  formatScopeDeniedMessage,
+  getPipelineStatus,
+  parseScopeAccessDeniedPayload,
+  uploadDocument,
+  streamIngestionEvents,
+  type PipelineStatus,
+  type IngestionSSEEvent,
+} from "@/lib/api";
 import {
   PIPELINE_STAGES,
   MAX_UPLOAD_BYTES,
@@ -32,6 +41,12 @@ import { PipelineJobLog } from "@/components/shared/PipelineJobLog";
 // ---------------------------------------------------------------------------
 
 type StageStatus = "pending" | "active" | "complete" | "error";
+
+interface UploadScopeDenialState {
+  lockKey: string;
+  message: string;
+  reasonCode?: string;
+}
 
 const MAX_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024));
 
@@ -72,6 +87,10 @@ function toUploadErrorMessage(error: unknown): string {
   return "Upload failed";
 }
 
+function getUploadScopeKey(system: string): string {
+  return `system=${system.trim().toLowerCase()}`;
+}
+
 // ---------------------------------------------------------------------------
 // Upload Page
 // ---------------------------------------------------------------------------
@@ -88,12 +107,12 @@ export default function UploadPage() {
   const [title, setTitle] = useState("");
   const [version, setVersion] = useState("");
   const [system, setSystem] = useState("");
-  const [docType, setDocType] = useState("");
 
   // Transfer + pipeline state
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
+  const [scopeDeniedState, setScopeDeniedState] = useState<UploadScopeDenialState | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState<string>("");
@@ -106,6 +125,7 @@ export default function UploadPage() {
   const sawTerminalEventRef = useRef(false);
   const pollingCancelledRef = useRef(false);
   const terminalRef = useRef<HTMLDivElement>(null);
+  const currentUploadScopeKey = getUploadScopeKey(system);
 
   function isIngestionProcessingStatus(status: PipelineStatus): boolean {
     return status === "uploading" || status === "extracting" || status === "vlm-validating";
@@ -254,6 +274,17 @@ export default function UploadPage() {
   }, [resumeDocumentId]);
 
   useEffect(() => {
+    if (!scopeDeniedState) {
+      return;
+    }
+
+    if (scopeDeniedState.lockKey !== currentUploadScopeKey) {
+      setScopeDeniedState(null);
+      setUploadError(null);
+    }
+  }, [currentUploadScopeKey, scopeDeniedState]);
+
+  useEffect(() => {
     if (!logScrolledUp && terminalRef.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
@@ -269,6 +300,7 @@ export default function UploadPage() {
     const f = e.target.files?.[0] ?? null;
     setSelectedFile(f);
     setUploadError(null);
+    setScopeDeniedState(null);
     if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     if (f && !f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
       setUploadError("Only PDF files are supported");
@@ -284,6 +316,7 @@ export default function UploadPage() {
   function handleFileDrop(f: File) {
     setSelectedFile(f);
     setUploadError(null);
+    setScopeDeniedState(null);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     if (!f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
       setUploadError("Only PDF files are supported");
@@ -358,6 +391,7 @@ export default function UploadPage() {
     setUploading(true);
     setUploadError(null);
     setUploadWarning(null);
+    setScopeDeniedState(null);
     setDone(false);
     pollingCancelledRef.current = false;
     sawTerminalEventRef.current = false;
@@ -372,7 +406,6 @@ export default function UploadPage() {
         title: title.trim(),
         version: version.trim() || undefined,
         system: system || undefined,
-        documentType: docType || undefined,
       });
 
       setDocumentId(response.document_id);
@@ -381,7 +414,7 @@ export default function UploadPage() {
       if (typeof window !== "undefined") {
         localStorage.setItem(
           `plantiq-upload-preview-${response.document_id}`,
-          JSON.stringify({ title: title.trim(), version: version.trim() || "1.0", system: system || "—", docType: docType || "PDF" })
+          JSON.stringify({ title: title.trim(), version: version.trim() || "1.0", system: system || "—" })
         );
       }
 
@@ -405,14 +438,34 @@ export default function UploadPage() {
         }
       }
     } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        const denied = parseScopeAccessDeniedPayload(err.data);
+        if (denied) {
+          const requestedSystem = typeof denied.requested_scope?.system === "string"
+            ? denied.requested_scope.system
+            : system;
+          setScopeDeniedState({
+            lockKey: getUploadScopeKey(requestedSystem),
+            message: formatScopeDeniedMessage(denied),
+            reasonCode: denied.reason_code,
+          });
+          setUploadError(
+            `Scope access denied for this upload request. ${formatScopeDeniedMessage(denied)} Change System / Area and retry.`
+          );
+          setUploading(false);
+          return;
+        }
+      }
+
       setUploadError(toUploadErrorMessage(err));
       setUploading(false);
     }
   }
 
   function handleReset() {
-    setSelectedFile(null); setTitle(""); setVersion(""); setSystem(""); setDocType("");
+    setSelectedFile(null); setTitle(""); setVersion(""); setSystem("");
     setUploading(false); setUploadError(null); setUploadWarning(null);
+    setScopeDeniedState(null);
     setDocumentId(null); setProgress(0);
     setStatusMessage(""); setStageStatuses({});
     setDone(false); setLogLines([]); setLogScrolledUp(false);
@@ -420,7 +473,8 @@ export default function UploadPage() {
     pollingCancelledRef.current = true;
   }
 
-  const canSubmit = selectedFile && title.trim() && system && docType && !uploading;
+  const isScopeLocked = Boolean(scopeDeniedState && scopeDeniedState.lockKey === currentUploadScopeKey);
+  const canSubmit = selectedFile && title.trim() && system && !uploading && !isScopeLocked;
   const totalProgress = progress;
 
   // Derive collapsible step groups from the flat SSE log stream.
@@ -452,14 +506,19 @@ export default function UploadPage() {
                 title={title}
                 version={version}
                 system={system}
-                docType={docType}
                 canSubmit={!!canSubmit}
                 onFileChange={handleFileChange}
                 onFileDrop={handleFileDrop}
                 onTitleChange={setTitle}
                 onVersionChange={setVersion}
-                onSystemChange={setSystem}
-                onDocTypeChange={setDocType}
+                onSystemChange={(value) => {
+                  setSystem(value);
+                  if (scopeDeniedState) {
+                    setScopeDeniedState(null);
+                    setUploadError(null);
+                  }
+                }}
+                submitHint={isScopeLocked ? "Access denied for this System / Area. Select a permitted scope before retrying." : undefined}
                 onSubmit={() => void handleUpload()}
               />
             )}

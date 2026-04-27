@@ -27,14 +27,13 @@ interface UploadFormProps {
   title: string;
   version: string;
   system: string;
-  docType: string;
   canSubmit: boolean;
+  submitHint?: string;
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onFileDrop: (file: File) => void;
   onTitleChange: (v: string) => void;
   onVersionChange: (v: string) => void;
   onSystemChange: (v: string) => void;
-  onDocTypeChange: (v: string) => void;
   onSubmit: () => void;
 }
 
@@ -43,8 +42,9 @@ interface UploadFormProps {
 // ---------------------------------------------------------------------------
 
 export function UploadForm({
-  fileRef, selectedFile, title, version, system, docType, canSubmit,
-  onFileChange, onFileDrop, onTitleChange, onVersionChange, onSystemChange, onDocTypeChange, onSubmit,
+  fileRef, selectedFile, title, version, system, canSubmit,
+  submitHint,
+  onFileChange, onFileDrop, onTitleChange, onVersionChange, onSystemChange, onSubmit,
 }: UploadFormProps) {
   const [isDragging, setIsDragging] = useState(false);
 
@@ -149,22 +149,6 @@ export function UploadForm({
                 </Select>
               </div>
             </div>
-            <div>
-              <Label className="mb-1.5 block">Document Type</Label>
-              <Select onValueChange={onDocTypeChange}>
-                <SelectTrigger><SelectValue placeholder="Select document type" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Operating Manual">Operating Manual</SelectItem>
-                  <SelectItem value="Maintenance Manual">Maintenance Manual</SelectItem>
-                  <SelectItem value="Troubleshooting Guide">Troubleshooting Guide</SelectItem>
-                  <SelectItem value="Technical Manual">Technical Manual</SelectItem>
-                  <SelectItem value="Technical Standard">Technical Standard</SelectItem>
-                  <SelectItem value="P&ID Diagram">P&amp;ID Diagram</SelectItem>
-                  <SelectItem value="Procedure">Procedure</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
           </div>
         </div>
 
@@ -191,7 +175,11 @@ export function UploadForm({
               <Upload className="h-4 w-4" />
               Start Ingestion Pipeline
             </Button>
-            {!canSubmit && <p className="text-xs text-muted-foreground text-center mt-2">Complete steps 1 and 2 to continue</p>}
+            {!canSubmit && (
+              <p className="text-xs text-muted-foreground text-center mt-2">
+                {submitHint ?? "Complete steps 1 and 2 to continue"}
+              </p>
+            )}
           </div>
         </div>
 

@@ -46,7 +46,6 @@ export function useConversations({
   const [conversationWorkspaceFilter, setConversationWorkspaceFilter] = useState<string>(DEFAULT_CONVERSATION_WORKSPACE_FILTER);
   const [showPinnedOnly, setShowPinnedOnly] = useState<boolean>(false);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("Liquefaction");
-  const [selectedDocumentType, setSelectedDocumentType] = useState<string>("all");
   const [includeSharedDocuments, setIncludeSharedDocuments] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -73,13 +72,9 @@ export function useConversations({
 
   function applyConversationScope(scope: {
     workspace?: string;
-    preferredDocumentTypes?: string[];
-    documentTypeFilters?: string[];
     includeSharedDocuments?: boolean;
   }) {
     if (scope.workspace) setSelectedWorkspace(scope.workspace);
-    const docType = scope.preferredDocumentTypes?.[0] || scope.documentTypeFilters?.[0];
-    setSelectedDocumentType(docType || "all");
     if (typeof scope.includeSharedDocuments === "boolean") {
       setIncludeSharedDocuments(scope.includeSharedDocuments);
     }
@@ -123,14 +118,10 @@ export function useConversations({
     }
   }
 
-  const selectedScopeDocumentTypes = selectedDocumentType !== "all" ? [selectedDocumentType] : undefined;
   const scopeIsDirty = Boolean(
     activeConversationSummary &&
       ((activeConversationSummary.workspace || "") !== selectedWorkspace ||
-        (activeConversationSummary.includeSharedDocuments ?? true) !== includeSharedDocuments ||
-        (activeConversationSummary.preferredDocumentTypes?.[0] ||
-          activeConversationSummary.documentTypeFilters?.[0] ||
-          "all") !== selectedDocumentType)
+        (activeConversationSummary.includeSharedDocuments ?? true) !== includeSharedDocuments)
   );
 
   async function persistConversationScope() {
@@ -138,8 +129,6 @@ export function useConversations({
     try {
       const updated = await updateConversationScope(conversationId, {
         workspace: selectedWorkspace,
-        documentTypeFilters: selectedScopeDocumentTypes,
-        preferredDocumentTypes: selectedScopeDocumentTypes,
         includeSharedDocuments,
       });
       applyConversationScope(updated);
@@ -297,8 +286,6 @@ export function useConversations({
     setShowPinnedOnly,
     selectedWorkspace,
     setSelectedWorkspace,
-    selectedDocumentType,
-    setSelectedDocumentType,
     includeSharedDocuments,
     setIncludeSharedDocuments,
     isLoading,

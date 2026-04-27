@@ -45,7 +45,7 @@ export interface User {
   username: string;
   email: string;
   fullName: string;
-  role: "admin" | "user";
+  role: "admin" | "reviewer" | "plantig_admin" | "plantig_reviewer" | "user";
   lastLogin: string | null;
   status: "active" | "disabled";
   department: string;
@@ -112,6 +112,7 @@ export interface Citation {
   pageNumber: number;
   workspace?: string;
   system?: string;
+  /** @deprecated Document type scope is removed from UI (Candidate 5). Field retained for backward compat only. */
   documentType?: string;
   excerpt: string;
   relevanceScore: number;
@@ -146,7 +147,9 @@ export interface Conversation {
   lastMessageAt?: string | null;
   lastMessagePreview?: string | null;
   workspace?: string;
+  /** @deprecated Document type filters removed from UI (Candidate 5). Retained for reading legacy conversations only. */
   documentTypeFilters?: string[];
+  /** @deprecated Preferred document types removed from UI (Candidate 5). Retained for reading legacy conversations only. */
   preferredDocumentTypes?: string[];
   includeSharedDocuments?: boolean;
   messages: ChatMessage[];

@@ -67,7 +67,7 @@ interface BackendUserInfo {
   username: string;
   email: string;
   full_name: string;
-  role: "admin" | "user";
+  role: "admin" | "reviewer" | "plantig_admin" | "plantig_reviewer" | "user";
   department?: string | null;
   scope: string[];
 }

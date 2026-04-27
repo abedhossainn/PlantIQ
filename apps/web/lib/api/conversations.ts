@@ -274,8 +274,6 @@ export async function updateConversationScope(
   id: string,
   scope: {
     workspace?: string;
-    documentTypeFilters?: string[];
-    preferredDocumentTypes?: string[];
     includeSharedDocuments?: boolean;
   }
 ): Promise<Conversation> {
@@ -285,8 +283,6 @@ export async function updateConversationScope(
       method: 'PATCH',
       body: JSON.stringify({
         workspace: scope.workspace,
-        document_type_filters: scope.documentTypeFilters,
-        preferred_document_types: scope.preferredDocumentTypes,
         include_shared_documents: scope.includeSharedDocuments,
       }),
     }

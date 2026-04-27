@@ -48,6 +48,70 @@ export class ApiError extends Error {
   }
 }
 
+export interface ScopeAccessDeniedPayload {
+  code: 'SCOPE_ACCESS_DENIED';
+  reason_code?: string;
+  message: string;
+  requested_scope?: Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getErrorPayloadNode(data: unknown): Record<string, unknown> | null {
+  if (!isRecord(data)) {
+    return null;
+  }
+
+  const detail = data.detail;
+  if (isRecord(detail)) {
+    return detail;
+  }
+
+  return data;
+}
+
+export function parseScopeAccessDeniedPayload(data: unknown): ScopeAccessDeniedPayload | null {
+  const payload = getErrorPayloadNode(data);
+  if (!payload) {
+    return null;
+  }
+
+  const code = payload.code;
+  if (code !== 'SCOPE_ACCESS_DENIED') {
+    return null;
+  }
+
+  const message = typeof payload.message === 'string' && payload.message.trim().length > 0
+    ? payload.message
+    : 'Access denied for the selected scope.';
+
+  return {
+    code: 'SCOPE_ACCESS_DENIED',
+    reason_code: typeof payload.reason_code === 'string' ? payload.reason_code : undefined,
+    message,
+    requested_scope: isRecord(payload.requested_scope) ? payload.requested_scope : undefined,
+  };
+}
+
+function formatRequestedScope(requestedScope?: Record<string, unknown>): string {
+  if (!requestedScope) {
+    return '';
+  }
+
+  const fields = Object.entries(requestedScope)
+    .filter(([, value]) => value !== undefined && value !== null && String(value).trim().length > 0)
+    .map(([key, value]) => `${key}: ${String(value)}`);
+
+  return fields.length > 0 ? ` (${fields.join(', ')})` : '';
+}
+
+export function formatScopeDeniedMessage(payload: ScopeAccessDeniedPayload): string {
+  const reason = payload.reason_code ? ` [${payload.reason_code}]` : '';
+  return `${payload.message}${reason}${formatRequestedScope(payload.requested_scope)}`;
+}
+
 /**
  * Retrieve JWT token from localStorage.
  * Returns null if running in non-browser context (SSR) or localStorage unreachable.

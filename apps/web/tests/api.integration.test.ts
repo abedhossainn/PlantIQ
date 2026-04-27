@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { consumeStreamingResponse, streamChatQuery, submitChatQuery } from '../lib/api/chat';
+import {
+  canAccessFeedbackMetrics,
+  consumeStreamingResponse,
+  getChatFeedbackMetrics,
+  streamChatQuery,
+  submitChatFeedback,
+  submitChatQuery,
+} from '../lib/api/chat';
 import type { Citation as ApiCitation } from '../lib/api/chat';
 import { getActiveConversation, getConversations, updateConversationPin, updateConversationScope, updateConversationTitle } from '../lib/api/conversations';
-import { fastapiFetch, from, getFastApiBaseUrl, postgrestFetch } from '../lib/api/client';
+import { ApiError, fastapiFetch, formatScopeDeniedMessage, from, getFastApiBaseUrl, parseScopeAccessDeniedPayload, postgrestFetch } from '../lib/api/client';
 import { deleteDocument, getDocuments } from '../lib/api/documents';
 import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus } from '../lib/document-status';
 import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
@@ -160,7 +167,7 @@ describe('frontend hybrid API integration contracts', () => {
     });
   });
 
-  it('submits scoped chat payload with workspace and document-type preferences', async () => {
+  it('submits scoped chat payload with workspace preference', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         message_id: 'msg-2',
@@ -174,8 +181,6 @@ describe('frontend hybrid API integration contracts', () => {
     await submitChatQuery({
       query: 'How do I start liquefaction?',
       workspace: 'Liquefaction',
-      document_type_filters: ['Procedure'],
-      preferred_document_types: ['Procedure'],
       include_shared_documents: true,
     });
 
@@ -183,11 +188,146 @@ describe('frontend hybrid API integration contracts', () => {
     expect(JSON.parse(options.body as string)).toEqual({
       query: 'How do I start liquefaction?',
       workspace: 'Liquefaction',
-      document_type_filters: ['Procedure'],
-      preferred_document_types: ['Procedure'],
       include_shared_documents: true,
       stream: false,
     });
+  });
+
+  it('submits Candidate 2 feedback payload with optional reason/comment fields', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        event_id: 'evt-1',
+        answer_message_id: '550e8400-e29b-41d4-a716-446655440000',
+        conversation_id: '550e8400-e29b-41d4-a716-446655440001',
+        timestamp: '2026-04-27T00:00:00Z',
+        snapshot: {
+          answer_message_id: '550e8400-e29b-41d4-a716-446655440000',
+          conversation_id: '550e8400-e29b-41d4-a716-446655440001',
+          feedback_count: 3,
+          positive_count: 2,
+          negative_count: 1,
+          negative_streak: 0,
+          quality_score: 0.33,
+          is_flagged: false,
+          last_feedback_at: '2026-04-27T00:00:00Z',
+        },
+      })
+    );
+
+    await submitChatFeedback({
+      answer_message_id: '550e8400-e29b-41d4-a716-446655440000',
+      conversation_id: '550e8400-e29b-41d4-a716-446655440001',
+      sentiment: 'down',
+      reason_code: 'INSUFFICIENT_DETAIL',
+      comment: 'Please include startup prerequisites.',
+      area_scope: 'Liquefaction',
+    });
+
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/chat/feedback');
+    expect(options.method).toBe('POST');
+    expect(JSON.parse(options.body as string)).toEqual({
+      answer_message_id: '550e8400-e29b-41d4-a716-446655440000',
+      conversation_id: '550e8400-e29b-41d4-a716-446655440001',
+      sentiment: 'down',
+      reason_code: 'INSUFFICIENT_DETAIL',
+      comment: 'Please include startup prerequisites.',
+      area_scope: 'Liquefaction',
+    });
+  });
+
+  it('normalizes feedback API error messages from backend detail payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'INVALID_FEEDBACK_TARGET',
+            message: 'Feedback can only target assistant answer messages.',
+          },
+        },
+        { status: 400, statusText: 'Bad Request' }
+      )
+    );
+
+    await expect(
+      submitChatFeedback({
+        answer_message_id: 'bad-id',
+        sentiment: 'up',
+      })
+    ).rejects.toMatchObject({
+      message: 'Feedback can only target assistant answer messages.',
+      status: 400,
+    });
+  });
+
+  it('fetches Candidate 2 feedback metrics with expected query parameters', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        window_days: 7,
+        total_feedback_events: 10,
+        positive_feedback_events: 8,
+        negative_feedback_events: 2,
+        flagged_answers: 1,
+        reason_breakdown: [{ reason_code: 'INACCURATE', count: 2 }],
+      })
+    );
+
+    const metrics = await getChatFeedbackMetrics({
+      window_days: 7,
+      area_scope: 'Liquefaction',
+    });
+
+    expect(metrics.total_feedback_events).toBe(10);
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/chat/feedback/metrics?window_days=7&area_scope=Liquefaction');
+  });
+
+  it('enforces role gating contract for feedback metrics visibility', () => {
+    expect(canAccessFeedbackMetrics('admin')).toBe(true);
+    expect(canAccessFeedbackMetrics('reviewer')).toBe(true);
+    expect(canAccessFeedbackMetrics('plantig_admin')).toBe(true);
+    expect(canAccessFeedbackMetrics('plantig_reviewer')).toBe(true);
+    expect(canAccessFeedbackMetrics('user')).toBe(false);
+    expect(canAccessFeedbackMetrics()).toBe(false);
+  });
+
+  it('parses Candidate 1 scope-denial contract for chat requests', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'SCOPE_ACCESS_DENIED',
+            reason_code: 'SYSTEM_SCOPE_RESTRICTED',
+            message: 'You are not permitted to query Liquefaction.',
+            requested_scope: {
+              workspace: 'Liquefaction',
+              include_shared_documents: true,
+            },
+          },
+        },
+        { status: 403, statusText: 'Forbidden' }
+      )
+    );
+
+    let thrown: unknown;
+    try {
+      await submitChatQuery({
+        query: 'How do I start liquefaction?',
+        workspace: 'Liquefaction',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ApiError);
+    const apiError = thrown as ApiError;
+    expect(apiError.status).toBe(403);
+
+    const denied = parseScopeAccessDeniedPayload(apiError.data);
+    expect(denied?.code).toBe('SCOPE_ACCESS_DENIED');
+    expect(denied?.reason_code).toBe('SYSTEM_SCOPE_RESTRICTED');
+    expect(denied?.requested_scope).toMatchObject({ workspace: 'Liquefaction' });
+    expect(formatScopeDeniedMessage(denied!)).toContain('SYSTEM_SCOPE_RESTRICTED');
   });
 
   it('hydrates persisted conversation scope metadata from conversation summaries', async () => {
@@ -390,8 +530,6 @@ describe('frontend hybrid API integration contracts', () => {
 
     const updatedConversation = await updateConversationScope('conv-2', {
       workspace: 'Mechanical',
-      documentTypeFilters: ['Maintenance Manual'],
-      preferredDocumentTypes: ['Maintenance Manual'],
       includeSharedDocuments: false,
     });
 
@@ -400,13 +538,10 @@ describe('frontend hybrid API integration contracts', () => {
     expect(patchOptions.method).toBe('PATCH');
     expect(JSON.parse(patchOptions.body as string)).toEqual({
       workspace: 'Mechanical',
-      document_type_filters: ['Maintenance Manual'],
-      preferred_document_types: ['Maintenance Manual'],
       include_shared_documents: false,
     });
 
     expect(updatedConversation.workspace).toBe('Mechanical');
-    expect(updatedConversation.preferredDocumentTypes).toEqual(['Maintenance Manual']);
     expect(updatedConversation.includeSharedDocuments).toBe(false);
   });
 
@@ -612,6 +747,47 @@ describe('frontend hybrid API integration contracts', () => {
     expect(formData.get('system')).toBe('LNG');
     expect(formData.get('document_type')).toBe('procedure');
     expect(formData.get('notes')).toBe('integration-test');
+  });
+
+  it('parses Candidate 1 scope-denial contract for upload requests', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'SCOPE_ACCESS_DENIED',
+            reason_code: 'SYSTEM_SCOPE_RESTRICTED',
+            message: 'Upload to this system is restricted.',
+            requested_scope: {
+              system: 'Power Block',
+            },
+          },
+        },
+        { status: 403, statusText: 'Forbidden' }
+      )
+    );
+
+    const file = new File(['%PDF-1.4'], 'manual.pdf', { type: 'application/pdf' });
+
+    let thrown: unknown;
+    try {
+      await uploadDocument({
+        file,
+        title: 'Restricted Upload',
+        system: 'Power Block',
+        documentType: 'Procedure',
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ApiError);
+    const apiError = thrown as ApiError;
+    expect(apiError.status).toBe(403);
+
+    const denied = parseScopeAccessDeniedPayload(apiError.data);
+    expect(denied?.code).toBe('SCOPE_ACCESS_DENIED');
+    expect(denied?.requested_scope).toMatchObject({ system: 'Power Block' });
+    expect(formatScopeDeniedMessage(denied!)).toContain('Power Block');
   });
 
   it('downloads artifacts using the backend route contract', async () => {
