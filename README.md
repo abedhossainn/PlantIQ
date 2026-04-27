@@ -14,7 +14,7 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 
 | Metric | Current value |
 |---|---|
-| User-story completion | **12 / 13 fully implemented**, **1 / 13 partial** |
+| User-story completion | **13 / 13 fully implemented** |
 | Core path status | **Implemented end to end** (ingestion + chat) |
 | Remaining major gap | **Production Active Directory integration + final enterprise hardening** |
 | Concurrency evidence | 100% success through 23-user OT-paced load profiles; latency inflection at 25 users |
@@ -38,12 +38,25 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
    - Publication to retrieval index
 
 2. **Scoped, citation-grounded chat**
-   - Workspace/document-type/shared scope filters
+   - System + area scope filters (document-type axis removed — see [ADR](docs/architecture/adr_scope_simplification.md))
    - Retrieved context assembly
    - Local generation
    - Source citations in responses
 
-3. **Operational controls and traceability**
+3. **User scope governance**
+   - Per-user system/area access policies stored and enforced server-side
+   - Upload and chat endpoints return `403 SCOPE_ACCESS_DENIED` for out-of-policy requests
+   - Full audit trail in `access_audit_logs`
+   - Frontend surfaces denial reason with actionable guidance; retry locked until scope corrected
+
+4. **Answer feedback loop**
+   - Thumbs up/down controls on assistant messages
+   - Optional reason code + comment capture
+   - Append-only feedback events preserved in `answer_feedback_events`
+   - Rolling quality snapshots and negative-pattern flagging in `answer_quality_snapshots`
+   - Admin/reviewer metrics panel at `GET /api/v1/chat/feedback/metrics` (role-gated)
+
+5. **Operational controls and traceability**
    - Lifecycle status tracking
    - Artifacts for validation/review/optimization/QA
    - Conversation persistence and bookmarks
@@ -55,6 +68,21 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 ### Chat runtime at a glance
 
 `query → scoped retrieval → context assembly → local generation → citations`
+
+---
+
+## Key API endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/auth/login` | — | Issue JWT |
+| POST | `/api/v1/documents/upload` | user+ | Upload document; enforces system/area scope policy |
+| GET | `/api/v1/documents` | user+ | List documents visible to caller's scope |
+| POST | `/api/v1/chat/query` | user+ | Scoped RAG query (SSE stream) |
+| POST | `/api/v1/chat/feedback` | user+ | Submit thumbs up/down feedback on an answer |
+| GET | `/api/v1/chat/feedback/metrics` | admin/reviewer | Aggregate feedback quality metrics |
+
+See [docs/api/chat_feedback.md](docs/api/chat_feedback.md) for full request/response contracts.
 
 ---
 
