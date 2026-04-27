@@ -1,0 +1,95 @@
+name: SonarQube Local Analysis
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and Analyze
+    runs-on: self-hosted
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install API test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "apps/api[dev]"
+          python -m pip install requests
+
+      - name: Prepare JWT keys for tests
+        run: |
+          mkdir -p apps/api/secrets
+          openssl genrsa -out apps/api/secrets/jwt-private.pem 2048
+          openssl rsa -in apps/api/secrets/jwt-private.pem -pubout -out apps/api/secrets/jwt-public.pem
+
+      - name: Run backend unit tests with coverage
+        timeout-minutes: 15
+        continue-on-error: true
+        run: |
+          mkdir -p apps/api/tests/reports
+          pytest apps/api/tests \
+            --maxfail=1 \
+            --cov=apps/api/app \
+            --cov-report=xml:apps/api/tests/reports/coverage.xml \
+            --junitxml=apps/api/tests/reports/junit.xml
+      
+      - name: Set up JDK 17
+        if: always()
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu' # Alternative distribution options are available
+
+      - name: Validate SonarQube secrets
+        if: always()
+        run: |
+          if [[ -z "${{ secrets.SONAR_TOKEN || secrets.SONARQUBE_TOKEN }}" ]]; then
+            echo "::error title=Missing secret::Set SONAR_TOKEN (or SONARQUBE_TOKEN) in GitHub repository secrets."
+            exit 1
+          fi
+          if [[ -z "${{ secrets.SONAR_HOST_URL }}" ]]; then
+            echo "::error title=Missing secret::Set SONAR_HOST_URL in GitHub repository secrets."
+            exit 1
+          fi
+
+      - name: Validate token against SonarQube API
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          response=$(curl -sS -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/authentication/validate" || true)
+          echo "Auth validation response: ${response}"
+          if [[ "${response}" != *'"valid":true'* ]]; then
+            echo "::error title=Invalid Sonar token::Token authentication failed. Regenerate a user token and update SONAR_TOKEN secret."
+            exit 1
+          fi
+          
+      - name: SonarQube Scan
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN || secrets.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          docker run --rm --network host \
+            -v "${GITHUB_WORKSPACE}:/usr/src" \
+            sonarsource/sonar-scanner-cli \
+            -Dsonar.host.url="${SONAR_HOST_URL}" \
+            -Dsonar.login="${SONAR_TOKEN}" \
+            -Dsonar.projectKey=PlantIQ \
+            -Dsonar.sources=. \
+            -Dsonar.tests=apps/api/tests,apps/web/tests \
+            -Dsonar.python.coverage.reportPaths=apps/api/tests/reports/coverage.xml \
+            -Dsonar.python.xunit.reportPath=apps/api/tests/reports/junit.xml \
+            -Dsonar.exclusions=**/node_modules/**,**/venv/**,**/.metrics-venv/**,**/test_keys/**,**/.github/actions-runner/**

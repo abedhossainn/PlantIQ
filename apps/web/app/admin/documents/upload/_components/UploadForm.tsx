@@ -88,7 +88,6 @@ export function UploadForm({
         </div>
         <div className="p-6">
           <div
-            className="flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border p-8 cursor-pointer hover:border-primary/60 hover:bg-primary/5 transition-colors"
             className={`flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-8 cursor-pointer transition-colors ${
               isDragging
                 ? "border-primary bg-primary/10"
