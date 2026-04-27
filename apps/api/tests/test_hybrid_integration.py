@@ -604,8 +604,9 @@ def test_chat_query_document_type_preference_no_longer_reorders_contexts(client:
 
     assert response.status_code == 200
     payload = response.json()
-    # Candidate 5: no doc-type boost applied; raw score order is preserved (0.90 > 0.86)
-    assert payload["citations"][0]["document_title"] == "Operations Manual"
+    # Candidate 5 remains true (document_type preference ignored), but Candidate 4
+    # hybrid lexical+dense fusion can reorder by query-term lexical relevance.
+    assert payload["citations"][0]["document_title"] == "Startup Procedure"
 
 
 def test_chat_query_normalizes_workspace_alias_before_search(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -1132,13 +1133,18 @@ def test_chat_query_retries_same_scope_with_relaxed_threshold_when_initial_searc
     payload = response.json()
     assert "Figure 1" in payload["content"]
     assert payload["citations"][0]["document_title"] == "Power Block Technical Standard"
-    assert len(search_calls) == 2
+    # Candidate 4 hybrid retrieval executes both dense and lexical branches:
+    # dense branch performs primary + relaxed-threshold retry, lexical branch runs once.
+    assert len(search_calls) == 3
     assert search_calls[0]["score_threshold"] == pytest.approx(0.7)
     assert search_calls[1]["score_threshold"] == pytest.approx(0.45)
+    assert search_calls[2]["score_threshold"] == pytest.approx(0.7)
     assert search_calls[0]["workspace_filter"] == "Power Block"
     assert search_calls[1]["workspace_filter"] == "Power Block"
+    assert search_calls[2]["workspace_filter"] == "Power Block"
     assert search_calls[0]["include_shared_documents"] is False
     assert search_calls[1]["include_shared_documents"] is False
+    assert search_calls[2]["include_shared_documents"] is False
 
 
 def test_chat_stream_emits_sse_tokens_and_done_marker(client: TestClient, fake_db: FakeAsyncSession, monkeypatch: pytest.MonkeyPatch):
