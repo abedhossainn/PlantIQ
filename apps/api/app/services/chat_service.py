@@ -22,6 +22,11 @@ from ..models.sse import (
 from .embedding_service import EmbeddingService
 from .qdrant_service import QdrantService  # re-exported for test monkeypatching compatibility
 from .llm_service import LLMService, LLMConfigurationError, LLMUnavailableError
+from .access_governance_service import (
+    ScopePolicy,
+    enforce_chat_scope,
+    filter_contexts_to_scope,
+)
 from .rag_helpers import (
     build_rag_prompt,
     create_citations,
@@ -67,6 +72,7 @@ class ChatService:
         cls,
         request: ChatQueryRequest,
         user_id: str,
+        user_claims: dict,
         db: AsyncSession,
     ) -> ChatQueryResponse:
         """
@@ -91,6 +97,7 @@ class ChatService:
         prepared_turn = await cls._prepare_chat_turn(
             request=request,
             user_id=user_id,
+            user_claims=user_claims,
             db=db,
         )
         conversation_id = prepared_turn.conversation_id
@@ -137,6 +144,7 @@ class ChatService:
         cls,
         request: ChatQueryRequest,
         user_id: str,
+        user_claims: dict,
         db: AsyncSession,
     ) -> AsyncIterator[ChatTokenEvent | ChatCitationEvent | ChatCompleteEvent | ChatErrorEvent]:
         """
@@ -159,6 +167,7 @@ class ChatService:
             prepared_turn = await cls._prepare_chat_turn(
                 request=request,
                 user_id=user_id,
+                user_claims=user_claims,
                 db=db,
             )
             conversation_id = prepared_turn.conversation_id
@@ -262,6 +271,7 @@ class ChatService:
         *,
         request: ChatQueryRequest,
         user_id: str,
+        user_claims: dict,
         db: AsyncSession,
     ) -> _PreparedChatTurn:
         """Prepare the shared conversation, scope, and retrieval state for one chat turn."""
@@ -274,12 +284,23 @@ class ChatService:
             request=request,
             persisted_scope=persisted_scope,
         )
+
+        effective_scope = await enforce_chat_scope(
+            db=db,
+            user_id=user_id,
+            claims=user_claims,
+            workspace=scope_resolution["workspace"],
+            system_filters=request.system_filters,
+            endpoint="/api/v1/chat/query",
+        )
+
         preferred_document_types = scope_resolution["preferred_document_types"]
-        normalized_workspace = scope_resolution["workspace"]
         document_type_filters = scope_resolution["document_type_filters"]
-        include_shared_documents = scope_resolution["include_shared_documents"]
+        include_shared_documents = (
+            scope_resolution["include_shared_documents"] and effective_scope.allow_shared_documents
+        )
         conversation_scope = build_conversation_scope(
-            workspace=normalized_workspace,
+            workspace=scope_resolution["workspace"],
             document_type_filters=document_type_filters,
             preferred_document_types=preferred_document_types,
             include_shared_documents=include_shared_documents,
@@ -308,10 +329,10 @@ class ChatService:
         retrieval_top_k = get_retrieval_top_k(preferred_document_types)
         contexts = await search_with_scope_resilience(
             query_vector=query_vector,
-            request=request,
             retrieval_top_k=retrieval_top_k,
+            system_filters=effective_scope.system_filters,
             document_type_filters=document_type_filters,
-            normalized_workspace=normalized_workspace,
+            normalized_workspace=effective_scope.workspace,
             include_shared_documents=include_shared_documents,
         )
         contexts = apply_document_type_weighting(
@@ -319,11 +340,52 @@ class ChatService:
             preferred_document_types,
             settings.RAG_TOP_K,
         )
+        contexts = cls._filter_contexts_for_scope(
+            contexts=contexts,
+            policy=effective_scope.policy,
+            allow_shared_documents=include_shared_documents,
+        )
 
         return _PreparedChatTurn(
             conversation_id=conversation_id,
             contexts=contexts,
         )
 
+    @classmethod
+    async def preflight_scope_check(
+        cls,
+        *,
+        request: ChatQueryRequest,
+        user_id: str,
+        user_claims: dict,
+        db: AsyncSession,
+    ) -> None:
+        """Run chat scope authorization checks before streaming starts."""
+        persisted_scope = await get_persisted_conversation_scope(
+            conversation_id=str(request.conversation_id) if request.conversation_id else None,
+            user_id=user_id,
+            db=db,
+        )
+        scope_resolution = resolve_query_scope(request=request, persisted_scope=persisted_scope)
+        await enforce_chat_scope(
+            db=db,
+            user_id=user_id,
+            claims=user_claims,
+            workspace=scope_resolution["workspace"],
+            system_filters=request.system_filters,
+            endpoint="/api/v1/chat/stream",
+        )
 
-        return message_id
+    @classmethod
+    def _filter_contexts_for_scope(
+        cls,
+        *,
+        contexts: list[RAGContext],
+        policy: ScopePolicy,
+        allow_shared_documents: bool,
+    ) -> list[RAGContext]:
+        return filter_contexts_to_scope(
+            contexts,
+            policy=policy,
+            allow_shared_documents=allow_shared_documents,
+        )

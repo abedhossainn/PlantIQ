@@ -160,8 +160,8 @@ def apply_document_type_weighting(
 async def search_with_scope_resilience(
     *,
     query_vector: List[float],
-    request: ChatQueryRequest,
     retrieval_top_k: int,
+    system_filters: Optional[List[str]],
     document_type_filters: Optional[List[str]],
     normalized_workspace: Optional[str],
     include_shared_documents: bool,
@@ -173,14 +173,11 @@ async def search_with_scope_resilience(
     2) optional workspace->shared retry (existing behavior)
     3) same-scope relaxed-threshold retry for semantically sparse phrasings
     """
-    document_filter = [str(doc_id) for doc_id in request.document_filters] if request.document_filters else None
-
     contexts = await QdrantService.search_similar(
         query_vector=query_vector,
         top_k=retrieval_top_k,
         score_threshold=settings.RAG_SCORE_THRESHOLD,
-        document_filter=document_filter,
-        system_filter=request.system_filters,
+        system_filter=system_filters,
         document_type_filter=document_type_filters,
         workspace_filter=normalized_workspace,
         include_shared_documents=include_shared_documents,
@@ -200,8 +197,7 @@ async def search_with_scope_resilience(
             query_vector=query_vector,
             top_k=retrieval_top_k,
             score_threshold=settings.RAG_SCORE_THRESHOLD,
-            document_filter=document_filter,
-            system_filter=request.system_filters,
+            system_filter=system_filters,
             document_type_filter=document_type_filters,
             workspace_filter=normalized_workspace,
             include_shared_documents=True,
@@ -222,8 +218,7 @@ async def search_with_scope_resilience(
                 query_vector=query_vector,
                 top_k=retrieval_top_k,
                 score_threshold=relaxed_threshold,
-                document_filter=document_filter,
-                system_filter=request.system_filters,
+                system_filter=system_filters,
                 document_type_filter=document_type_filters,
                 workspace_filter=normalized_workspace,
                 include_shared_documents=include_shared_documents,
@@ -260,23 +255,19 @@ def resolve_query_scope(
     request: ChatQueryRequest,
     persisted_scope: Optional[dict],
 ) -> dict:
-    """Resolve effective workspace/doc-type/shared scope using request values with persisted fallback."""
+    """Resolve effective workspace and shared scope.
+
+    Candidate 5 (scope simplification): document_type is no longer an active scope
+    axis. Values sent in request fields or stored in persisted scope are accepted
+    for backward-compat deserialization but treated as 'any' — no filter predicate
+    or relevance-weighting is built from them. Scope is now system + area only.
+    """
     persisted_scope = persisted_scope or {}
 
     workspace_value = request.workspace
     if workspace_value is None:
         workspace_value = persisted_scope.get("workspace")
     workspace = normalize_workspace(workspace_value)
-
-    document_type_filters = request.document_type_filters
-    if document_type_filters is None:
-        document_type_filters = persisted_scope.get("document_type_filters")
-    document_type_filters = list(document_type_filters) if document_type_filters else None
-
-    preferred_document_types = request.preferred_document_types
-    if preferred_document_types is None:
-        preferred_document_types = persisted_scope.get("preferred_document_types")
-    preferred_document_types = list(preferred_document_types) if preferred_document_types else document_type_filters
 
     include_shared_documents_value = request.include_shared_documents
     if include_shared_documents_value is None:
@@ -285,7 +276,7 @@ def resolve_query_scope(
 
     return {
         "workspace": workspace,
-        "document_type_filters": document_type_filters,
-        "preferred_document_types": preferred_document_types,
+        "document_type_filters": None,  # Candidate 5: removed from active scope
+        "preferred_document_types": None,  # Candidate 5: removed from active scope
         "include_shared_documents": include_shared_documents,
     }

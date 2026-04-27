@@ -8,6 +8,9 @@ This directory contains SQL migration files for the PlantIQ database schema.
 |------|-------------|--------|
 | `001_init_schema.sql` | Initial schema with tables, roles, RLS policies | ✅ Ready |
 | `002_postgrest_views.sql` | PostgREST views, functions, and enhancements | ✅ Ready |
+| `006_conversation_scope_persistence.sql` | Conversation workspace/doc-type scope persistence columns + view update | ✅ Ready |
+| `007_conversation_pinning.sql` | Conversation pinning state + view update | ✅ Ready |
+| `008_scope_governance.sql` | User system/area scope policy + denied-access audit log tables and RLS | ✅ Ready |
 
 ## Running Migrations
 

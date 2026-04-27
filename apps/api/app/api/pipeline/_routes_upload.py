@@ -13,10 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
 from ...core.optimization_log import OptimizationLogManager
-from ...core.security import get_current_user_id
+from ...core.security import get_current_user_id, get_jwt_payload
 from ...core.sse import create_sse_response, encode_sse_event
 from ...models.database import get_db
 from ...models.pipeline import DocumentUploadResponse, PipelineStatus, PipelineStatusResponse
+from ...services.access_governance_service import ScopeAccessDenied, enforce_upload_scope
 from ...services.pipeline_service import PipelineService
 from ._constants import pipeline_timestamp
 
@@ -154,6 +155,7 @@ async def upload_document(
     document_type: Optional[str] = Form(None),
     notes: Optional[str] = Form(None),
     current_user_id: str = Depends(get_current_user_id),
+    jwt_payload: dict = Depends(get_jwt_payload),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -185,6 +187,20 @@ async def upload_document(
     logger.info("Uploading document: %s (%s bytes)", file.filename, file_size)
 
     try:
+        try:
+            await enforce_upload_scope(
+                db=db,
+                user_id=current_user_id,
+                claims=jwt_payload,
+                system=system,
+                endpoint="/api/v1/documents/upload",
+            )
+        except ScopeAccessDenied as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=exc.detail,
+            )
+
         document_id = str(uuid4())
         # Restrict to the bare filename to prevent path traversal via user-supplied name
         safe_filename = f"{document_id}_{Path(file.filename).name}"
@@ -249,6 +265,8 @@ async def upload_document(
             message=f"Document uploaded successfully. Pipeline job {job_id} started.",
         )
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Upload failed: %s", exc)
         raise HTTPException(
