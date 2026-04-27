@@ -27,6 +27,7 @@ class _PreparedChatTurn:
 
     conversation_id: str
     contexts: list
+    retrieval_diagnostics: Optional[dict] = None
 
 
 def build_conversation_scope(

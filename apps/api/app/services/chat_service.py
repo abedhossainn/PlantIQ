@@ -1,4 +1,5 @@
 """Chat Service - RAG query orchestration."""
+import json
 import logging
 import uuid
 from typing import List, Optional, AsyncIterator
@@ -27,12 +28,10 @@ from .access_governance_service import (
     enforce_chat_scope,
     filter_contexts_to_scope,
 )
+from .hybrid_retrieval_service import HybridRetrievalService, RetrievalScope
 from .rag_helpers import (
     build_rag_prompt,
     create_citations,
-    apply_document_type_weighting,
-    search_with_scope_resilience,
-    get_retrieval_top_k,
     resolve_query_scope,
     _NO_CONTEXT_RESPONSE,
 )
@@ -62,9 +61,9 @@ class ChatService:
     - Emit structured citation events for grounded answer accountability
     
     Retrieval Strategy:
-    - Uses scoped vector search (workspace, document type, shared documents) to reduce noise
-    - Applies document-type weighting to boost relevance for preferred content categories
-    - Falls back to relaxed threshold strategy if initial retrieval yields insufficient results
+    - Executes externalized hybrid retrieval with independent lexical and dense branches
+    - Applies deterministic weighted-RRF fusion with stable tie-breaks in the app layer
+    - Preserves scope filtering and emits internal branch attribution diagnostics
     """
 
     @classmethod
@@ -102,6 +101,11 @@ class ChatService:
         )
         conversation_id = prepared_turn.conversation_id
         contexts = prepared_turn.contexts
+        if prepared_turn.retrieval_diagnostics:
+            logger.info(
+                "Hybrid retrieval diagnostics (query): %s",
+                json.dumps(prepared_turn.retrieval_diagnostics, sort_keys=True),
+            )
         
         if not contexts:
             logger.warning("No relevant contexts found")
@@ -172,6 +176,11 @@ class ChatService:
             )
             conversation_id = prepared_turn.conversation_id
             contexts = prepared_turn.contexts
+            if prepared_turn.retrieval_diagnostics:
+                logger.info(
+                    "Hybrid retrieval diagnostics (stream): %s",
+                    json.dumps(prepared_turn.retrieval_diagnostics, sort_keys=True),
+                )
 
             assistant_message_id = str(uuid.uuid4())
 
@@ -294,7 +303,6 @@ class ChatService:
             endpoint="/api/v1/chat/query",
         )
 
-        preferred_document_types = scope_resolution["preferred_document_types"]
         document_type_filters = scope_resolution["document_type_filters"]
         include_shared_documents = (
             scope_resolution["include_shared_documents"] and effective_scope.allow_shared_documents
@@ -302,7 +310,7 @@ class ChatService:
         conversation_scope = build_conversation_scope(
             workspace=scope_resolution["workspace"],
             document_type_filters=document_type_filters,
-            preferred_document_types=preferred_document_types,
+            preferred_document_types=scope_resolution["preferred_document_types"],
             include_shared_documents=include_shared_documents,
         )
 
@@ -326,29 +334,35 @@ class ChatService:
         query_vector = await EmbeddingService.embed_query(request.query)
 
         logger.info("Searching for relevant documents...")
-        retrieval_top_k = get_retrieval_top_k(preferred_document_types)
-        contexts = await search_with_scope_resilience(
+        retrieval_top_k = settings.RAG_TOP_K
+        hybrid_result = await HybridRetrievalService().retrieve(
+            query_text=request.query,
             query_vector=query_vector,
-            retrieval_top_k=retrieval_top_k,
-            system_filters=effective_scope.system_filters,
-            document_type_filters=document_type_filters,
-            normalized_workspace=effective_scope.workspace,
-            include_shared_documents=include_shared_documents,
+            scope=RetrievalScope(
+                system_filters=effective_scope.system_filters,
+                workspace=effective_scope.workspace,
+                include_shared_documents=include_shared_documents,
+            ),
+            top_k=retrieval_top_k,
         )
-        contexts = apply_document_type_weighting(
-            contexts,
-            preferred_document_types,
-            settings.RAG_TOP_K,
-        )
+        contexts = hybrid_result.contexts
         contexts = cls._filter_contexts_for_scope(
             contexts=contexts,
             policy=effective_scope.policy,
             allow_shared_documents=include_shared_documents,
         )
 
+        retrieval_diagnostics = hybrid_result.diagnostics.as_log_dict()
+        retrieval_diagnostics["scope"] = {
+            "system_filters": effective_scope.system_filters,
+            "workspace": effective_scope.workspace,
+            "include_shared_documents": include_shared_documents,
+        }
+
         return _PreparedChatTurn(
             conversation_id=conversation_id,
             contexts=contexts,
+            retrieval_diagnostics=retrieval_diagnostics,
         )
 
     @classmethod
