@@ -5,6 +5,14 @@
 
 ---
 
+## Chat endpoint contract stability (as of Candidate 4)
+
+`POST /api/v1/chat/query` and `POST /api/v1/chat/stream` contracts are **unchanged** after Candidate 4 Option B hybrid retrieval integration. All additions are strictly additive — existing request/response shapes remain valid for current clients.
+
+Optional retrieval diagnostics (BM25 lexical score, dense vector score, fusion weight, and branch-contribution attribution per result) may appear in internal service state but are **not exposed in the public response payload** at this time. If surfaced in future, they will be added as an optional `diagnostics` field without breaking existing consumers.
+
+---
+
 ## Scope contract (as of Candidate 5)
 
 Scope is now **system + area only**. `document_type_filters` and `preferred_document_types` are accepted for backward compatibility but are silently ignored — no filter predicate or retrieval weighting is applied.

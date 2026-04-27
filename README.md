@@ -56,7 +56,13 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
    - Rolling quality snapshots and negative-pattern flagging in `answer_quality_snapshots`
    - Admin/reviewer metrics panel at `GET /api/v1/chat/feedback/metrics` (role-gated)
 
-5. **Operational controls and traceability**
+5. **Hybrid retrieval with explainability (Candidate 4 — Option B)**
+   - BM25 lexical and dense vector retrieval run as independent branches
+   - Application-layer weighted-RRF fusion with one-branch-failure fallback
+   - Per-result provenance attribution (lexical score, vector score, fusion weight) preserved in retrieval diagnostics
+   - Existing `/api/v1/chat/query` and `/api/v1/chat/stream` contracts are unchanged; diagnostics are additive only
+
+6. **Operational controls and traceability**
    - Lifecycle status tracking
    - Artifacts for validation/review/optimization/QA
    - Conversation persistence and bookmarks
@@ -213,6 +219,6 @@ llm-rag-chatbot/
 
 1. Complete production-grade AD/LDAP integration validation.
 2. Close remaining hardening tasks on ingestion/chat critical paths.
-3. Finish outstanding code-quality remediation waves and re-verify regressions.
+3. Finish outstanding code-quality remediation waves (Sonar Waves 2–4) and re-verify regressions.
 4. Finalize Beta evidence packaging and readiness for final checkpoint signoff.
 
