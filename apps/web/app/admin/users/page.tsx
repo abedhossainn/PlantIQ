@@ -29,7 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Users, Mail, Building2, Clock, ShieldCheck, User2, AlertCircle, Loader2 } from "lucide-react";
-import { getAdminUsers, patchUserRole, ApiError } from "@/lib/api";
+import { getAdminUsers, patchUserRole, patchUserStatus, ApiError } from "@/lib/api";
 import type { User } from "@/types";
 
 type Role = "admin" | "user";
@@ -61,6 +61,9 @@ export default function UsersPage() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   // Per-user role change error (keyed by user ID)
   const [roleErrors, setRoleErrors] = useState<Record<string, string>>({});
+  // Per-user status change state (keyed by user ID)
+  const [statusErrors, setStatusErrors] = useState<Record<string, string>>({});
+  const [statusPending, setStatusPending] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -128,6 +131,33 @@ export default function UsersPage() {
     }
   }
 
+  async function toggleStatus(userId: string, currentStatus: string) {
+    const newStatus = currentStatus === "active" ? "disabled" : "active";
+    setStatusPending((prev) => ({ ...prev, [userId]: true }));
+    setStatusErrors((prev) => { const n = { ...prev }; delete n[userId]; return n; });
+
+    // Optimistic update
+    setUserList((prev) =>
+      prev.map((u) => (u.id === userId ? { ...u, status: newStatus as "active" | "disabled" } : u))
+    );
+
+    try {
+      await patchUserStatus(userId, newStatus as "active" | "disabled");
+    } catch (err) {
+      // Revert
+      setUserList((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, status: currentStatus as "active" | "disabled" } : u))
+      );
+      let message = "Status update failed. Please try again.";
+      if (err instanceof ApiError && err.status === 403) {
+        message = "You cannot disable your own account.";
+      }
+      setStatusErrors((prev) => ({ ...prev, [userId]: message }));
+    } finally {
+      setStatusPending((prev) => { const n = { ...prev }; delete n[userId]; return n; });
+    }
+  }
+
   return (
     <AppLayout>
       <div className="flex-1 flex flex-col h-full min-h-0">
@@ -150,7 +180,7 @@ export default function UsersPage() {
             <Card className="p-4 border border-amber-400/30 bg-amber-400/5">
               <p className="text-sm font-semibold text-amber-300">Users are managed through the identity directory</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Accounts are provisioned and deactivated via LDAP. Only role assignments can be changed from this page.
+                Accounts are provisioned via LDAP. Role assignments and local access status can be changed from this page.
                 Upload and chat access remain governed by server-side scope rules.
               </p>
             </Card>
@@ -276,18 +306,35 @@ export default function UsersPage() {
                         </span>
                       </TableCell>
 
-                      {/* Status (read-only) */}
+                      {/* Status toggle */}
                       <TableCell className="py-4 text-center">
-                        <Badge
-                          variant="outline"
-                          className={
-                            u.status === "active"
-                              ? "text-green-400 bg-green-400/10 border-green-400/30 text-xs"
-                              : "text-zinc-500 bg-zinc-500/10 border-zinc-500/30 text-xs"
-                          }
-                        >
-                          {u.status === "active" ? "Active" : "Disabled"}
-                        </Badge>
+                        <div className="flex flex-col items-center gap-1">
+                          <button
+                            onClick={() => toggleStatus(u.id, u.status)}
+                            disabled={statusPending[u.id]}
+                            aria-label={u.status === "active" ? `Disable ${u.fullName}` : `Enable ${u.fullName}`}
+                            className="focus:outline-none focus:ring-2 focus:ring-ring rounded"
+                          >
+                            <Badge
+                              variant="outline"
+                              className={
+                                statusPending[u.id]
+                                  ? "text-zinc-400 bg-zinc-400/10 border-zinc-400/30 text-xs cursor-wait"
+                                  : u.status === "active"
+                                  ? "text-green-400 bg-green-400/10 border-green-400/30 text-xs cursor-pointer hover:bg-green-400/20 transition-colors"
+                                  : "text-zinc-500 bg-zinc-500/10 border-zinc-500/30 text-xs cursor-pointer hover:bg-zinc-500/20 transition-colors"
+                              }
+                            >
+                              {statusPending[u.id] ? "…" : u.status === "active" ? "Active" : "Disabled"}
+                            </Badge>
+                          </button>
+                          {statusErrors[u.id] && (
+                            <p className="text-xs text-red-400 flex items-center gap-1">
+                              <AlertCircle className="h-3 w-3 shrink-0" />
+                              {statusErrors[u.id]}
+                            </p>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
