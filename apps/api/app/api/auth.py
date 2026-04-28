@@ -11,6 +11,7 @@ Endpoints:
 - POST /api/v1/auth/admin/users - REMOVED (410 Gone) — LDAP is identity source of truth
 - GET /api/v1/auth/admin/users - List LDAP-backed users (admin only)
 - PATCH /api/v1/auth/admin/users/{user_id}/role - Update user role (admin only)
+- PATCH /api/v1/auth/admin/users/{user_id}/status - Enable/disable user (admin only)
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Response, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,7 @@ from ..models.auth import (
     AdminUserResponse,
     AdminUsersListResponse,
     AdminUpdateRoleRequest,
+    AdminUpdateStatusRequest,
 )
 from ..services.auth_service import AuthService
 from ..core.security import get_current_user_id, get_current_user_role, require_admin
@@ -332,11 +334,11 @@ async def admin_list_users(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List LDAP-backed users known to PlantIQ (admin only).
+    List LDAP-backed users from the directory (admin only).
 
-    Returns users who have logged in at least once (i.e. have a local profile
-    record created by the LDAP sync on first login).  This endpoint does NOT
-    create, import, or delete user accounts.
+    LDAP is the identity source of truth. This endpoint queries LDAP directly
+    and enriches each identity with local PlantIQ role/status data when a
+    local profile exists (created on first successful login).
 
     Supports pagination and optional substring search on username / full_name.
     """
@@ -370,6 +372,33 @@ async def admin_list_users(
     )
 
 
+@router.post("/admin/users/sync", status_code=status.HTTP_200_OK)
+async def admin_sync_ldap_users(
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Bulk-provision all LDAP directory users into PlantIQ's local profile store.
+
+    Creates a local profile for every LDAP user who does not already have one,
+    assigning status=active and a default role.  Existing profiles are left
+    untouched so that manually assigned roles and disabled statuses are preserved.
+
+    This operation is idempotent — it is safe to call multiple times.
+    """
+    result = await AuthService.provision_ldap_users(db=db)
+    logger.info(
+        "Admin triggered LDAP sync: provisioned=%d already_existed=%d",
+        result["provisioned"],
+        result["already_existed"],
+    )
+    return {
+        "message": "LDAP sync complete",
+        "provisioned": result["provisioned"],
+        "already_existed": result["already_existed"],
+    }
+
+
 @router.patch("/admin/users/{user_id}/role", response_model=AdminUserResponse)
 async def admin_update_user_role(
     user_id: uuid.UUID,
@@ -386,7 +415,7 @@ async def admin_update_user_role(
     - Admins cannot update their own role.
     - Only plantig_admin callers may assign the plantig_admin role.
 
-    Returns 404 if the target user has not yet logged in (no local profile).
+    Returns 404 if the target user is not found in the local profile store.
     Returns 403 if escalation rules are violated.
     """
     try:
@@ -408,10 +437,7 @@ async def admin_update_user_role(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "code": "USER_NOT_FOUND",
-                "message": (
-                    "User not found in PlantIQ. "
-                    "The user must log in at least once via LDAP before their role can be managed here."
-                ),
+                "message": "User not found in PlantIQ local profile store.",
             },
         )
 
@@ -420,6 +446,62 @@ async def admin_update_user_role(
         caller_user_id,
         user_id,
         request.role,
+    )
+
+    return AdminUserResponse(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        department=user.department,
+        status=user.status,
+    )
+
+
+@router.patch("/admin/users/{user_id}/status", response_model=AdminUserResponse)
+async def admin_update_user_status(
+    user_id: uuid.UUID,
+    request: AdminUpdateStatusRequest,
+    caller_user_id: uuid.UUID = Depends(get_current_user_id),
+    _admin_check: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Enable or disable an LDAP-backed user's PlantIQ access (admin only).
+
+    Sets the local ``status`` field to ``"active"`` or ``"disabled"``.
+    A disabled user can still exist in LDAP but will be blocked from logging in
+    to PlantIQ until re-enabled.
+
+    Admins cannot disable their own account.
+    Returns 404 if the user has no local profile (run /admin/users/sync first).
+    Returns 403 if the admin attempts to disable their own account.
+    """
+    try:
+        user = await AuthService.update_user_status(
+            target_user_id=user_id,
+            new_status=request.status,
+            caller_user_id=caller_user_id,
+            db=db,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "SELF_DISABLE_DENIED", "message": str(exc)},
+        )
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "USER_NOT_FOUND", "message": "User not found in PlantIQ local profile store."},
+        )
+
+    logger.info(
+        "Admin %s updated status for user %s to %s",
+        caller_user_id,
+        user_id,
+        request.status,
     )
 
     return AdminUserResponse(
