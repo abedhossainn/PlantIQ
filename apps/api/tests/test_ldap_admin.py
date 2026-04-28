@@ -41,6 +41,7 @@ LDAP_TEST_ALICE_DN = "uid=alice,ou=users,dc=plantiq,dc=local"
 LDAP_TEST_ALICE_EMAIL = "alice@example.com"
 LDAP_TEST_ALICE_NAME = "Alice Doe"
 HTTP_TEST_BASE_URL = "http://test"
+ADMIN_USERS_ENDPOINT = "/api/v1/auth/admin/users"
 
 
 # ============================================================
@@ -608,12 +609,35 @@ async def test_list_users_endpoint_admin_only():
         async with httpx.AsyncClient(
             transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
         ) as client:
-            response = await client.get("/api/v1/auth/admin/users")
+            response = await client.get(ADMIN_USERS_ENDPOINT)
 
     assert response.status_code == 200
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["username"] == "admin"
+
+
+@_skip_http
+@pytest.mark.asyncio
+async def test_list_users_endpoint_returns_controlled_error_for_missing_bind_password():
+    """GET /api/v1/auth/admin/users should not return unhandled 500 for missing encrypted bind password."""
+    from app.services.directory_config_service import DirectoryConfigSecretDecryptError
+
+    with patch(
+        "app.api.auth.AuthService.list_users",
+        new_callable=AsyncMock,
+        side_effect=DirectoryConfigSecretDecryptError("encrypted bind password is missing"),
+    ):
+        app = _build_app(db_override=_noop_db())
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
+        ) as client:
+            response = await client.get(ADMIN_USERS_ENDPOINT)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"]["code"] == "DIRECTORY_CONFIG_INVALID"
+    assert body["detail"]["message"] == "encrypted bind password is missing"
 
 
 @_skip_http
