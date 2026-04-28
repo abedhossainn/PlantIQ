@@ -38,6 +38,7 @@ import {
   Upload,
   MessageSquare,
   Users,
+  Shield,
   LogOut,
   CheckCircle2,
   UserCircle,

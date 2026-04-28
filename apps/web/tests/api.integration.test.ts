@@ -16,6 +16,12 @@ import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus 
 import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
 import { getDocumentOptimizedChunks, updateOptimizedChunk } from '../lib/api/optimized-review';
 import { ChatWebSocketClient, PipelineWebSocketClient } from '../lib/api/websocket';
+import {
+  activateAdminDirectoryConfig,
+  getAdminDirectoryConfig,
+  testAdminDirectoryConfig,
+  upsertAdminDirectoryConfig,
+} from '../lib/api/users';
 
 class LocalStorageMock {
   private store = new Map<string, string>();
@@ -289,6 +295,175 @@ describe('frontend hybrid API integration contracts', () => {
     expect(canAccessFeedbackMetrics('plantig_reviewer')).toBe(true);
     expect(canAccessFeedbackMetrics('user')).toBe(false);
     expect(canAccessFeedbackMetrics()).toBe(false);
+  });
+
+  it('loads redacted admin directory config from backend contract', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'cfg-1',
+        host: 'ldap.local',
+        server_url: 'ldap://ldap.local:389',
+        port: 389,
+        base_dn: 'dc=plantiq,dc=local',
+        user_search_base: 'ou=users,dc=plantiq,dc=local',
+        bind_dn: 'cn=admin,dc=plantiq,dc=local',
+        has_bind_password: true,
+        use_ssl: false,
+        start_tls: false,
+        verify_cert_mode: 'required',
+        search_filter_template: '(&(objectClass=person)(uid={username}))',
+        is_active: false,
+        updated_by: null,
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      })
+    );
+
+    const cfg = await getAdminDirectoryConfig();
+
+    expect(cfg.host).toBe('ldap.local');
+    expect(cfg.has_bind_password).toBe(true);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/auth/admin/directory-config');
+    expect((options.method ?? 'GET')).toBe('GET');
+  });
+
+  it('saves admin directory config through PUT endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'cfg-2',
+        host: 'ldap.prod.local',
+        server_url: 'ldaps://ldap.prod.local:636',
+        port: 636,
+        base_dn: 'dc=prod,dc=local',
+        user_search_base: 'ou=users,dc=prod,dc=local',
+        bind_dn: 'cn=svc,dc=prod,dc=local',
+        has_bind_password: true,
+        use_ssl: true,
+        start_tls: false,
+        verify_cert_mode: 'required',
+        search_filter_template: '(&(objectClass=person)(uid={username}))',
+        is_active: false,
+        updated_by: null,
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      })
+    );
+
+    const saved = await upsertAdminDirectoryConfig({
+      host: 'ldap.prod.local',
+      port: 636,
+      base_dn: 'dc=prod,dc=local',
+      user_search_base: 'ou=users,dc=prod,dc=local',
+      bind_dn: 'cn=svc,dc=prod,dc=local',
+      bind_password: 'SecretPass!123',
+      use_ssl: true,
+      start_tls: false,
+      verify_cert_mode: 'required',
+      search_filter_template: '(&(objectClass=person)(uid={username}))',
+    });
+
+    expect(saved.port).toBe(636);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/auth/admin/directory-config');
+    expect(options.method).toBe('PUT');
+    expect(JSON.parse(options.body as string)).toMatchObject({
+      host: 'ldap.prod.local',
+      bind_password: 'SecretPass!123',
+      use_ssl: true,
+    });
+  });
+
+  it('tests supplied admin directory config through non-destructive endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        success: true,
+        message: 'Connection test passed',
+        source: 'supplied',
+      })
+    );
+
+    const result = await testAdminDirectoryConfig({
+      config: {
+        host: 'ldap.test.local',
+        port: 389,
+        base_dn: 'dc=test,dc=local',
+        user_search_base: 'ou=users,dc=test,dc=local',
+        bind_dn: 'cn=svc,dc=test,dc=local',
+        bind_password: 'TestPass!123',
+        use_ssl: false,
+        start_tls: true,
+        verify_cert_mode: 'optional',
+        search_filter_template: '(&(objectClass=person)(uid={username}))',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.source).toBe('supplied');
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/auth/admin/directory-config/test');
+    expect(options.method).toBe('POST');
+  });
+
+  it('activates admin directory config through activation endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'cfg-3',
+        host: 'ldap.active.local',
+        server_url: 'ldap://ldap.active.local:389',
+        port: 389,
+        base_dn: 'dc=active,dc=local',
+        user_search_base: 'ou=users,dc=active,dc=local',
+        bind_dn: 'cn=svc,dc=active,dc=local',
+        has_bind_password: true,
+        use_ssl: false,
+        start_tls: true,
+        verify_cert_mode: 'required',
+        search_filter_template: '(&(objectClass=person)(uid={username}))',
+        is_active: true,
+        updated_by: null,
+        updated_at: '2026-04-27T00:00:00Z',
+        created_at: '2026-04-27T00:00:00Z',
+      })
+    );
+
+    const activated = await activateAdminDirectoryConfig();
+
+    expect(activated.is_active).toBe(true);
+    const [url, options] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://localhost:8000/api/v1/auth/admin/directory-config/activate');
+    expect(options.method).toBe('POST');
+  });
+
+  it('normalizes admin directory config API errors from backend detail payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail: {
+            code: 'DIRECTORY_CONFIG_INVALID',
+            message: 'use_ssl and start_tls cannot both be true',
+          },
+        },
+        { status: 422, statusText: 'Unprocessable Entity' }
+      )
+    );
+
+    await expect(
+      upsertAdminDirectoryConfig({
+        host: 'ldap.bad.local',
+        port: 389,
+        base_dn: 'dc=bad,dc=local',
+        user_search_base: 'ou=users,dc=bad,dc=local',
+        bind_dn: 'cn=svc,dc=bad,dc=local',
+        use_ssl: true,
+        start_tls: true,
+        verify_cert_mode: 'required',
+        search_filter_template: '(&(objectClass=person)(uid={username}))',
+      })
+    ).rejects.toMatchObject({
+      message: 'use_ssl and start_tls cannot both be true',
+      status: 422,
+    });
   });
 
   it('parses Candidate 1 scope-denial contract for chat requests', async () => {
