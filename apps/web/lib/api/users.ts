@@ -3,6 +3,8 @@
  *
  * GET   /api/v1/auth/admin/users              — list LDAP-backed users (admin only)
  * PATCH /api/v1/auth/admin/users/{id}/role    — update user role (admin only)
+ * PATCH /api/v1/auth/admin/users/{id}/status  — enable/disable user (admin only)
+ * POST  /api/v1/auth/admin/users/sync         — bulk-provision LDAP users (admin only)
  *
  * POST /api/v1/auth/admin/users is removed (410 Gone).
  * User creation is managed exclusively through LDAP.
@@ -43,5 +45,15 @@ export async function patchUserRole(
   return fastapiFetch<AdminUserResponse>(
     `/api/v1/auth/admin/users/${encodeURIComponent(userId)}/role`,
     { method: 'PATCH', body: JSON.stringify({ role }) },
+  );
+}
+
+export async function patchUserStatus(
+  userId: string,
+  status: 'active' | 'disabled',
+): Promise<AdminUserResponse> {
+  return fastapiFetch<AdminUserResponse>(
+    `/api/v1/auth/admin/users/${encodeURIComponent(userId)}/status`,
+    { method: 'PATCH', body: JSON.stringify({ status }) },
   );
 }
