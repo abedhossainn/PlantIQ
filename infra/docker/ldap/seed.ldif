@@ -62,11 +62,71 @@ homeDirectory: /home/carol
 
 # ── Groups ───────────────────────────────────────────────────────────────────
 
+dn: uid=admin,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: admin
+cn: System Administrator
+sn: Administrator
+givenName: System
+mail: admin@plantig.local
+userPassword: DemoPass@2026
+uidNumber: 1004
+gidNumber: 1004
+homeDirectory: /home/admin
+
+dn: uid=rholt,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: rholt
+cn: Randy Holt
+sn: Holt
+givenName: Randy
+mail: rholt@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1005
+gidNumber: 1005
+homeDirectory: /home/rholt
+
+dn: uid=demouser,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: demouser
+cn: Demo User
+sn: User
+givenName: Demo
+mail: demouser@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1006
+gidNumber: 1006
+homeDirectory: /home/demouser
+
+dn: uid=sahossain,ou=users,dc=plantiq,dc=local
+objectClass: top
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: sahossain
+cn: Syed Abed Hossain
+sn: Hossain
+givenName: Syed
+mail: sahossain@plantiq.local
+userPassword: DemoPass@2026
+uidNumber: 1007
+gidNumber: 1007
+homeDirectory: /home/sahossain
+
+# ── Groups ───────────────────────────────────────────────────────────────────
+
 dn: cn=plantiq-admins,ou=groups,dc=plantiq,dc=local
 objectClass: top
 objectClass: groupOfNames
 cn: plantiq-admins
 member: uid=alice,ou=users,dc=plantiq,dc=local
+member: uid=admin,ou=users,dc=plantiq,dc=local
+member: uid=rholt,ou=users,dc=plantiq,dc=local
 
 dn: cn=plantiq-users,ou=groups,dc=plantiq,dc=local
 objectClass: top
@@ -74,3 +134,5 @@ objectClass: groupOfNames
 cn: plantiq-users
 member: uid=bob,ou=users,dc=plantiq,dc=local
 member: uid=carol,ou=users,dc=plantiq,dc=local
+member: uid=demouser,ou=users,dc=plantiq,dc=local
+member: uid=sahossain,ou=users,dc=plantiq,dc=local
