@@ -74,8 +74,11 @@ def test_jwt_operations():
 async def test_ldap_authentication():
     """Test LDAP authentication (mock mode)."""
     print("\n👤 Testing LDAP Authentication (Mock Mode)...")
-    
-    ldap = LDAPClient()
+
+    # Bypass config loading so the test is always in mock mode regardless
+    # of the environment's LDAP_MOCK setting.
+    ldap = LDAPClient.__new__(LDAPClient)
+    ldap.use_mock = True
     
     # Test successful authentication
     result = await ldap.authenticate("admin", "admin123")
