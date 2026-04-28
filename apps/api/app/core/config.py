@@ -67,6 +67,20 @@ class Settings(BaseSettings):
     LDAP_BIND_DN: str = Field(default="", validation_alias="LDAP_BIND_DN")
     LDAP_BIND_PASSWORD: str = Field(default="", validation_alias="LDAP_BIND_PASSWORD")
     LDAP_USER_SEARCH_BASE: str = Field(default="", validation_alias="LDAP_USER_SEARCH_BASE")
+    LDAP_PORT: int = Field(default=389, validation_alias="LDAP_PORT")
+    LDAP_USE_SSL: bool = Field(default=False, validation_alias="LDAP_USE_SSL")
+    LDAP_START_TLS: bool = Field(default=False, validation_alias="LDAP_START_TLS")
+    LDAP_VERIFY_CERT_MODE: str = Field(default="required", validation_alias="LDAP_VERIFY_CERT_MODE")
+    LDAP_SEARCH_FILTER_TEMPLATE: str = Field(
+        default="(&(objectClass=person)(uid={username}))",
+        validation_alias="LDAP_SEARCH_FILTER_TEMPLATE",
+    )
+
+    # Directory config encryption (required when storing directory bind credentials in DB)
+    DIRECTORY_CONFIG_ENCRYPTION_KEY: str = Field(
+        default="",
+        validation_alias="DIRECTORY_CONFIG_ENCRYPTION_KEY",
+    )
     
     # Pipeline
     PIPELINE_WORK_DIR: str = Field(

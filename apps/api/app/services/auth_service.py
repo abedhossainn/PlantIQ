@@ -20,7 +20,8 @@ import uuid
 
 from ..models.database import Base
 from ..core.jwt import jwt_manager
-from ..core.ldap import ldap_client
+from ..core.ldap import LDAPRuntimeConnectionConfig, ldap_client
+from ..services.directory_config_service import DirectoryConfigService
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy import UUID as SQLUUID, String, DateTime
 
@@ -127,6 +128,23 @@ class AuthService:
     }
     
     @staticmethod
+    def _to_ldap_runtime_config(runtime) -> LDAPRuntimeConnectionConfig:
+        """Map directory runtime config to LDAP client runtime shape."""
+        return LDAPRuntimeConnectionConfig(
+            host=runtime.host,
+            port=runtime.port,
+            base_dn=runtime.base_dn,
+            user_search_base=runtime.user_search_base,
+            bind_dn=runtime.bind_dn,
+            bind_password=runtime.bind_password,
+            use_ssl=runtime.use_ssl,
+            start_tls=runtime.start_tls,
+            verify_cert_mode=runtime.verify_cert_mode,
+            search_filter_template=runtime.search_filter_template,
+            source=runtime.source,
+        )
+
+    @staticmethod
     async def authenticate_user(
         username: str,
         password: str,
@@ -143,8 +161,15 @@ class AuthService:
         Returns:
             Tuple of (User, access_token, refresh_token) if successful, None otherwise
         """
-        # Authenticate against LDAP
-        ldap_user = await ldap_client.authenticate(username, password)
+        runtime = await DirectoryConfigService.get_runtime_ldap_config(db)
+        ldap_runtime = AuthService._to_ldap_runtime_config(runtime)
+
+        # Authenticate against LDAP (DB active profile first, env fallback when no active profile).
+        ldap_user = await ldap_client.authenticate(
+            username,
+            password,
+            runtime_config=ldap_runtime,
+        )
         if not ldap_user:
             # LDAP failed — fall back to local DB password_hash authentication
             result = await db.execute(
@@ -479,7 +504,9 @@ class AuthService:
         page_size = min(page_size, 200)
         offset = (max(page, 1) - 1) * page_size
 
-        ldap_users = await ldap_client.list_users(search=search)
+        runtime = await DirectoryConfigService.get_runtime_ldap_config(db)
+        ldap_runtime = AuthService._to_ldap_runtime_config(runtime)
+        ldap_users = await ldap_client.list_users(search=search, runtime_config=ldap_runtime)
         if not ldap_users:
             return [], 0
 
@@ -555,7 +582,9 @@ class AuthService:
         Returns:
             Dict with keys ``provisioned`` (int) and ``already_existed`` (int).
         """
-        ldap_users = await ldap_client.list_users(search=None)
+        runtime = await DirectoryConfigService.get_runtime_ldap_config(db)
+        ldap_runtime = AuthService._to_ldap_runtime_config(runtime)
+        ldap_users = await ldap_client.list_users(search=None, runtime_config=ldap_runtime)
         if not ldap_users:
             return {"provisioned": 0, "already_existed": 0}
 

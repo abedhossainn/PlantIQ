@@ -32,8 +32,18 @@ from ..models.auth import (
     AdminUsersListResponse,
     AdminUpdateRoleRequest,
     AdminUpdateStatusRequest,
+    DirectoryConfigUpsertRequest,
+    DirectoryConfigResponse,
+    DirectoryConfigTestRequest,
+    DirectoryConfigTestResponse,
 )
 from ..services.auth_service import AuthService
+from ..services.directory_config_service import (
+    DirectoryConfigEncryptionKeyMissingError,
+    DirectoryConfigSecretDecryptError,
+    DirectoryConfigService,
+    DirectoryConfigValidationError,
+)
 from ..core.security import get_current_user_id, get_current_user_role, require_admin
 
 logger = logging.getLogger(__name__)
@@ -342,12 +352,23 @@ async def admin_list_users(
 
     Supports pagination and optional substring search on username / full_name.
     """
-    users, total = await AuthService.list_users(
-        db=db,
-        page=page,
-        page_size=page_size,
-        search=search or None,
-    )
+    try:
+        users, total = await AuthService.list_users(
+            db=db,
+            page=page,
+            page_size=page_size,
+            search=search or None,
+        )
+    except DirectoryConfigEncryptionKeyMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "DIRECTORY_CONFIG_ENCRYPTION_UNAVAILABLE", "message": str(exc)},
+        )
+    except (DirectoryConfigValidationError, DirectoryConfigSecretDecryptError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "DIRECTORY_CONFIG_INVALID", "message": str(exc)},
+        )
 
     items = [
         AdminUserResponse(
@@ -513,4 +534,87 @@ async def admin_update_user_status(
         department=user.department,
         status=user.status,
     )
+
+
+@router.get("/admin/directory-config", response_model=DirectoryConfigResponse)
+async def admin_get_directory_config(
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get persisted directory config (redacted, no plaintext secrets)."""
+    row = await DirectoryConfigService.get_config_row(db)
+    redacted = DirectoryConfigService.redact_for_response(row)
+    if redacted is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "DIRECTORY_CONFIG_NOT_FOUND", "message": "Directory config has not been set."},
+        )
+    return DirectoryConfigResponse(**redacted)
+
+
+@router.put("/admin/directory-config", response_model=DirectoryConfigResponse)
+async def admin_upsert_directory_config(
+    request: DirectoryConfigUpsertRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create or update directory configuration profile (bind password is write-only)."""
+    try:
+        row = await DirectoryConfigService.upsert_config(
+            db=db,
+            payload=request.model_dump(),
+            updated_by=user_id,
+        )
+    except DirectoryConfigEncryptionKeyMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "DIRECTORY_CONFIG_ENCRYPTION_UNAVAILABLE", "message": str(exc)},
+        )
+    except DirectoryConfigValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "DIRECTORY_CONFIG_INVALID", "message": str(exc)},
+        )
+
+    redacted = DirectoryConfigService.redact_for_response(row)
+    return DirectoryConfigResponse(**redacted)
+
+
+@router.post("/admin/directory-config/test", response_model=DirectoryConfigTestResponse)
+async def admin_test_directory_config(
+    request: DirectoryConfigTestRequest,
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Test LDAP connectivity with supplied config or effective stored runtime config."""
+    payload = request.config.model_dump() if request.config is not None else None
+    success, message, source = await DirectoryConfigService.test_config(db=db, payload=payload)
+    return DirectoryConfigTestResponse(success=success, message=message, source=source)
+
+
+@router.post("/admin/directory-config/activate", response_model=DirectoryConfigResponse)
+async def admin_activate_directory_config(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    _role: str = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Activate persisted config only after successful connectivity test."""
+    success, message, _source = await DirectoryConfigService.test_config(db=db, payload=None)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "DIRECTORY_CONFIG_TEST_FAILED", "message": message},
+        )
+
+    try:
+        row = await DirectoryConfigService.activate_config(db=db, activated_by=user_id)
+    except DirectoryConfigValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "DIRECTORY_CONFIG_INVALID", "message": str(exc)},
+        )
+
+    redacted = DirectoryConfigService.redact_for_response(row)
+    return DirectoryConfigResponse(**redacted)
 

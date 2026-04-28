@@ -1,21 +1,9 @@
-"""
-LDAP/Active Directory authentication client.
+"""LDAP/Active Directory authentication client."""
 
-For development, includes a mock LDAP provider.
-For production, integrates with real LDAP/AD server.
-
-Configuration is read from the centralised Settings object (config.py) so that
-a single env file controls both mock-mode and real-LDAP mode.  Accepted env
-vars (see config.py for aliases):
-  LDAP_SERVER / LDAP_SERVER_URL     — server URL
-  LDAP_BIND_DN                      — service-account DN
-  LDAP_BIND_PASSWORD                — service-account password  (never logged)
-  LDAP_USER_SEARCH_BASE             — search base for user lookups
-  LDAP_MOCK / USE_MOCK_LDAP         — set to "false" to use real LDAP
-"""
-from typing import Optional, Dict, List, Any
 from dataclasses import dataclass
 import logging
+import ssl
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,81 +11,111 @@ logger = logging.getLogger(__name__)
 @dataclass
 class LDAPUser:
     """User information from LDAP."""
+
     username: str
     email: str
     full_name: str
     department: Optional[str] = None
 
 
-class LDAPClient:
-    """
-    LDAP authentication client with mock support for development.
+@dataclass(frozen=True)
+class LDAPRuntimeConnectionConfig:
+    """Resolved runtime LDAP connection settings."""
 
-    All configuration is sourced from the app Settings object so that
-    real-LDAP mode is actually reachable via environment variables without
-    code changes.
-    """
+    host: str
+    port: int
+    base_dn: str
+    user_search_base: str
+    bind_dn: str
+    bind_password: str
+    use_ssl: bool
+    start_tls: bool
+    verify_cert_mode: str
+    search_filter_template: str
+    source: str = "env"
+
+
+class LDAPClient:
+    """LDAP authentication client with mock support for development."""
+
+    _USER_ATTRIBUTES = ["uid", "mail", "cn", "displayName", "givenName", "sn", "department", "ou"]
+
+    # These are intentional development-only mock credentials used only
+    # when LDAP_MOCK=true. They are not production secrets. # NOSONAR
+    _MOCK_USERS: Dict[str, Dict] = {
+        "admin": {
+            "password": "admin123",  # NOSONAR — dev mock only
+            "email": "admin@plantig.local",
+            "full_name": "System Administrator",
+            "department": "IT",
+        },
+        "user": {
+            "password": "user123",  # NOSONAR — dev mock only
+            "email": "user@plantig.local",
+            "full_name": "John User",
+            "department": "Operations",
+        },
+    }
 
     def __init__(self) -> None:
-        """
-        Initialise using the application settings (config.py).
-
-        This deferred import avoids circular imports at module load time.
-        """
+        """Initialise from application settings."""
         from .config import settings as _settings
 
         self.server_url: str = _settings.LDAP_SERVER
         self.base_dn: str = _settings.LDAP_BASE_DN
         self.bind_dn: str = _settings.LDAP_BIND_DN
-        # Bind password is stored in memory but never logged.
         self._bind_password: str = _settings.LDAP_BIND_PASSWORD
         self.user_search_base: str = _settings.LDAP_USER_SEARCH_BASE
+        self.port: int = _settings.LDAP_PORT
+        self.use_ssl: bool = _settings.LDAP_USE_SSL
+        self.start_tls: bool = _settings.LDAP_START_TLS
+        self.verify_cert_mode: str = _settings.LDAP_VERIFY_CERT_MODE
+        self.search_filter_template: str = _settings.LDAP_SEARCH_FILTER_TEMPLATE
         self.use_mock: bool = _settings.LDAP_MOCK
 
         if self.use_mock:
             logger.info("Using mock LDAP provider for development")
         else:
             logger.info("Using LDAP server: %s", self.server_url)
-            # Production LDAP initialisation placeholder:
-            # import ldap3
-            # self._server = ldap3.Server(self.server_url)
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
-    _USER_ATTRIBUTES = ["uid", "mail", "cn", "displayName", "givenName", "sn", "department", "ou"]
-
-    async def authenticate(self, username: str, password: str) -> Optional[LDAPUser]:
-        """
-        Authenticate user against LDAP/AD.
-
-        Args:
-            username: Username to authenticate
-            password: User password
-
-        Returns:
-            LDAPUser if authentication succeeds, None otherwise
-        """
+    async def authenticate(
+        self,
+        username: str,
+        password: str,
+        runtime_config: Optional[LDAPRuntimeConnectionConfig] = None,
+    ) -> Optional[LDAPUser]:
+        """Authenticate a user against LDAP/AD."""
         if self.use_mock:
             return self._mock_authenticate(username, password)
         if not username or not password:
             return None
 
-        if not self._has_required_real_config():
+        config = runtime_config or self._env_runtime_config()
+        if not self._has_required_real_config(config):
             logger.error("LDAP authenticate unavailable: missing bind/search configuration")
             return None
 
-        search_base = self._get_search_base()
+        return self._authenticate_real(username=username, password=password, config=config)
+
+    def _authenticate_real(
+        self,
+        *,
+        username: str,
+        password: str,
+        config: LDAPRuntimeConnectionConfig,
+    ) -> Optional[LDAPUser]:
+        """Authenticate in real LDAP mode using provided runtime config."""
+
+        search_base = self._get_search_base(config)
         service_conn = None
         user_conn = None
         try:
             ldap3 = self._get_ldap3_module()
-            service_conn = self._bind_service_connection(ldap3)
+            service_conn = self._bind_service_connection(ldap3, config)
             if service_conn is None:
                 return None
 
-            search_filter = self._build_exact_user_filter(ldap3, username)
+            search_filter = self._build_exact_user_filter(ldap3, username, config.search_filter_template)
             entry = self._search_first_entry(
                 service_conn=service_conn,
                 search_base=search_base,
@@ -137,39 +155,29 @@ class LDAPClient:
                 except Exception:
                     pass
 
-    async def list_users(self, search: Optional[str] = None) -> List[LDAPUser]:
-        """
-        List users available in LDAP/AD.
-
-        In mock mode returns the built-in mock user set, optionally filtered
-        by *search* (substring match on username or full_name).
-
-        In real LDAP mode this would issue an LDAP search against
-        ``user_search_base``.
-
-        Args:
-            search: Optional substring to filter results.
-
-        Returns:
-            List of LDAPUser objects.
-        """
+    async def list_users(
+        self,
+        search: Optional[str] = None,
+        runtime_config: Optional[LDAPRuntimeConnectionConfig] = None,
+    ) -> List[LDAPUser]:
+        """List users available in LDAP/AD."""
         if self.use_mock:
             return self._mock_list_users(search)
 
-        if not self._has_required_real_config():
+        config = runtime_config or self._env_runtime_config()
+        if not self._has_required_real_config(config):
             logger.error("LDAP list_users unavailable: missing bind/search configuration")
             return []
 
-        search_base = self._get_search_base()
+        search_base = self._get_search_base(config)
         service_conn = None
         try:
             ldap3 = self._get_ldap3_module()
-            service_conn = self._bind_service_connection(ldap3)
+            service_conn = self._bind_service_connection(ldap3, config)
             if service_conn is None:
                 return []
 
             search_filter = self._build_list_filter(ldap3, search)
-
             searched = service_conn.search(
                 search_base=search_base,
                 search_filter=search_filter,
@@ -184,7 +192,7 @@ class LDAPClient:
                 if user is not None:
                     users.append(user)
 
-            users.sort(key=lambda u: u.username.lower())
+            users.sort(key=lambda user: user.username.lower())
             return users
         except Exception:
             logger.exception("LDAP list_users failed")
@@ -196,45 +204,110 @@ class LDAPClient:
                 except Exception:
                     pass
 
-    def _get_search_base(self) -> str:
-        """Return the configured LDAP search base for user lookup."""
-        return self.user_search_base or self.base_dn
+    def _env_runtime_config(self) -> LDAPRuntimeConnectionConfig:
+        """Build fallback runtime config from environment-backed settings."""
+        from urllib.parse import urlparse
 
-    def _has_required_real_config(self) -> bool:
-        """Validate minimum LDAP configuration required for real-mode operations."""
-        return bool(self.bind_dn and self._bind_password and self._get_search_base())
+        server_url = getattr(self, "server_url", "")
+        parsed = urlparse(server_url)
+        host = parsed.hostname or server_url
+        scheme = parsed.scheme.lower() if parsed.scheme else "ldap"
+        use_ssl = bool(getattr(self, "use_ssl", False)) or scheme == "ldaps"
+        port = int(getattr(self, "port", 0) or parsed.port or (636 if use_ssl else 389))
+        base_dn = getattr(self, "base_dn", "")
+        user_search_base = getattr(self, "user_search_base", "") or base_dn
+        bind_dn = getattr(self, "bind_dn", "")
+        bind_password = getattr(self, "_bind_password", "")
+        start_tls = bool(getattr(self, "start_tls", False))
+        verify_cert_mode = getattr(self, "verify_cert_mode", "required")
+        search_filter_template = getattr(
+            self,
+            "search_filter_template",
+            "(&(objectClass=person)(uid={username}))",
+        )
+
+        return LDAPRuntimeConnectionConfig(
+            host=host,
+            port=port,
+            base_dn=base_dn,
+            user_search_base=user_search_base,
+            bind_dn=bind_dn,
+            bind_password=bind_password,
+            use_ssl=use_ssl,
+            start_tls=start_tls,
+            verify_cert_mode=verify_cert_mode,
+            search_filter_template=search_filter_template,
+            source="env",
+        )
+
+    @staticmethod
+    def _resolve_verify_mode(config: LDAPRuntimeConnectionConfig) -> int:
+        mode = (config.verify_cert_mode or "required").lower()
+        if mode == "required":
+            return ssl.CERT_REQUIRED
+        if mode == "optional":
+            return ssl.CERT_OPTIONAL
+        if mode == "none":
+            return ssl.CERT_NONE
+        return ssl.CERT_REQUIRED
+
+    def _get_search_base(self, config: LDAPRuntimeConnectionConfig) -> str:
+        return config.user_search_base or config.base_dn
+
+    def _has_required_real_config(self, config: LDAPRuntimeConnectionConfig) -> bool:
+        return bool(config.bind_dn and config.bind_password and self._get_search_base(config))
 
     @staticmethod
     def _get_ldap3_module():
-        """Import and return ldap3 lazily to keep mock-mode lightweight."""
         import ldap3
 
         return ldap3
 
-    def _bind_service_connection(self, ldap3_module):
-        """Bind and return service account connection, or None on failure."""
-        server = ldap3_module.Server(self.server_url, get_info=ldap3_module.NONE)
+    def _bind_service_connection(self, ldap3_module, config: LDAPRuntimeConnectionConfig):
+        server_kwargs = {
+            "host": config.host,
+            "port": config.port,
+            "use_ssl": config.use_ssl,
+            "get_info": ldap3_module.NONE,
+        }
+        if hasattr(ldap3_module, "Tls"):
+            server_kwargs["tls"] = ldap3_module.Tls(validate=self._resolve_verify_mode(config))
+
+        server = ldap3_module.Server(**server_kwargs)
         connection = ldap3_module.Connection(
             server,
-            user=self.bind_dn,
-            password=self._bind_password,
+            user=config.bind_dn,
+            password=config.bind_password,
             auto_bind=False,
             raise_exceptions=False,
         )
         if not connection.bind():
             logger.warning("LDAP service bind failed")
             return None
+        if config.start_tls:
+            try:
+                if not connection.start_tls():
+                    logger.warning("LDAP STARTTLS negotiation failed")
+                    connection.unbind()
+                    return None
+            except Exception:
+                logger.exception("LDAP STARTTLS negotiation error")
+                try:
+                    connection.unbind()
+                except Exception:
+                    pass
+                return None
         return connection
 
     @staticmethod
-    def _build_exact_user_filter(ldap3_module, username: str) -> str:
-        """Build a safe LDAP filter for exact uid match."""
+    def _build_exact_user_filter(ldap3_module, username: str, template: str) -> str:
         escaped_username = ldap3_module.utils.conv.escape_filter_chars(username)
+        if "{username}" in template:
+            return template.replace("{username}", escaped_username)
         return f"(&(|(objectClass=inetOrgPerson)(objectClass=person))(uid={escaped_username}))"
 
     @staticmethod
     def _build_list_filter(ldap3_module, search: Optional[str]) -> str:
-        """Build LDAP filter for user listing with optional substring search."""
         object_filter = "(|(objectClass=inetOrgPerson)(objectClass=person))"
         if not search:
             return f"(&{object_filter}(uid=*))"
@@ -243,7 +316,6 @@ class LDAPClient:
         return f"(&{object_filter}(|(uid=*{escaped}*)(cn=*{escaped}*)))"
 
     def _search_first_entry(self, service_conn, search_base: str, search_filter: str, size_limit: int = 1):
-        """Run an LDAP search and return first entry, or None if no match."""
         searched = service_conn.search(
             search_base=search_base,
             search_filter=search_filter,
@@ -255,7 +327,6 @@ class LDAPClient:
         return service_conn.entries[0]
 
     def _entry_to_user(self, entry: Any, fallback_username: str = "") -> Optional[LDAPUser]:
-        """Map an ldap3 entry to LDAPUser."""
         username = self._entry_attr(entry, "uid") or fallback_username
         if not username:
             return None
@@ -264,12 +335,12 @@ class LDAPClient:
             self._entry_attr(entry, "displayName")
             or self._entry_attr(entry, "cn")
             or " ".join(
-                p
-                for p in [
+                part
+                for part in [
                     self._entry_attr(entry, "givenName"),
                     self._entry_attr(entry, "sn"),
                 ]
-                if p
+                if part
             ).strip()
             or username
         )
@@ -283,7 +354,6 @@ class LDAPClient:
 
     @staticmethod
     def _entry_attr(entry: Any, attr_name: str) -> Optional[str]:
-        """Safely extract a string LDAP attribute value from an ldap3 entry."""
         try:
             attr = getattr(entry, attr_name)
         except Exception:
@@ -296,29 +366,7 @@ class LDAPClient:
             return None
         return str(value)
 
-    # ------------------------------------------------------------------
-    # Mock implementation (development only)
-    # ------------------------------------------------------------------
-
-    # These are intentional development-only mock credentials used only
-    # when LDAP_MOCK=true.  They are not production secrets.  # NOSONAR
-    _MOCK_USERS: Dict[str, Dict] = {
-        "admin": {
-            "password": "admin123",  # NOSONAR — dev mock only
-            "email": "admin@plantig.local",
-            "full_name": "System Administrator",
-            "department": "IT",
-        },
-        "user": {
-            "password": "user123",  # NOSONAR — dev mock only
-            "email": "user@plantig.local",
-            "full_name": "John User",
-            "department": "Operations",
-        },
-    }
-
     def _mock_authenticate(self, username: str, password: str) -> Optional[LDAPUser]:
-        """Mock LDAP authentication for development."""
         user_data = self._MOCK_USERS.get(username)
         if not user_data:
             logger.warning("Mock LDAP: user not found: %s", username)
@@ -337,7 +385,6 @@ class LDAPClient:
         )
 
     def _mock_list_users(self, search: Optional[str]) -> List[LDAPUser]:
-        """Return mock user list, optionally filtered by *search*."""
         users = [
             LDAPUser(
                 username=name,
@@ -348,10 +395,9 @@ class LDAPClient:
             for name, data in self._MOCK_USERS.items()
         ]
         if search:
-            q = search.lower()
-            users = [u for u in users if q in u.username.lower() or q in u.full_name.lower()]
+            needle = search.lower()
+            users = [user for user in users if needle in user.username.lower() or needle in user.full_name.lower()]
         return users
 
 
-# Global LDAP client instance — configuration is read from Settings at import time.
 ldap_client = LDAPClient()
