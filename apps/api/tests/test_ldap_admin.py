@@ -12,6 +12,7 @@ Coverage:
 """
 import os
 import uuid
+import types
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,6 +32,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+LDAP_TEST_SERVER_URL = "ldap://ldap.local:389"
+LDAP_TEST_BIND_DN = "cn=svc,dc=plantiq,dc=local"
+LDAP_TEST_SEARCH_BASE = "ou=users,dc=plantiq,dc=local"
+LDAP_TEST_BASE_DN = "dc=plantiq,dc=local"
+LDAP_TEST_ALICE_DN = "uid=alice,ou=users,dc=plantiq,dc=local"
+LDAP_TEST_ALICE_EMAIL = "alice@example.com"
+LDAP_TEST_ALICE_NAME = "Alice Doe"
+HTTP_TEST_BASE_URL = "http://test"
 
 
 # ============================================================
@@ -75,16 +85,165 @@ class TestLDAPClientListUsers:
         users = asyncio.run(client.list_users(search="zzznomatch"))
         assert users == []
 
-    def test_real_mode_returns_empty_list_without_server(self):
-        """In real mode with no LDAP server wired the placeholder returns []."""
+    def test_real_mode_list_users_uses_service_bind_and_maps_results(self, monkeypatch):
         from app.core.ldap import LDAPClient
         import asyncio
 
         client = LDAPClient.__new__(LDAPClient)
         client.use_mock = False
+        client.server_url = LDAP_TEST_SERVER_URL
+        client.bind_dn = LDAP_TEST_BIND_DN
+        client._bind_password = "secret"
+        client.user_search_base = LDAP_TEST_SEARCH_BASE
+        client.base_dn = LDAP_TEST_BASE_DN
 
-        users = asyncio.run(client.list_users())
-        assert users == []
+        class _Attr:
+            def __init__(self, value):
+                self.value = value
+
+        class _Entry:
+            def __init__(self, entry_dn, **attrs):
+                self.entry_dn = entry_dn
+                self._attrs = attrs
+
+            def __getattr__(self, key):
+                if key in self._attrs:
+                    return _Attr(self._attrs[key])
+                raise AttributeError(key)
+
+        service_conn = MagicMock()
+        service_conn.bind.return_value = True
+        service_conn.search.return_value = True
+        service_conn.entries = [
+            _Entry(LDAP_TEST_ALICE_DN, uid="alice", mail=LDAP_TEST_ALICE_EMAIL, cn=LDAP_TEST_ALICE_NAME),
+            _Entry("uid=bob,ou=users,dc=plantiq,dc=local", uid="bob", mail="bob@example.com", cn="Bob Doe"),
+        ]
+
+        fake_ldap3 = types.SimpleNamespace(
+            NONE=0,
+            Server=MagicMock(return_value=MagicMock()),
+            Connection=MagicMock(return_value=service_conn),
+            utils=types.SimpleNamespace(
+                conv=types.SimpleNamespace(escape_filter_chars=lambda v: v)
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+
+        users = asyncio.run(client.list_users(search="ali"))
+        assert [u.username for u in users] == ["alice", "bob"]
+        assert users[0].email == LDAP_TEST_ALICE_EMAIL
+        search_kwargs = service_conn.search.call_args.kwargs
+        assert search_kwargs["search_base"] == LDAP_TEST_SEARCH_BASE
+        assert "uid=*ali*" in search_kwargs["search_filter"]
+
+
+class TestLDAPClientAuthenticateRealMode:
+    """LDAPClient.authenticate real mode (mocked ldap3; no live server)."""
+
+    def test_authenticate_real_mode_success(self, monkeypatch):
+        from app.core.ldap import LDAPClient
+        import asyncio
+
+        client = LDAPClient.__new__(LDAPClient)
+        client.use_mock = False
+        client.server_url = LDAP_TEST_SERVER_URL
+        client.bind_dn = LDAP_TEST_BIND_DN
+        client._bind_password = "secret"
+        client.user_search_base = LDAP_TEST_SEARCH_BASE
+        client.base_dn = LDAP_TEST_BASE_DN
+
+        class _Attr:
+            def __init__(self, value):
+                self.value = value
+
+        class _Entry:
+            entry_dn = LDAP_TEST_ALICE_DN
+
+            def __getattr__(self, key):
+                data = {
+                    "uid": "alice",
+                    "mail": LDAP_TEST_ALICE_EMAIL,
+                    "displayName": LDAP_TEST_ALICE_NAME,
+                    "department": "Operations",
+                }
+                if key in data:
+                    return _Attr(data[key])
+                raise AttributeError(key)
+
+        service_conn = MagicMock()
+        service_conn.bind.return_value = True
+        service_conn.search.return_value = True
+        service_conn.entries = [_Entry()]
+
+        user_conn = MagicMock()
+        user_conn.bind.return_value = True
+
+        fake_ldap3 = types.SimpleNamespace(
+            NONE=0,
+            Server=MagicMock(return_value=MagicMock()),
+            Connection=MagicMock(side_effect=[service_conn, user_conn]),
+            utils=types.SimpleNamespace(
+                conv=types.SimpleNamespace(escape_filter_chars=lambda v: v)
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+
+        result = asyncio.run(client.authenticate("alice", "DemoPass@2026"))
+        assert result is not None
+        assert result.username == "alice"
+        assert result.email == LDAP_TEST_ALICE_EMAIL
+        assert result.full_name == LDAP_TEST_ALICE_NAME
+        assert result.department == "Operations"
+
+        search_kwargs = service_conn.search.call_args.kwargs
+        assert search_kwargs["search_base"] == LDAP_TEST_SEARCH_BASE
+        assert "uid=alice" in search_kwargs["search_filter"]
+
+    def test_authenticate_real_mode_invalid_user_password(self, monkeypatch):
+        from app.core.ldap import LDAPClient
+        import asyncio
+
+        client = LDAPClient.__new__(LDAPClient)
+        client.use_mock = False
+        client.server_url = LDAP_TEST_SERVER_URL
+        client.bind_dn = LDAP_TEST_BIND_DN
+        client._bind_password = "secret"
+        client.user_search_base = LDAP_TEST_SEARCH_BASE
+        client.base_dn = LDAP_TEST_BASE_DN
+
+        class _Attr:
+            def __init__(self, value):
+                self.value = value
+
+        class _Entry:
+            entry_dn = LDAP_TEST_ALICE_DN
+
+            def __getattr__(self, key):
+                data = {"uid": "alice", "mail": LDAP_TEST_ALICE_EMAIL, "cn": "Alice"}
+                if key in data:
+                    return _Attr(data[key])
+                raise AttributeError(key)
+
+        service_conn = MagicMock()
+        service_conn.bind.return_value = True
+        service_conn.search.return_value = True
+        service_conn.entries = [_Entry()]
+
+        user_conn = MagicMock()
+        user_conn.bind.return_value = False
+
+        fake_ldap3 = types.SimpleNamespace(
+            NONE=0,
+            Server=MagicMock(return_value=MagicMock()),
+            Connection=MagicMock(side_effect=[service_conn, user_conn]),
+            utils=types.SimpleNamespace(
+                conv=types.SimpleNamespace(escape_filter_chars=lambda v: v)
+            ),
+        )
+        monkeypatch.setitem(sys.modules, "ldap3", fake_ldap3)
+
+        result = asyncio.run(client.authenticate("alice", "wrong-pass"))
+        assert result is None
 
 
 class TestConfigAliases:
@@ -133,6 +292,8 @@ def mock_db():
     """Return a minimal AsyncSession mock."""
     db = AsyncMock()
     db.execute = AsyncMock()
+    db.add = MagicMock()          # add() is synchronous on SQLAlchemy sessions
+    db.flush = AsyncMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
     return db
@@ -142,23 +303,82 @@ def mock_db():
 async def test_list_users_returns_paginated_results(mock_db):
     from app.services.auth_service import AuthService, User
 
-    fake_users = [
-        MagicMock(spec=User, username="alice"),
-        MagicMock(spec=User, username="bob"),
+    ldap_users = [
+        MagicMock(username="alice", email="alice@example.com", full_name="Alice", department="Ops"),
+        MagicMock(username="bob", email="bob@example.com", full_name="Bob", department="Maint"),
     ]
 
-    # Patch sqlalchemy execute results: first call = count, second = users
-    count_result = MagicMock()
-    count_result.scalar_one.return_value = 2
+    db_alice = MagicMock(spec=User)
+    db_alice.id = uuid.uuid4()
+    db_alice.username = "alice"
+    db_alice.role = "reviewer"
+    db_alice.status = "active"
 
     users_result = MagicMock()
-    users_result.scalars.return_value.all.return_value = fake_users
+    users_result.scalars.return_value.all.return_value = [db_alice]
+    mock_db.execute.return_value = users_result
 
-    mock_db.execute.side_effect = [count_result, users_result]
+    with patch("app.services.auth_service.ldap_client.list_users", new_callable=AsyncMock, return_value=ldap_users):
+        items, total = await AuthService.list_users(db=mock_db, page=1, page_size=50)
 
-    items, total = await AuthService.list_users(db=mock_db, page=1, page_size=50)
     assert total == 2
     assert len(items) == 2
+    assert items[0].username == "alice"
+    assert items[0].role == "reviewer"
+    assert items[1].username == "bob"
+    # bob has no existing local profile: lazy-provision creates one with status="active"
+    assert items[1].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_authenticate_user_ldap_success_creates_local_profile(mock_db):
+    from app.services.auth_service import AuthService
+    from app.core.ldap import LDAPUser
+
+    ldap_user = LDAPUser(
+        username="rholt",
+        email="rholt@plantiq.local",
+        full_name="Randy Holt",
+        department="Operations",
+    )
+
+    fake_user = MagicMock()
+    fake_user.id = uuid.uuid4()
+    fake_user.username = "rholt"
+    fake_user.email = "rholt@plantiq.local"
+    fake_user.full_name = "Randy Holt"
+    fake_user.role = "user"
+    fake_user.department = "Operations"
+    fake_user.status = "active"
+
+    with patch(
+        "app.services.auth_service.ldap_client.authenticate",
+        new_callable=AsyncMock,
+        return_value=ldap_user,
+    ), patch(
+        "app.services.auth_service.AuthService._get_or_create_user",
+        new_callable=AsyncMock,
+        return_value=fake_user,
+    ) as get_or_create_mock, patch(
+        "app.services.auth_service.AuthService._create_refresh_token",
+        new_callable=AsyncMock,
+        return_value="refresh-token",
+    ), patch(
+        "app.services.auth_service.jwt_manager.create_access_token",
+        return_value="access-token",
+    ):
+        result = await AuthService.authenticate_user(
+            username="rholt",
+            password="DemoPass@2026",
+            db=mock_db,
+        )
+
+    assert result is not None
+    user, access_token, refresh_token = result
+    assert user.username == "rholt"
+    assert access_token == "access-token"
+    assert refresh_token == "refresh-token"
+    get_or_create_mock.assert_awaited_once_with(ldap_user, mock_db)
 
 
 @pytest.mark.asyncio
@@ -243,6 +463,67 @@ async def test_update_user_role_user_not_found_returns_none(mock_db):
     assert result is None
 
 
+@pytest.mark.asyncio
+async def test_update_user_status_self_disable_raises(mock_db):
+    from app.services.auth_service import AuthService
+
+    user_id = uuid.uuid4()
+    with pytest.raises(PermissionError, match="own account"):
+        await AuthService.update_user_status(
+            target_user_id=user_id,
+            new_status="disabled",
+            caller_user_id=user_id,
+            db=mock_db,
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_user_status_success(mock_db):
+    from app.services.auth_service import AuthService, User
+
+    caller_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+
+    fake_user = MagicMock(spec=User)
+    fake_user.id = target_id
+    fake_user.username = "bob"
+    fake_user.status = "active"
+
+    select_result = MagicMock()
+    select_result.scalar_one_or_none.return_value = fake_user
+    mock_db.execute.return_value = select_result
+
+    result = await AuthService.update_user_status(
+        target_user_id=target_id,
+        new_status="disabled",
+        caller_user_id=caller_id,
+        db=mock_db,
+    )
+
+    assert result is not None
+    assert fake_user.status == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_update_user_status_user_not_found_returns_none(mock_db):
+    from app.services.auth_service import AuthService
+
+    caller_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+
+    select_result = MagicMock()
+    select_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = select_result
+
+    result = await AuthService.update_user_status(
+        target_user_id=target_id,
+        new_status="disabled",
+        caller_user_id=caller_id,
+        db=mock_db,
+    )
+    assert result is None
+
+
 # ============================================================
 # Integration tests — FastAPI ASGI endpoints
 # ============================================================
@@ -288,7 +569,7 @@ async def test_create_user_endpoint_returns_410():
     """POST /api/v1/auth/admin/users must return 410 Gone."""
     app = _build_app(db_override=_noop_db())
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
     ) as client:
         response = await client.post(
             "/api/v1/auth/admin/users",
@@ -325,7 +606,7 @@ async def test_list_users_endpoint_admin_only():
     ):
         app = _build_app(db_override=_noop_db())
         async with httpx.AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
         ) as client:
             response = await client.get("/api/v1/auth/admin/users")
 
@@ -344,7 +625,7 @@ async def test_role_update_self_escalation_blocked():
     app = _build_app(db_override=_noop_db())
 
     async with httpx.AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
     ) as client:
         response = await client.patch(
             f"/api/v1/auth/admin/users/{own_id}/role",
@@ -368,7 +649,7 @@ async def test_role_update_user_not_found_returns_404():
     ):
         app = _build_app(db_override=_noop_db())
         async with httpx.AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
+            transport=ASGITransport(app=app), base_url=HTTP_TEST_BASE_URL
         ) as client:
             response = await client.patch(
                 f"/api/v1/auth/admin/users/{target_id}/role",
