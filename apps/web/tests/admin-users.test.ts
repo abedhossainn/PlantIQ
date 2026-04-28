@@ -12,9 +12,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getAdminUsers, patchUserRole } from '../lib/api/users';
+import { getAdminUsers, getDirectoryDomainLabel, patchUserRole } from '../lib/api/users';
 import { ApiError } from '../lib/api/client';
 import * as apiModule from '../lib/api';
+import { readFileSync } from 'node:fs';
+
+const adminUsersPageSource = readFileSync(
+  new URL('../app/admin/users/page.tsx', import.meta.url),
+  'utf8',
+);
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -77,7 +83,7 @@ describe('getAdminUsers', () => {
     expect(url).toContain('/api/v1/auth/admin/users');
     expect(url).toContain('page=1');
     expect(url).toContain('page_size=100');
-    expect((init as RequestInit).method).toBe('GET');
+    expect(init?.method ?? 'GET').toBe('GET');
     expect(result).toEqual(payload);
   });
 
@@ -181,5 +187,107 @@ describe('LDAP policy — createAdminUser removed', () => {
     // Types are erased at runtime; this is a belt-and-suspenders check that
     // no runtime stub was left behind.
     expect((apiModule as Record<string, unknown>).AdminCreateUserRequest).toBeUndefined();
+  });
+});
+
+describe('getDirectoryDomainLabel', () => {
+  it('prefers server_url host when available', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: 'ldaps://ldap.example.com:636',
+        host: 'fallback.local',
+        base_dn: 'dc=plantiq,dc=local',
+      })
+    ).toBe('ldap.example.com');
+  });
+
+  it('prefers base_dn domain over single-label server_url hostname', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: 'ldap://ldap:1389',
+        host: '',
+        base_dn: 'dc=plantiq,dc=local',
+      }),
+    ).toBe('plantiq.local');
+  });
+
+  it('falls back to host when server_url is missing', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: 'ldap.internal.local',
+        base_dn: 'dc=plantiq,dc=local',
+      })
+    ).toBe('ldap.internal.local');
+  });
+
+  it('prefers base_dn-derived domain over a single-label host', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: 'ldap',
+        base_dn: 'dc=plantiq,dc=local',
+      })
+    ).toBe('plantiq.local');
+  });
+
+  it('uses single-label host as-is when base_dn cannot provide a domain', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: 'ldap',
+        base_dn: 'ou=users,ou=engineering',
+      })
+    ).toBe('ldap');
+  });
+
+  it('uses multi-label host even when base_dn is also available', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: 'ldap.corp',
+        base_dn: 'dc=plantiq,dc=local',
+      })
+    ).toBe('ldap.corp');
+  });
+
+  it('derives domain from base_dn when server_url and host are unavailable', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: '',
+        base_dn: 'ou=users,dc=plantiq,dc=local',
+      })
+    ).toBe('plantiq.local');
+  });
+
+  it('returns null when domain cannot be derived', () => {
+    expect(
+      getDirectoryDomainLabel({
+        server_url: null,
+        host: '',
+        base_dn: 'ou=users,ou=engineering',
+      })
+    ).toBeNull();
+  });
+});
+
+describe('admin users page domain display', () => {
+  it('shows a connected domain header badge with the green active-profile styling', () => {
+    expect(adminUsersPageSource).toContain('Connected domain:');
+    expect(adminUsersPageSource).toContain('Domain not connected');
+    expect(adminUsersPageSource).toContain('variant="outline"');
+    expect(adminUsersPageSource).toContain('border-green-400/30 bg-green-400/10 text-green-300');
+    expect(adminUsersPageSource).toContain('shrink-0 whitespace-nowrap');
+    expect(adminUsersPageSource).toContain('{directoryDomain ? `Connected domain: ${directoryDomain}` : "Domain not connected"}');
+  });
+
+  it('loads directory config to resolve the connected domain label', () => {
+    expect(adminUsersPageSource).toContain('await getAdminDirectoryConfig()');
+    expect(adminUsersPageSource).toContain('setDirectoryDomain(getDirectoryDomainLabel(config))');
+  });
+
+  it('does not render the connected domain as plain subtitle text in the left header block', () => {
+    expect(adminUsersPageSource).not.toContain('Connected domain: <span className="font-medium text-foreground">');
   });
 });
