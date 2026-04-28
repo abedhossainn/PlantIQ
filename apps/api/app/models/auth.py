@@ -87,3 +87,11 @@ _VALID_ROLES = r"^(admin|user|reviewer|plantig_admin|plantig_reviewer)$"
 class AdminUpdateRoleRequest(BaseModel):
     """Request body for PATCH /api/v1/auth/admin/users/{user_id}/role."""
     role: str = Field(..., pattern=_VALID_ROLES)
+
+
+_VALID_STATUSES = r"^(active|disabled)$"
+
+
+class AdminUpdateStatusRequest(BaseModel):
+    """Request body for PATCH /api/v1/auth/admin/users/{user_id}/status."""
+    status: str = Field(..., pattern=_VALID_STATUSES)
