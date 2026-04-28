@@ -9,6 +9,7 @@ Responsibilities:
 """
 from typing import Optional, Tuple
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 import hashlib
@@ -90,6 +91,19 @@ class RefreshToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow_naive)
+
+
+@dataclass
+class AdminDirectoryUser:
+    """Admin-facing LDAP directory user with optional local role mapping."""
+
+    id: uuid.UUID
+    username: str
+    email: str
+    full_name: str
+    role: str
+    department: Optional[str]
+    status: str
 
 
 class AuthService:
@@ -462,31 +476,164 @@ class AuthService:
         Returns:
             Tuple of (items: list[User], total: int).
         """
-        from sqlalchemy import func, or_
-
         page_size = min(page_size, 200)
         offset = (max(page, 1) - 1) * page_size
 
-        base_query = select(User)
-        count_query = select(func.count()).select_from(User)
+        ldap_users = await ldap_client.list_users(search=search)
+        if not ldap_users:
+            return [], 0
 
-        if search:
-            like_expr = f"%{search}%"
-            filter_clause = or_(
-                User.username.ilike(like_expr),
-                User.full_name.ilike(like_expr),
+        usernames = [u.username for u in ldap_users if u.username]
+        local_users_by_username: dict[str, User] = {}
+
+        if usernames:
+            result = await db.execute(select(User).where(User.username.in_(usernames)))
+            local_users = list(result.scalars().all())
+            local_users_by_username = {u.username: u for u in local_users}
+
+        # Lazy-provision: create local profiles for LDAP users that have never logged in.
+        # This ensures all directory users are visible with "active" status without
+        # requiring a first-login event.
+        new_local_users: list[User] = []
+        for ldap_user in ldap_users:
+            if ldap_user.username and ldap_user.username not in local_users_by_username:
+                role = AuthService._determine_role_from_username(ldap_user.username)
+                provisioned = User(
+                    username=ldap_user.username,
+                    email=ldap_user.email,
+                    full_name=ldap_user.full_name,
+                    role=role,
+                    department=ldap_user.department,
+                    status="active",
+                )
+                db.add(provisioned)
+                new_local_users.append(provisioned)
+
+        if new_local_users:
+            await db.flush()
+            # Reload newly created rows so their DB-assigned UUIDs are populated.
+            for provisioned in new_local_users:
+                await db.refresh(provisioned)
+            await db.commit()
+            local_users_by_username.update({u.username: u for u in new_local_users})
+            logger.info("Lazy-provisioned %d LDAP user(s) into local DB", len(new_local_users))
+
+        merged_users: list[AdminDirectoryUser] = []
+        for ldap_user in ldap_users:
+            local_user = local_users_by_username.get(ldap_user.username)
+            if local_user is None:
+                # Should not happen after lazy provisioning above, but guard defensively.
+                continue
+            merged_users.append(
+                AdminDirectoryUser(
+                    id=local_user.id,
+                    username=ldap_user.username,
+                    email=ldap_user.email,
+                    full_name=ldap_user.full_name,
+                    role=local_user.role,
+                    department=ldap_user.department,
+                    status=local_user.status,
+                )
             )
-            base_query = base_query.where(filter_clause)
-            count_query = count_query.where(filter_clause)
 
-        total_result = await db.execute(count_query)
-        total = total_result.scalar_one()
+        total = len(merged_users)
+        return merged_users[offset: offset + page_size], total
 
-        users_result = await db.execute(
-            base_query.order_by(User.username).offset(offset).limit(page_size)
+    @staticmethod
+    async def provision_ldap_users(db: AsyncSession) -> dict:
+        """Bulk-provision all LDAP directory users into the local DB.
+
+        Fetches every user from LDAP and creates a local profile for any who
+        do not yet have one.  Existing local profiles are left untouched so
+        that manually assigned roles and statuses are preserved.
+
+        This is idempotent — running it multiple times is safe.
+
+        Args:
+            db: Database session.
+
+        Returns:
+            Dict with keys ``provisioned`` (int) and ``already_existed`` (int).
+        """
+        ldap_users = await ldap_client.list_users(search=None)
+        if not ldap_users:
+            return {"provisioned": 0, "already_existed": 0}
+
+        usernames = [u.username for u in ldap_users if u.username]
+        result = await db.execute(select(User).where(User.username.in_(usernames)))
+        existing = {u.username for u in result.scalars().all()}
+
+        provisioned = 0
+        for ldap_user in ldap_users:
+            if not ldap_user.username or ldap_user.username in existing:
+                continue
+            role = AuthService._determine_role_from_username(ldap_user.username)
+            db.add(
+                User(
+                    username=ldap_user.username,
+                    email=ldap_user.email,
+                    full_name=ldap_user.full_name,
+                    role=role,
+                    department=ldap_user.department,
+                    status="active",
+                )
+            )
+            provisioned += 1
+
+        if provisioned:
+            await db.commit()
+            logger.info("provision_ldap_users: provisioned %d new user(s)", provisioned)
+
+        already_existed = len(existing)
+        return {"provisioned": provisioned, "already_existed": already_existed}
+
+    @staticmethod
+    async def update_user_status(
+        target_user_id: uuid.UUID,
+        new_status: str,
+        caller_user_id: uuid.UUID,
+        db: AsyncSession,
+    ) -> Optional[User]:
+        """Set the local status of an LDAP-backed user (admin only).
+
+        Allowed values: ``"active"`` or ``"disabled"``.
+        Admins cannot disable their own account.
+
+        Args:
+            target_user_id: UUID of the user whose status is being changed.
+            new_status: ``"active"`` or ``"disabled"``.
+            caller_user_id: UUID of the admin making the request.
+            db: Database session.
+
+        Returns:
+            Updated User object, or None if not found.
+
+        Raises:
+            PermissionError: If the admin attempts to disable their own account.
+        """
+        if target_user_id == caller_user_id:
+            raise PermissionError("Admins cannot disable their own account.")
+
+        result = await db.execute(select(User).where(User.id == target_user_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            return None
+
+        old_status = user.status
+        user.status = new_status
+        user.updated_at = _utcnow_naive()
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info(
+            "Status updated for user %s (%s): %s → %s by admin %s",
+            user.username,
+            target_user_id,
+            old_status,
+            new_status,
+            caller_user_id,
         )
-        users = list(users_result.scalars().all())
-        return users, total
+        return user
 
     @staticmethod
     async def update_user_role(
