@@ -59,22 +59,43 @@ async def _set_document_status(
     db: AsyncSession,
     document_id,
     new_status: str,
-    *,
-    review_progress: Optional[int] = None,
-    qa_score: object = _UNCHANGED,
-    approved_by: Optional[str] = None,
-    approved_at: bool = False,
-    notes: Optional[str] = None,
-    optimization_started_at: object = _UNCHANGED,
-    optimization_completed_at: object = _UNCHANGED,
-    optimization_error: object = _UNCHANGED,
-    publication_status: object = _UNCHANGED,
-    published_at: object = _UNCHANGED,
-    publication_error: object = _UNCHANGED,
-    indexed_chunk_count: object = _UNCHANGED,
-    qdrant_collection: object = _UNCHANGED,
+    **status_updates: object,
 ) -> None:
     from sqlalchemy import text as _text
+
+    supported_keys = {
+        "review_progress",
+        "qa_score",
+        "approved_by",
+        "approved_at",
+        "notes",
+        "optimization_started_at",
+        "optimization_completed_at",
+        "optimization_error",
+        "publication_status",
+        "published_at",
+        "publication_error",
+        "indexed_chunk_count",
+        "qdrant_collection",
+    }
+    unknown_keys = set(status_updates) - supported_keys
+    if unknown_keys:
+        unexpected = ", ".join(sorted(unknown_keys))
+        raise TypeError(f"_set_document_status() got unexpected keyword argument(s): {unexpected}")
+
+    review_progress = status_updates.get("review_progress")
+    qa_score = status_updates.get("qa_score", _UNCHANGED)
+    approved_by = status_updates.get("approved_by")
+    approved_at = bool(status_updates.get("approved_at", False))
+    notes = status_updates.get("notes")
+    optimization_started_at = status_updates.get("optimization_started_at", _UNCHANGED)
+    optimization_completed_at = status_updates.get("optimization_completed_at", _UNCHANGED)
+    optimization_error = status_updates.get("optimization_error", _UNCHANGED)
+    publication_status = status_updates.get("publication_status", _UNCHANGED)
+    published_at = status_updates.get("published_at", _UNCHANGED)
+    publication_error = status_updates.get("publication_error", _UNCHANGED)
+    indexed_chunk_count = status_updates.get("indexed_chunk_count", _UNCHANGED)
+    qdrant_collection = status_updates.get("qdrant_collection", _UNCHANGED)
 
     assignments = ["status = :new_status", "updated_at = NOW()"]
     params: dict[str, object] = {"doc_id": str(document_id), "new_status": new_status}
