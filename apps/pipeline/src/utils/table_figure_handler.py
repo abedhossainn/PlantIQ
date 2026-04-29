@@ -15,7 +15,7 @@ from dataclasses import dataclass, asdict
 import re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 FIGURE_DESCRIPTION_PATTERN = re.compile(r'\*\*\[Figure\s+(\d+):(.*?)\]\*\*', re.IGNORECASE | re.DOTALL)
