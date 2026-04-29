@@ -149,6 +149,11 @@ class Settings(BaseSettings):
         default="Qwen/Qwen3-VL-4B-Instruct",
         validation_alias=AliasChoices("VISION_MODEL_ID", "VLM_MODEL", "VLM_MODEL_NAME")
     )
+    LLM_PROTOCOL: str = Field(
+        default="http",
+        validation_alias="LLM_PROTOCOL",
+        description="Protocol for LLM inference server (http for local Ollama, https for remote servers)"
+    )
     LLM_TIMEOUT: int = Field(
         default=60,
         validation_alias=AliasChoices("LLM_TIMEOUT", "VLLM_TIMEOUT")
