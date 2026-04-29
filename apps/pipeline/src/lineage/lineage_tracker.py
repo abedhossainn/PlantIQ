@@ -20,7 +20,7 @@ import re
 from ..utils.vlm_options import get_text_model_id, get_vision_model_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 MAX_RETAINED_MARKDOWN_VERSIONS = 2
