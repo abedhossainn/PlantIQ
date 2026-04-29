@@ -20,7 +20,7 @@ except ImportError:
     TQDM_AVAILABLE = False
     print("⚠️  tqdm not available. Install with: pip install tqdm")
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 @dataclass
