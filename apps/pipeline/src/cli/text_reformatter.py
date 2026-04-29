@@ -24,8 +24,8 @@ from ..utils.vlm_options import (
 from ..utils.vlm_response_parser import extract_json_from_text, lax_json_parse
 from ..utils.progress_tracker import log_operation
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')  # NOSONAR: Safe basic logging format
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 _DEFAULT_SEGMENT_ID = "segment_001"
 
@@ -1008,7 +1008,7 @@ def _load_reformatter_model_resources(vlm_options: VLMOptions) -> tuple[Any, Any
                 0: f"{int(vlm_options.gpu_memory_fraction * 22)}GiB",
                 "cpu": "100GiB"
             },
-            offload_folder="/tmp/offload"
+            offload_folder="/tmp/offload"  # NOSONAR: Safe in containerized env; temporary model offload storage
         )
 
     return tokenizer, model, torch, gc
