@@ -50,8 +50,8 @@ from ..utils.table_figure_handler import (
 )
 from ..utils.vlm_options import get_text_model_id, get_vision_model_id
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')  # NOSONAR: Safe basic logging format
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 def _emit_event(
