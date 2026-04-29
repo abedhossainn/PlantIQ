@@ -19,7 +19,7 @@ from enum import Enum
 from ..utils.vlm_options import get_vision_model_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 def _normalize_text_for_match(text: str) -> str:
