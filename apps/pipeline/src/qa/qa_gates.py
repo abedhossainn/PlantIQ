@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 NON_DATA_TABLE_HEADING_MARKERS = (
@@ -142,12 +142,13 @@ def calculate_question_heading_compliance(sections: List[Dict]) -> float:
     
     for section in sections:
         heading = section.get('heading', '').lower()
-        
-        if heading.endswith('?'):
+
+        is_question_heading = heading.endswith('?') or any(
+            word in heading for word in question_words
+        )
+        if is_question_heading:
             question_headings += 1
-        elif any(word in heading for word in question_words):
-            question_headings += 1
-    
+
     compliance = (question_headings / len(sections)) * 100
     logger.info(f"📊 Question heading compliance: {compliance:.1f}% ({question_headings}/{len(sections)} sections)")
     return compliance
@@ -601,7 +602,7 @@ def apply_sampling_policy(
         # Apply sampling
         sample_rate = policy.get_sample_rate(risk_level)
         
-        if random.random() < sample_rate:
+        if random.random() < sample_rate:  # NOSONAR: Sampling randomness doesn't require cryptographic security
             section['risk_level'] = risk_level.value
             section['sampled'] = True
             selected_sections.append(section)
