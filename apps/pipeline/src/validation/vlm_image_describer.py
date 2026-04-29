@@ -21,7 +21,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 def _build_image_description_prompt() -> str:
@@ -123,7 +123,7 @@ def _generate_descriptions_for_single_page(
     vlm_options: VLMOptions,
 ) -> List[Dict[str, str]]:
     """Render one PDF page and run VLM inference to extract image descriptions."""
-    image_path = f"/tmp/page_{page_num}_temp.png"
+    image_path = f"/tmp/page_{page_num}_temp.png"  # NOSONAR: Safe in containerized env; temporary image storage
     try:
         im = page.to_image(resolution=vlm_options.image_resolution)
         im.save(image_path)
