@@ -59,11 +59,12 @@ class LLMService:
     def get_client(cls) -> httpx.AsyncClient:
         """Get or create httpx client singleton."""
         if cls._client is None:
+            base_url = f"{settings.LLM_PROTOCOL}://{settings.LLM_HOST}:{settings.LLM_PORT}"
             cls._client = httpx.AsyncClient(
-                base_url=f"http://{settings.LLM_HOST}:{settings.LLM_PORT}",
+                base_url=base_url,
                 timeout=settings.LLM_TIMEOUT,
             )
-            logger.info("Connected to LLM backend at %s:%s", settings.LLM_HOST, settings.LLM_PORT)
+            logger.info("Connected to LLM backend at %s:%s (protocol=%s)", settings.LLM_HOST, settings.LLM_PORT, settings.LLM_PROTOCOL)
         return cls._client
 
     @classmethod
@@ -585,8 +586,9 @@ class LLMService:
         # Lightweight liveness probe — short timeout, no retry.
         container_reachable = False
         try:
+            base_url = f"{settings.LLM_PROTOCOL}://{settings.LLM_HOST}:{settings.LLM_PORT}"
             async with httpx.AsyncClient(
-                base_url=f"http://{settings.LLM_HOST}:{settings.LLM_PORT}",
+                base_url=base_url,
                 timeout=1.5,
             ) as probe:
                 response = await probe.get("/v1/models")
