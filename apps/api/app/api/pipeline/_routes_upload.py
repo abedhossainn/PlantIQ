@@ -146,6 +146,57 @@ async def _stream_optimization_queue_events(*, queue, request: Request, doc_id: 
             return
 
 
+async def _emit_optimization_initial_events(
+    *,
+    doc_id: str,
+    log_buffer: list[dict],
+    latest_progress: Optional[dict],
+    queue,
+):
+    for entry in log_buffer:
+        yield encode_sse_event({"event": "log", **entry})
+
+    if latest_progress is not None:
+        yield encode_sse_event(latest_progress)
+
+    if queue is None:
+        yield encode_sse_event(
+            {"event": "ping", "document_id": doc_id, "timestamp": pipeline_timestamp()}
+        )
+
+
+async def _emit_optimization_live_events(
+    *,
+    doc_id: str,
+    request: Request,
+    queue,
+    terminal_status: Optional[str],
+    replay_entries: list[dict],
+):
+    if terminal_status is not None:
+        yield encode_sse_event({"event": "done", "status": terminal_status})
+        return
+
+    for entry in replay_entries:
+        yield encode_sse_event({"event": "log", **entry})
+
+    if queue is None:
+        yield encode_sse_event({"event": "done", "status": "failed"})
+        return
+
+    try:
+        async for event_payload in _stream_optimization_queue_events(
+            queue=queue,
+            request=request,
+            doc_id=doc_id,
+        ):
+            yield event_payload
+    except asyncio.CancelledError:
+        return
+    finally:
+        OptimizationLogManager.unsubscribe(doc_id, queue)
+
+
 @router.post("/documents/upload", response_model=DocumentUploadResponse)
 async def upload_document(
     file: UploadFile = File(...),
@@ -374,18 +425,15 @@ async def stream_optimization_logs(
         log_buffer, queue = OptimizationLogManager.subscribe(doc_id)
         latest_progress = OptimizationLogManager.get_progress_snapshot(doc_id)
 
-        for entry in log_buffer:
-            yield encode_sse_event({"event": "log", **entry})
+        async for initial_event in _emit_optimization_initial_events(
+            doc_id=doc_id,
+            log_buffer=log_buffer,
+            latest_progress=latest_progress,
+            queue=queue,
+        ):
+            yield initial_event
 
-        if latest_progress is not None:
-            yield encode_sse_event(latest_progress)
-
-        if queue is None:
-            yield encode_sse_event(
-                {"event": "ping", "document_id": doc_id, "timestamp": pipeline_timestamp()}
-            )
-
-        log_buffer, queue, terminal_status, replay_entries = await _resolve_optimization_subscription_queue(
+        _, queue, terminal_status, replay_entries = await _resolve_optimization_subscription_queue(
             doc_id=doc_id,
             request=request,
             db=db,
@@ -393,27 +441,13 @@ async def stream_optimization_logs(
             queue=queue,
         )
 
-        if terminal_status is not None:
-            yield encode_sse_event({"event": "done", "status": terminal_status})
-            return
-
-        for entry in replay_entries:
-            yield encode_sse_event({"event": "log", **entry})
-
-        if queue is None:
-            yield encode_sse_event({"event": "done", "status": "failed"})
-            return
-
-        try:
-            async for event_payload in _stream_optimization_queue_events(
-                queue=queue,
-                request=request,
-                doc_id=doc_id,
-            ):
-                yield event_payload
-        except asyncio.CancelledError:
-            return
-        finally:
-            OptimizationLogManager.unsubscribe(doc_id, queue)
+        async for live_event in _emit_optimization_live_events(
+            doc_id=doc_id,
+            request=request,
+            queue=queue,
+            terminal_status=terminal_status,
+            replay_entries=replay_entries,
+        ):
+            yield live_event
 
     return create_sse_response(log_generator())
