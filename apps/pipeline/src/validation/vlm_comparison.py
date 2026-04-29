@@ -16,7 +16,7 @@ from ..utils.vlm_response_parser import parse_vlm_response, ValidationResult, en
 from ..utils.progress_tracker import log_operation
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 
 def extract_pdf_info(pdf_path: str) -> dict:
