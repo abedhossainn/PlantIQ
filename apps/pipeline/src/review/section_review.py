@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 from enum import Enum
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
+
+REVIEW_MANIFEST_FILENAME = "review_manifest.json"
+PAGE_REVIEW_MANIFEST_FILENAME = "page_review_manifest.json"
 
 
 def _section_has_images(content: str) -> bool:
@@ -353,7 +356,7 @@ def create_page_review_workspace(pages: DocumentPages, output_dir: str) -> Path:
             }
         )
 
-    manifest_file = workspace / "page_review_manifest.json"
+    manifest_file = workspace / PAGE_REVIEW_MANIFEST_FILENAME
     with open(manifest_file, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2)
 
@@ -469,7 +472,7 @@ def create_review_workspace(sections: DocumentSections, output_dir: str) -> Path
         logger.info(f"✅ Created: {section.section_id} - {section.heading}")
     
     # Save manifest
-    manifest_file = workspace / "review_manifest.json"
+    manifest_file = workspace / REVIEW_MANIFEST_FILENAME
     with open(manifest_file, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2)
     
@@ -516,7 +519,7 @@ def submit_section_review(
         json.dump(asdict(review), f, indent=2)
     
     # Update manifest
-    manifest_file = workspace / "review_manifest.json"
+    manifest_file = workspace / REVIEW_MANIFEST_FILENAME
     with open(manifest_file, 'r') as f:
         manifest = json.load(f)
     
@@ -573,8 +576,8 @@ def reprocess_section(
 def get_review_progress(workspace_path: str) -> Dict:
     """Get review progress summary"""
     workspace = Path(workspace_path)
-    page_manifest_file = workspace / "page_review_manifest.json"
-    manifest_file = page_manifest_file if page_manifest_file.exists() else workspace / "review_manifest.json"
+    page_manifest_file = workspace / PAGE_REVIEW_MANIFEST_FILENAME
+    manifest_file = page_manifest_file if page_manifest_file.exists() else workspace / REVIEW_MANIFEST_FILENAME
     
     with open(manifest_file, 'r') as f:
         manifest = json.load(f)
