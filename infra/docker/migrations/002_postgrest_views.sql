@@ -195,8 +195,8 @@ BEGIN
         u.full_name as uploaded_by_name,
         -- Simple relevance scoring based on title match
         CASE 
-            WHEN LOWER(d.title) LIKE LOWER('%' || search_term || '%') THEN 1.0
-            ELSE 0.5
+            WHEN LOWER(d.title) LIKE LOWER('%' || search_term || '%') THEN 1.0::REAL
+            ELSE 0.5::REAL
         END as relevance
     FROM documents d
     LEFT JOIN users u ON d.uploaded_by = u.id
