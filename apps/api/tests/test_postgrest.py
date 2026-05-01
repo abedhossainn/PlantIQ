@@ -5,6 +5,7 @@ PostgREST API Test Suite
 Tests all PostgREST endpoints with JWT authentication.
 Validates CRUD operations, RLS policies, and query patterns.
 """
+import os
 import requests
 import json
 import sys
@@ -24,12 +25,13 @@ class PostgRESTTester:
         
         self.test_results = []
     
-    def get_token_from_fastapi(self, username: str = "admin", password: str = "admin123") -> str:
+    def get_token_from_fastapi(self, username: str = "admin", password: str = "DemoPass@2026") -> str:
         """Get JWT token from FastAPI auth endpoint."""
         print(f"\n🔐 Getting JWT token for user: {username}...")
+        auth_url = os.getenv("POSTGREST_TEST_AUTH_URL", "http://localhost:8001/api/v1/auth/login")
         try:
             response = requests.post(
-                "http://localhost:8001/api/v1/auth/login",
+                auth_url,
                 json={"username": username, "password": password}
             )
             response.raise_for_status()
@@ -38,7 +40,7 @@ class PostgRESTTester:
             return token
         except Exception as e:
             print(f"❌ Failed to get token: {e}")
-            print("⚠️  Make sure FastAPI backend is running on port 8000")
+            print(f"⚠️  Make sure FastAPI backend is reachable at {auth_url}")
             raise
     
     def test(self, name: str, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
@@ -66,7 +68,7 @@ class PostgRESTTester:
                 try:
                     result["data"] = response.json()
                     print(f"   📦 Returned {len(result['data']) if isinstance(result['data'], list) else 1} item(s)")
-                except (ValueError, json.JSONDecodeError):
+                except ValueError:
                     result["data"] = response.text
             else:
                 print(f"   ❌ {response.status_code} - {response.text[:100]}")
@@ -203,7 +205,7 @@ class PostgRESTTester:
             "/documents"
         )
         
-        self.print_summary()
+        return self.print_summary()
     
     def print_summary(self):
         """Print test summary."""
@@ -246,10 +248,13 @@ def main():
     
     # If no token provided, try to get one from FastAPI
     if not token:
+        username = os.getenv("POSTGREST_TEST_USERNAME", "admin")
+        password = os.getenv("POSTGREST_TEST_PASSWORD", "DemoPass@2026")
+        auth_url = os.getenv("POSTGREST_TEST_AUTH_URL", "http://localhost:8001/api/v1/auth/login")
         print("⚠️  No JWT token provided")
-        print("   Attempting to get token from FastAPI (http://localhost:8001)...")
+        print(f"   Attempting to get token from FastAPI ({auth_url})...")
         try:
-            token = tester.get_token_from_fastapi()
+            token = tester.get_token_from_fastapi(username=username, password=password)
             tester.token = token
             tester.session.headers.update({"Authorization": f"Bearer {token}"})
         except Exception as e:
