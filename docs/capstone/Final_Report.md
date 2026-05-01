@@ -280,7 +280,7 @@ The restructuring step is central to the approach. After a reviewer approves a d
 **Architecture Overview (Final): Quality-Gated RAG in an Air-Gapped Environment**
 
 ```mermaid
-%%{init: {'themeVariables': {'fontSize': '28px'}}}%%
+%%{init: {'themeVariables': {'fontSize': '32px'}}}%%
 flowchart LR
     %% Admin ingestion path
     UI["Admin UI (Upload/Review/QA/Publish)"] --> API["FastAPI /api/v1/documents"]
@@ -310,7 +310,7 @@ flowchart LR
 *Figure 6.1 — Document Ingestion, QA Gate, and Publication Flow (Air-Gapped)*
 
 ```mermaid
-%%{init: {'themeVariables': {'fontSize': '24px'}}}%%
+%%{init: {'themeVariables': {'fontSize': '32px'}}}%%
 flowchart LR
     %% Query entry
     USER["Operator UI (Chat/Citations/Bookmarks/Feedback)"] --> CHATAPI["FastAPI /api/v1/chat"]
@@ -1073,20 +1073,20 @@ A comprehensive project quality snapshot was extracted from the SonarQube server
 |---|---|---|---|
 | **Code Volume & Complexity** | | | |
 | Non-Comment Lines of Code (ncloc) | 16,587 | Final | All application + test code (tracked by git) |
-| Code Smells | 0 | ✅ Best | Zero maintainability violations |
-| Duplicated Lines Density | 0.0% | ✅ Best | No copy-paste code detected |
+| Code Smells | 0 | Best | Zero maintainability violations |
+| Duplicated Lines Density | 0.0% | Best | No copy-paste code detected |
 | **Testing & Coverage** | | | |
 | Unit Tests (Sonar-counted) | 148 | Tracked | Sonar counts only git-tracked test files; total local test cases = 989 |
-| Coverage % | 86.7% | ✅ Good | Well above 80% target for backend |
-| Line Coverage % | 89.0% | ✅ Good | Uncovered lines = ~1,317 / 9,900 coverable |
+| Coverage % | 86.7% | Good | Well above 80% target for backend |
+| Line Coverage % | 89.0% | Good | Uncovered lines = ~1,317 / 9,900 coverable |
 | **Reliability & Security** | | | |
-| Bugs | 0 | ✅ Best | Zero bug-risk findings |
-| Vulnerabilities | 0 | ✅ Best | Zero security vulnerabilities |
-| Violations (Overall) | 0 | ✅ Best | No active blocking issues |
+| Bugs | 0 | Best | Zero bug-risk findings |
+| Vulnerabilities | 0 | Best | Zero security vulnerabilities |
+| Violations (Overall) | 0 | Best | No active blocking issues |
 | **Quality Ratings (A=1.0, B=2.0, etc.)** | | | |
-| Reliability Rating | A (1.0) | ✅ Best | No potential runtime failures detected |
-| Security Rating | A (1.0) | ✅ Best | No security hotspots or exploitable patterns |
-| Maintainability Rating (SQALE) | A (1.0) | ✅ Best | Technical debt paid down; codebase is maintainable |
+| Reliability Rating | A (1.0) | Best | No potential runtime failures detected |
+| Security Rating | A (1.0) | Best | No security hotspots or exploitable patterns |
+| Maintainability Rating (SQALE) | A (1.0) | Best | Technical debt paid down; codebase is maintainable |
 
 **Assessment Summary**
 
@@ -1113,11 +1113,11 @@ Quality gate evidence was retrieved from SonarQube APIs at Final checkpoint:
 
 | Gate Condition (Metric Key) | Comparator / Threshold | Effective Pass Rule | Observed Value | Result |
 |---|---|---|---:|---|
-| `new_reliability_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | ✅ Pass |
-| `new_security_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | ✅ Pass |
-| `new_maintainability_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | ✅ Pass |
-| `new_coverage` | `LT 80` | Must be ≥ 80% | 90.4% | ✅ Pass |
-| `new_duplicated_lines_density` | `GT 3` | Must be ≤ 3% | 0.0% | ✅ Pass |
+| `new_reliability_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | Pass |
+| `new_security_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | Pass |
+| `new_maintainability_rating` | `GT 1` | Must be ≤ 1 (A rating) | 1 | Pass |
+| `new_coverage` | `LT 80` | Must be ≥ 80% | 90.4% | Pass |
+| `new_duplicated_lines_density` | `GT 3` | Must be ≤ 3% | 0.0% | Pass |
 
 In other words, the effective built-in gate logic on new code is:
 
@@ -1448,6 +1448,234 @@ Across six test types spanning burst, ramp-up stress, spike/recovery, SSE stream
 
 **Evidence summary:** Performance readiness is evidenced by archived T1–T8 load/endurance datasets and figures, including 8-hour zero-error sustained operation.
 
+#### Week-One Supplementary Stability Validation Refresh (April 30, 2026)
+
+To initiate the recommended post-checkpoint stability expansion, a targeted week-one validation pass was executed on April 30, 2026 against seven backend test modules and the full frontend API integration contract suite. The pass covered security-sensitive authentication paths, API contract behavior, scope-governance enforcement, answer-quality feedback persistence, and hybrid retrieval resilience. All 133 checks passed across three test groups in under 7 seconds of combined execution time.
+
+**Overall test distribution — 133 automated checks**
+
+```mermaid
+pie title Week-One Supplementary Test Distribution (133 total)
+    "Security Baseline (33)" : 33
+    "Backend Auth / API / Governance (39)" : 39
+    "Frontend API Integration (61)" : 61
+```
+
+---
+
+##### Group 1 — Security Baseline (33 passed in 0.25 s)
+
+*Files:* `apps/api/tests/test_security.py` (27 tests) · `apps/api/tests/test_security_extra.py` (6 tests)
+
+The security baseline suite exhaustively validates the JWT authentication layer and role-enforcement middleware that protects every backend endpoint. It is the fastest-executing group (250 ms for 33 cases) because all interactions are pure-Python unit-level assertions — no database or network I/O required.
+
+**`test_security.py` — 27 tests covering:**
+
+| Behaviour path | Tests |
+|---|---:|
+| Auth-disabled bypass: admin and user payload construction | 2 |
+| `get_jwt_payload`: auth-disabled, no-credentials 401, valid token, invalid token 401 | 4 |
+| `get_current_user_id`: valid UUID extraction, missing `sub` 401, invalid UUID format 401 | 3 |
+| `get_current_user_role`: valid role extraction, missing role 401 | 2 |
+| `require_role`: no-credentials 401, valid role pass, wrong-role 403, invalid-token 401 | 4 |
+| `require_admin`: auth-disabled bypass, no-credentials 401, non-admin 403, valid admin pass | 4 |
+| `get_token_payload` (WebSocket-aware): auth-disabled, no-credentials 401 | 2 |
+| `verify_ws_token`: auth-disabled, no token, empty-string token, valid token, unknown-role normalization, invalid-token → None | 6 |
+
+**`test_security_extra.py` — 6 tests covering:**
+
+| Behaviour path | Tests |
+|---|---:|
+| Auth-disabled mode: invalid role string normalized to `user`; valid role string preserved | 2 |
+| `require_admin`: raises 401 on malformed token (not just missing credentials) | 1 |
+| `get_token_payload`: `None` credential object → 401; invalid token string → 401 | 2 |
+| `verify_ws_token`: auth-disabled mode returns synthetic disabled-user payload | 1 |
+
+The six `test_security_extra.py` cases were added specifically to cover the edge-case branches not reachable from the happy-path scenarios in the primary file, including the `None`-credential and the auth-disabled-WebSocket code paths that represent real deployment configurations.
+
+---
+
+##### Group 2 — Backend Auth / API / Governance / Resilience (39 passed in 6.52 s)
+
+*Files:* five modules covering authentication endpoints, chat API contracts, feedback quality persistence, scope-filtering governance, and hybrid retrieval resilience.
+
+**Breakdown within Group 2**
+
+```mermaid
+pie title Backend Suite Breakdown — Group 2 (39 tests)
+    "Auth API Module (9)" : 9
+    "Chat API Module (13)" : 13
+    "Feedback Quality (4)" : 4
+    "Scope Simplification (8)" : 8
+    "Hybrid Retrieval (5)" : 5
+```
+
+**`test_auth_api_module.py` — 9 tests**
+
+Each test function covers a compound scenario (multiple endpoint interactions per function) to simulate realistic user journeys rather than isolated unit calls.
+
+| Test | Coverage |
+|---|---|
+| `test_login_success_sets_cookie` | POST `/auth/login` happy path, JWT cookie set in response |
+| `test_login_invalid_credentials` | 401 mapping for bad username/password |
+| `test_refresh_token_success_and_error_paths` | Token refresh happy path and expired-token 401 |
+| `test_logout_and_get_current_user` | Cookie-clearing logout and `GET /auth/me` profile retrieval |
+| `test_update_profile_and_change_password` | PATCH profile fields; password-change validation (old-password wrong → 400) |
+| `test_admin_endpoints_core_paths` | Admin user-list pagination, single-user fetch by ID |
+| `test_admin_role_and_status_update_paths` | Promote user to admin; deactivate/reactivate status flags |
+| `test_directory_config_endpoints` | GET/PUT/POST-test/POST-activate LDAP/AD config lifecycle |
+| `test_directory_config_error_mappings` | LDAP bind error, connection timeout, and attribute-map errors propagate to correct HTTP status codes |
+
+**`test_chat_api_module.py` — 13 tests**
+
+| Test | Coverage |
+|---|---|
+| `test_error_detail_includes_extra_fields` | Error detail schema carries `extra` context field |
+| `test_chat_query_success` | POST `/chat/query` returns answer and citations |
+| `test_chat_query_scope_access_denied_maps_403` | `ScopeAccessDeniedError` → 403 |
+| `test_chat_query_llm_unavailable_maps_503` | `LLMUnavailableError` → 503 |
+| `test_chat_query_generic_exception_maps_500` | Unhandled exception → 500 |
+| `test_chat_query_stream_scope_denied_maps_403` | Streaming path also enforces scope denial → 403 |
+| `test_chat_query_stream_builds_sse_response` | POST `/chat/stream` returns `text/event-stream` SSE response |
+| `test_submit_chat_feedback_success` | POST `/chat/feedback` persists thumbs-up/down, reason, and comment |
+| `test_submit_chat_feedback_service_error_maps_status` | Service-layer HTTP exceptions propagate with correct status code |
+| `test_submit_chat_feedback_generic_error_maps_500` | Unhandled feedback-service exception → 500 |
+| `test_get_feedback_metrics_role_denied_maps_403` | `GET /chat/feedback/metrics` blocked for `user` role |
+| `test_get_feedback_metrics_success_for_admin` | Admin role receives aggregated feedback metrics payload |
+| `test_get_feedback_metrics_generic_error_maps_500` | Metrics aggregation error → 500 |
+
+**`test_chat_feedback_quality.py` — 4 tests**
+
+This suite uses an in-memory async database session and a seeded conversation fixture to exercise the full feedback persistence stack without requiring a live PostgreSQL instance.
+
+| Test | Coverage |
+|---|---|
+| `test_submit_feedback_success_and_snapshot_update` | Feedback row written; quality-snapshot aggregate updated atomically |
+| `test_submit_feedback_validation_failure_for_non_assistant_target` | Feedback against a user-role message rejected at validation layer |
+| `test_feedback_metrics_summary_basics` | Metrics endpoint returns correct thumbs-up/down counts, reason distribution, and average quality score |
+| `test_chat_query_contract_remains_compatible` | Chat query response shape unchanged — guards against accidental schema drift |
+
+**`test_scope_simplification.py` — 8 tests**
+
+The scope-simplification tests validate the deliberate removal of the `document_type` filter axis from the governance model. After the Beta redesign, only `system` and `area` axes are active. These tests guard against regression to the three-axis model.
+
+| Test | Coverage |
+|---|---|
+| `test_resolve_query_scope_returns_none_for_document_type_fields` | `document_type` field resolves to `None` (axis disabled) |
+| `test_resolve_query_scope_ignores_persisted_document_type_scope` | Saved `document_type` scope values ignored during resolution |
+| `test_resolve_query_scope_workspace_still_active` | `workspace` (area) filter still passes through correctly |
+| `test_resolve_query_scope_no_document_type_returns_none` | Absence of `document_type` in payload also resolves to `None` |
+| `test_chat_query_without_document_type_succeeds` | End-to-end chat query without `document_type` field succeeds |
+| `test_chat_query_with_legacy_document_type_fields_is_accepted` | Legacy payloads carrying `document_type` accepted (backward-compat) |
+| `test_chat_query_system_filters_still_active` | `system` filter axis enforced normally |
+| `test_chat_query_context_order_based_on_raw_score_only` | Citation ordering uses raw retrieval score only (not composite) |
+
+**`test_hybrid_retrieval_service.py` — 5 tests**
+
+| Test | Coverage |
+|---|---|
+| `test_weighted_rrf_fusion_is_deterministic_with_stable_tie_breaks` | BM25 + dense RRF fusion produces stable, deterministic ranked list |
+| `test_hybrid_retrieval_falls_back_to_dense_only_when_lexical_fails` | Lexical (BM25) branch failure → graceful fallback to dense-only results |
+| `test_hybrid_retrieval_falls_back_to_lexical_only_when_dense_fails` | Dense (Qdrant) branch failure → graceful fallback to lexical-only results |
+| `test_hybrid_retrieval_returns_no_context_when_both_branches_fail` | Both branches failing → empty context returned, no exception raised |
+| `test_dense_retriever_reports_branch_metadata` | Retrieved chunks carry provenance metadata (`branch`, `score`, `source`) |
+
+The 6.52 s execution time for this group reflects realistic mock latency injected by `monkeypatch` for the LDAP bind simulation and async database session calls.
+
+---
+
+##### Group 3 — Frontend API Integration Contract Suite (61 passed in 340 ms)
+
+*File:* `apps/web/tests/api.integration.test.ts`
+
+This Vitest suite validates the TypeScript API client layer (`apps/web/lib/api.ts` and related utilities) without running a browser or a live backend. All HTTP interactions are intercepted via `vi.stubGlobal('fetch', …)` mocks. The 61 tests cover the complete surface of frontend↔backend API contracts — from environment URL resolution through SSE streaming, WebSocket connections, and document optimization workflows.
+
+**Frontend coverage areas**
+
+```mermaid
+pie title Frontend Integration Suite — 61 Tests by Area
+    "Chat query / streaming SSE (9)" : 9
+    "Document optimization workflow (13)" : 13
+    "Conversation management (8)" : 8
+    "Pipeline / ingestion SSE (9)" : 9
+    "Admin directory config (5)" : 5
+    "Document lifecycle (6)" : 6
+    "Feedback (3)" : 3
+    "Scope denial contracts (2)" : 2
+    "WebSocket (2)" : 2
+    "API URL resolution (3)" : 3
+    "Role gating (1)" : 1
+```
+
+| Area | Count | What is validated |
+|---|---:|---|
+| **API URL resolution** | 3 | `NEXT_PUBLIC_FASTAPI_URL` fallback to `NEXT_PUBLIC_API_URL`; optimization-workflow status labelling |
+| **Chat query / streaming SSE** | 9 | Non-streaming query with auth; scoped workspace payload; SSE token accumulation; citation event parsing; chunk-boundary split parsing; `complete` / `error` / clean-close termination; PostgREST filter query construction |
+| **Feedback** | 3 | Candidate-2 feedback payload submission with optional reason/comment; API error normalization from backend detail; metrics fetch with query parameters |
+| **Role gating** | 1 | Feedback metrics hidden for `user` role — enforced client-side before fetch |
+| **Admin directory config** | 5 | GET redacted config; PUT save; POST non-destructive test; POST activate; API error normalization |
+| **Scope denial contracts** | 2 | Candidate-1 scope-denial 403 response parsed for chat; scope-denial 403 parsed for upload |
+| **Conversation management** | 8 | Scope-metadata hydration; history-metadata mapping; pinned-conversation mapping; search/workspace filters; title/scope/pin PATCH through PostgREST |
+| **Document lifecycle** | 6 | Multipart upload without forced JSON content type; artifact download route; `fetchArtifactJson` with cache-disabled; document deletion with auth; snake_case and camelCase counter normalization |
+| **WebSocket** | 2 | Authenticated WS connection with heartbeat ping; chat query message with optional scope filters |
+| **Pipeline / ingestion SSE** | 9 | Pipeline status fetch; ingestion progress events; ingestion error termination; connection-error event; auth-token header in SSE; CRLF-delimited SSE parsing; chunk-boundary SSE parsing; ping heartbeat events; PostgREST `Prefer` header pass-through |
+| **Document optimization workflow** | 13 | Optimization SSE CRLF parsing; abort-during-read as normal shutdown; `isQAReadyStatus` true/false; `getPipelineStatus` for complete and downstream statuses; `getDocumentOptimizedChunks` fetch with auth; `updateOptimizedChunk` PATCH; empty-chunks-on-error; `canOpenOptimizedReview` true/false; status route-mapping for `optimization-complete` and `qa-review` |
+
+---
+
+##### Summary Metrics
+
+| Group | Files | Tests | Duration | Pass rate |
+|---|---|---:|---:|---:|
+| Security baseline | `test_security.py`, `test_security_extra.py` | 33 | 0.25 s | 100% |
+| Auth / API / governance / resilience | `test_auth_api_module.py`, `test_chat_api_module.py`, `test_chat_feedback_quality.py`, `test_scope_simplification.py`, `test_hybrid_retrieval_service.py` | 39 | 6.52 s | 100% |
+| Frontend API integration contracts | `api.integration.test.ts` | 61 | 0.34 s | 100% |
+| **Week-one supplementary total** | **8 files** | **133** | **~7.1 s** | **100%** |
+
+Two `DeprecationWarning` notices were raised by the backend suite (Pydantic `model_validator` usage in a legacy fixture). These are non-blocking and do not indicate test failures; the warnings are tracked for a future Pydantic v2 migration cleanup.
+
+This week-one pass confirms continued stability for security-sensitive authentication paths, frontend↔backend API contracts, scope-governance behavior, answer-feedback persistence, and hybrid retrieval graceful-degradation logic. Additional planned expansions (fault-injection/chaos testing and external DAST tooling) remain queued for the next wave.
+
+#### Wave 3 Completion Results (May 1, 2026)
+
+Following the week-one supplementary refresh, the remaining Wave 3 runs were executed directly in staging-connected development environment contexts.
+
+| Wave 3 Run | Command Target | Result | Duration | Notes |
+|---|---|---:|---:|---|
+| Performance benchmark | `apps/api/tests/test_performance_benchmarks.py` | 1/1 passed | 6.07 s | Completed full benchmark contract (`test_t014_performance_benchmark`) |
+| PostgREST live script (initial) | `apps/api/tests/test_postgrest.py` | 2/15 passed | N/A (script run) | Health-check and bookmark-details passed; 13 failed due to auth/schema constraints |
+| PostgREST live script (remediated) | `apps/api/tests/test_postgrest.py` | **15/15 passed** | N/A (script run) | All checks green after schema, auth, and type-mismatch remediation |
+| Frontend trio | `apps/web/tests/admin-users.test.ts`, `directory-config-form.test.ts`, `review-markdown.test.ts` | 32/32 passed | 0.40 s | Vitest run completed with all files green |
+
+**PostgREST initial run diagnostic summary**
+
+- FastAPI JWT bootstrap on `http://localhost:8001/api/v1/auth/login` returned `401 Unauthorized` using `admin/admin123` credentials.
+- Most protected table/view routes returned Postgres RLS/permission errors (`42501`) for unauthenticated access.
+- Several expected relations/RPCs were unavailable in the exposed schema cache (`42P01` / `PGRST202`), specifically:
+   - `public.document_summaries`
+   - `public.section_summaries`
+   - `public.search_documents(...)`
+   - `public.get_user_stats(...)`
+
+#### PostgREST Remediation (May 1, 2026)
+
+Root causes diagnosed and corrected in the same session:
+
+1. **Migration drift** — `infra/docker/migrations/002_postgrest_views.sql` had never been applied to the running Postgres container volume. Applied directly against live `plantiq-postgres` to create the four missing views/functions and grant all required role privileges. Issued `NOTIFY pgrst, 'reload schema'` to hot-reload the PostgREST schema cache.
+2. **Wrong default credentials** — The test script hardcoded `admin/admin123` while the LDAP-backed stack requires `admin/DemoPass@2026`. Updated the script default and added `POSTGREST_TEST_USERNAME` / `POSTGREST_TEST_PASSWORD` / `POSTGREST_TEST_AUTH_URL` environment-variable overrides for CI flexibility.
+3. **SQL type mismatch** — `search_documents` returned `numeric` for the `relevance` column but declared it as `real`; fixed by casting literals to `1.0::REAL` / `0.5::REAL` in both the migration source and the live function.
+4. **Script exit-status bug** — `run_all_tests()` did not return the boolean produced by `print_summary()`; corrected so the process exits non-zero on any failure.
+
+**PostgREST remediated run result:** `apps/api/tests/test_postgrest.py` → **15/15 passed, 100.0% success rate**.
+
+**Wave 3 stability status after hybrid-suite refactor fix and PostgREST remediation**
+
+- Split hybrid integration suite (`test_hybrid_*`) completed at **107/107 passed in 5.60 s** after the SSE terminal-event hang fix.
+- PostgREST live integration script remediated to **15/15 passed** after schema, auth, and type-mismatch corrections.
+- Combined with prior Wave 3 service runs (Qdrant/LLM/LDAP at 123 passed), all Wave 3 automated checks are now deterministically green across every pytest suite and integration script.
+
+All Wave 3 execution items are closed. No outstanding staging integration gaps remain.
+
 ### 8.6 Final Deliverables Access
 
 - **Public prototype URL:**  
@@ -1670,9 +1898,9 @@ Final coverage: **85%+** backend test coverage across all test layers
 
 All three sponsor-identified priorities for Final have been met:
 
-1. ✅ Facility-aligned user authentication integration — **Complete (LDAP with OpenLDAP dev stack)**
-2. ✅ Full user access control workflow demonstrated — **Complete (User Management UI + scope enforcement)**
-3. ✅ Multi-user concurrency evidence — **Complete (100% success through 23 users, 8-hour endurance)**
+1. Facility-aligned user authentication integration — **Complete (LDAP with OpenLDAP dev stack)**
+2. Full user access control workflow demonstrated — **Complete (User Management UI + scope enforcement)**
+3. Multi-user concurrency evidence — **Complete (100% success through 23 users, 8-hour endurance)**
 ## Appendix C — Glossary
 
 | Term | Definition |

@@ -210,3 +210,4 @@ apps/api/tests/test_optimization_log_unit.py
 apps/api/tests/test_pipeline_artifact_service_unit.py
 apps/api/tests/test_rag_helpers_unit.py
 apps/api/tests/test_security_extra.py
+apps/web/public/BHE GT&S_Logo.png
