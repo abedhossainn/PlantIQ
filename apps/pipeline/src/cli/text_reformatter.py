@@ -17,6 +17,7 @@ from typing import Any, Iterable
 # Import VLM infrastructure
 from ..utils.vlm_options import (
     VLMOptions,
+    ensure_gpu1_runtime,
     get_generation_timeout_seconds,
     get_text_model_id,
     resolve_model_reference,
@@ -61,6 +62,55 @@ Return this exact top-level structure:
   "markdown": "full optimized markdown document"
 }
 """
+
+
+def _load_local_model_config(model_source: str) -> dict[str, Any] | None:
+    config_path = Path(model_source).expanduser() / "config.json"
+    if not config_path.exists() or not config_path.is_file():
+        return None
+
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _ensure_reformatter_runtime_support(model_source: str, transformers_module: Any) -> None:
+    """Fail fast when the active runtime cannot load the configured local text model.
+
+    Stage 10 commonly runs inside the backend container, where the installed
+    Transformers version already supports Qwen3.5. Developers also invoke the
+    reformatter directly from host environments during debugging. When that host
+    runtime is older and lacks Qwen3.5 classes, the resulting loader failure is
+    opaque (for example: unknown/unsupported ``qwen3_5`` architecture).
+
+    Detect that case up front and raise a precise remediation error.
+    """
+    model_config = _load_local_model_config(model_source)
+    if not isinstance(model_config, dict):
+        return
+
+    model_type = str(model_config.get("model_type") or "").strip()
+    if model_type != "qwen3_5":
+        return
+
+    has_qwen3_5_support = any(
+        hasattr(transformers_module, symbol)
+        for symbol in ("Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM")
+    )
+    if has_qwen3_5_support:
+        return
+
+    transformers_version = getattr(transformers_module, "__version__", "unknown")
+    architectures = model_config.get("architectures") or []
+    raise RuntimeError(
+        "Configured Stage 10 text model is incompatible with the active Transformers runtime. "
+        f"Model source: {model_source}. model_type={model_type!r}. "
+        f"architectures={architectures!r}. Installed transformers version: {transformers_version}. "
+        "This runtime does not expose native Qwen3.5 model classes. "
+        "Run Stage 10 inside the backend container or upgrade the active environment to "
+        "transformers>=5.0.0,<6.0.0 before retrying."
+    )
 
 
 def load_reformatter_prompt(prompt_path: Path | None = None) -> str:
@@ -977,18 +1027,22 @@ def _prepare_reformatter_generation_inputs(
 
 def _load_reformatter_model_resources(vlm_options: VLMOptions) -> tuple[Any, Any, Any, Any]:
     """Load tokenizer/model resources for generation."""
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
     import gc
 
     model_source = resolve_model_reference(vlm_options.model_id)
     local_model_only = Path(model_source).expanduser().exists()
+    if local_model_only:
+        _ensure_reformatter_runtime_support(model_source, transformers)
 
     gc.collect()
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+    required_cuda_index = ensure_gpu1_runtime(torch)
+    required_cuda_device = torch.device(f"cuda:{required_cuda_index}")
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
 
     with log_operation("Load Tokenizer"):
         tokenizer = AutoTokenizer.from_pretrained(
@@ -998,18 +1052,24 @@ def _load_reformatter_model_resources(vlm_options: VLMOptions) -> tuple[Any, Any
         )
 
     with log_operation("Load Model"):
+        model_kwargs = vlm_options.get_model_kwargs()
         model = AutoModelForCausalLM.from_pretrained(
             model_source,
-            dtype=torch.float16,
-            device_map=vlm_options.device_map,
-            trust_remote_code=vlm_options.trust_remote_code,
+            **model_kwargs,
             local_files_only=local_model_only,
             max_memory={
-                0: f"{int(vlm_options.gpu_memory_fraction * 22)}GiB",
-                "cpu": "100GiB"
+                required_cuda_index: f"{int(vlm_options.gpu_memory_fraction * 22)}GiB",
             },
-            offload_folder="/tmp/offload"  # NOSONAR: Safe in containerized env; temporary model offload storage
         )
+
+    first_param = next(model.parameters())
+    if getattr(first_param.device, "type", None) != "cuda" or first_param.device.index != required_cuda_index:
+        raise RuntimeError(
+            "Text reformatter model device mismatch. "
+            f"Expected cuda:{required_cuda_index}, got {first_param.device}. "
+            "CPU fallback/offload is disabled."
+        )
+    model = model.to(required_cuda_device)
 
     return tokenizer, model, torch, gc
 
