@@ -25,6 +25,7 @@ services:
       - UPLOAD_DIR=/workspace/data/raw
       - ARTIFACTS_DIR=/workspace/data/artifacts
       - DOCLING_URL=http://docling-serve:5001
+      - DOCLING_ON_DEMAND=${DOCLING_ON_DEMAND:-true}
       - HF_HOME=/root/.cache/huggingface
       - NVIDIA_VISIBLE_DEVICES=${DOCLING_GPU_DEVICE_ID:-1}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -65,6 +66,7 @@ services:
       - ./:/workspace
       - docling_models:/root/.cache/docling/models
       - ${HOME:-/home/cpdcs}/.cache/huggingface:/root/.cache/huggingface
+      - /var/run/docker.sock:/var/run/docker.sock  # on-demand Docling lifecycle control
     deploy:
       resources:
         reservations:
@@ -177,6 +179,8 @@ services:
   docling-serve:
     image: quay.io/docling-project/docling-serve-cu128:v1.12.0
     container_name: docling-serve
+    profiles:
+      - docling
     runtime: nvidia
     ports:
       - "5001:5001"
@@ -218,7 +222,8 @@ services:
               capabilities: [gpu]
     networks:
       - plantiq-network
-    restart: unless-stopped
+    # On-demand/no-hold default: do not auto-restart unless explicitly configured.
+    restart: ${DOCLING_RESTART_POLICY:-no}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
