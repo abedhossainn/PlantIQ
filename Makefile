@@ -1,7 +1,7 @@
 # PlantIQ Development Makefile
 # Air-Gapped RAG System for Industrial OT Environments
 
-.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs venv activate ensure-compose verify-llm-gpu llm-supervisor-start llm-supervisor-stop llm-supervisor-status
+.PHONY: help install test lint format clean docker-up docker-down docker-build docker-logs docling-up docling-down docling-status venv activate ensure-compose verify-llm-gpu llm-supervisor-start llm-supervisor-stop llm-supervisor-status
 
 # Path to Python interpreter
 PYTHON := python3
@@ -12,6 +12,7 @@ VENV_PIP := $(abspath $(VENV_BIN))/pip
 COMPOSE_V2 := $(shell if docker compose version >/dev/null 2>&1; then printf '%s' 'docker compose'; fi)
 COMPOSE_V1 := $(shell if command -v docker-compose >/dev/null 2>&1; then printf '%s' 'docker-compose'; fi)
 COMPOSE := $(if $(COMPOSE_V2),$(COMPOSE_V2),$(COMPOSE_V1))
+DOCLING_AUTO_START ?= false
 
 help:
 	@echo "PlantIQ Development Commands"
@@ -45,6 +46,9 @@ help:
 	@echo "  make docker-down     Stop all services"
 	@echo "  make docker-build    Build all Docker images"
 	@echo "  make docker-logs     View logs from all containers"
+	@echo "  make docling-up      Start Docling on demand (profile: docling)"
+	@echo "  make docling-down    Stop Docling and release GPU memory"
+	@echo "  make docling-status  Show Docling service status"
 	@echo "  make verify-llm-gpu  Fail fast if Ollama is not using NVIDIA runtime"
 	@echo "  make llm-supervisor-start  Start host-side on-demand LLM lifecycle supervisor"
 	@echo "  make llm-supervisor-stop   Stop host-side on-demand LLM lifecycle supervisor"
@@ -191,7 +195,13 @@ ensure-compose:
 docker-up: ensure-compose
 	@echo "Starting stable infrastructure services..."
 	@docker ps -aq --format '{{.ID}} {{.Names}}' | awk '/docling-serve/ {print $$1}' | xargs -r docker rm -f >/dev/null 2>&1 || true
-	@$(COMPOSE) up -d postgres vector-db docling-serve llm
+	@$(COMPOSE) up -d postgres vector-db llm
+	@if [ "${DOCLING_AUTO_START}" = "true" ]; then \
+		echo "DOCLING_AUTO_START=true -> starting Docling at boot"; \
+		$(COMPOSE) --profile docling up -d --wait docling-serve; \
+	else \
+		echo "Docling is on-demand (not started by default). Use 'make docling-up' when extraction begins."; \
+	fi
 	@echo "Applying database migrations to local PostgreSQL volume..."
 	@POSTGRES_USER=$${POSTGRES_USER:-plantiq}; \
 	POSTGRES_DB=$${POSTGRES_DB:-plantiq}; \
@@ -234,6 +244,17 @@ docker-build: ensure-compose
 
 docker-logs: ensure-compose
 	@$(COMPOSE) logs -f
+
+docling-up: ensure-compose
+	@echo "Starting Docling on demand..."
+	@$(COMPOSE) --profile docling up -d --wait docling-serve
+
+docling-down: ensure-compose
+	@echo "Stopping Docling to release GPU memory..."
+	@$(COMPOSE) stop docling-serve
+
+docling-status: ensure-compose
+	@$(COMPOSE) ps docling-serve
 
 llm-supervisor-start: ensure-compose
 	@mkdir -p data/artifacts/runtime
