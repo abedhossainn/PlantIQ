@@ -192,6 +192,24 @@ docker exec plantiq-ldap ldapsearch -x -H ldap://localhost:1389 \
 
 **Production AD wiring:** Replace the `LDAP_*` vars in `.env` with real AD values (see commented production profile in `.env.example`). Remove the `ldap` service from compose or leave it stopped.
 
+### Stage 10 runtime policy (container-first)
+
+Stage 10 text reformatting (`apps/pipeline/src/cli/text_reformatter.py`) should be treated as **container-first** in normal operations.
+
+- The backend container is the runtime source of truth for Stage 10 model loading.
+- The configured local checkpoint (`models/Qwen3.5-4B`, `model_type: qwen3_5`) requires a Transformers runtime that includes native Qwen3.5 classes.
+- If you run Stage 10 outside the container for local debugging, align your host environment to:
+   - `transformers>=5.0.0,<6.0.0`
+
+Quick runtime verification:
+
+```bash
+./.venv/bin/python -c 'import transformers; print(transformers.__version__)'
+docker compose exec -T backend python -c 'import transformers; print(transformers.__version__)'
+```
+
+If host and container are misaligned, Stage 10 now fails fast with an explicit remediation error instead of a generic unsupported-architecture traceback.
+
 ### 4) View runtime logs
 
 - `make docker-logs`
