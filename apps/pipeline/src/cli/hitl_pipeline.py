@@ -11,14 +11,20 @@ Integrates all improvements from the analysis:
 This orchestrator coordinates the entire manual HITL workflow.
 """
 
+import fcntl
 import json
 import logging
 import sys
 import subprocess
 import os
+from time import perf_counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
+
+_VLM_LOCK_PATH = "/tmp/vlm_worker.lock"
+_VLM_MIN_FREE_VRAM_BYTES = 9 * 1024 * 1024 * 1024  # 9 GiB — VLM requires ~8.5 GiB
+_VLM_GPU_INDEX = 1  # Physical GPU index used by CUDA_VISIBLE_DEVICES=1
 
 # Import our enhanced modules
 from ..validation.enhanced_validator import create_validation_report, save_validation_report
@@ -48,7 +54,13 @@ from ..utils.table_figure_handler import (
     extract_figures_from_markdown,
     generate_table_figure_report
 )
-from ..utils.vlm_options import get_text_model_id, get_vision_model_id
+from ..utils.vlm_options import (
+    build_gpu1_constrained_subprocess_env,
+    gather_gpu_preflight_info,
+    get_text_model_id,
+    get_vision_model_id,
+)
+from ..utils.docling_lifecycle import DoclingLifecycleManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')  # NOSONAR: Safe basic logging format
 logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
@@ -60,14 +72,16 @@ def _emit_event(
     message: str,
     progress: int,
     step: Optional[str] = None,
+    **extra: Any,
 ) -> None:
     """Emit a structured JSON event to stdout so the backend can stream it as an SSE event.
 
-    event_type: "stage_start" | "stage_done" | "progress"
-    stage:      backend stage name (extraction, validation, ...)
+    event_type: "stage_start" | "stage_done" | "progress" | "runtime.gpu.*" | "model.lifecycle.*" | …
+    stage:      backend stage name (extraction, validation, preflight, …)
     message:    human-readable detail line
     progress:   0-100 integer
     step:       optional display label shown as a section header on the frontend
+    **extra:    optional structured metadata merged into the event payload
     """
     payload: dict = {
         "event": event_type,
@@ -77,7 +91,175 @@ def _emit_event(
     }
     if step is not None:
         payload["step"] = step
+    if extra:
+        payload.update(extra)
     print(f"PIPELINE_EVENT:{json.dumps(payload)}", flush=True)
+
+
+def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
+    """Probe GPU runtime and emit structured transparency events.
+
+    Emits (in order):
+      runtime.gpu.discovered → runtime.gpu.selected + runtime.gpu.validated
+      OR runtime.gpu.discovered → pipeline.failfast.preflight_failed
+
+    Returns the preflight info dict.
+    """
+    torch_module = None
+    try:
+        import torch as _torch
+        torch_module = _torch
+    except ImportError:
+        pass
+
+    info = gather_gpu_preflight_info(torch_module=torch_module, environ=environ)
+
+    visible_raw = info["cuda_visible_devices_raw"]
+    required_idx = info["required_gpu_physical_index"]
+
+    # --- runtime.gpu.discovered ---
+    _emit_event(
+        "runtime.gpu.discovered",
+        "preflight",
+        f"Checking CUDA devices... CUDA_VISIBLE_DEVICES={visible_raw!r}, "
+        f"cuda_available={info['cuda_available']}, device_count={info['cuda_device_count_visible']}",
+        1,
+        step="GPU Preflight",
+        event_name="runtime.gpu.discovered",
+        stage_id="preflight",
+        status="probing",
+        severity="info",
+        cuda_available=info["cuda_available"],
+        cuda_device_count_visible=info["cuda_device_count_visible"],
+        cuda_visible_devices_raw=visible_raw,
+        required_gpu_physical_index=required_idx,
+    )
+
+    if not info["preflight_passed"]:
+        logger.error(
+            "GPU preflight failed [%s]: %s",
+            info["error_code"],
+            info["failure_reason"],
+        )
+        _emit_event(
+            "pipeline.failfast.preflight_failed",
+            "preflight",
+            f"Required GPU not available - {info['failure_reason']}. "
+            f"Action: {info['recommended_action']}",
+            1,
+            step="GPU Preflight",
+            event_name="pipeline.failfast.preflight_failed",
+            stage_id="preflight",
+            status="failed",
+            severity="critical",
+            message_user=(
+                f"Pipeline cannot start: required GPU (physical index {required_idx}) is not available. "
+                f"{info['recommended_action']}"
+            ),
+            cuda_available=info["cuda_available"],
+            cuda_device_count_visible=info["cuda_device_count_visible"],
+            cuda_visible_devices_raw=visible_raw,
+            required_gpu_physical_index=required_idx,
+            resolved_runtime_index=info["resolved_runtime_index"],
+            error_code=info["error_code"],
+            reason_code=info["failure_reason"],
+            retryable=info["retryable"],
+            recommended_action=info["recommended_action"],
+        )
+        return info
+
+    resolved_idx = info["resolved_runtime_index"]
+    selected_device = info["selected_device"]
+    device_name = info["device_name"]
+
+    # --- runtime.gpu.selected ---
+    remap_note = (
+        f" (remapped by CUDA_VISIBLE_DEVICES={visible_raw!r})"
+        if visible_raw is not None
+        else ""
+    )
+    _emit_event(
+        "runtime.gpu.selected",
+        "preflight",
+        f"Required GPU found, using {selected_device}{remap_note}",
+        2,
+        step="GPU Preflight",
+        event_name="runtime.gpu.selected",
+        stage_id="preflight",
+        status="selected",
+        severity="info",
+        message_user=f"Required GPU found, using {selected_device}{remap_note}",
+        cuda_available=True,
+        cuda_device_count_visible=info["cuda_device_count_visible"],
+        cuda_visible_devices_raw=visible_raw,
+        required_gpu_physical_index=required_idx,
+        resolved_runtime_index=resolved_idx,
+        selected_device=selected_device,
+        device_name=device_name,
+    )
+
+    # --- runtime.gpu.validated ---
+    _emit_event(
+        "runtime.gpu.validated",
+        "preflight",
+        f"GPU validated: {device_name} at {selected_device}",
+        3,
+        step="GPU Preflight",
+        event_name="runtime.gpu.validated",
+        stage_id="preflight",
+        status="validated",
+        severity="info",
+        message_user=f"GPU validated: {device_name} at {selected_device}",
+        required_gpu_physical_index=required_idx,
+        resolved_runtime_index=resolved_idx,
+        selected_device=selected_device,
+        device_name=device_name,
+    )
+
+    return info
+
+
+def _emit_model_lifecycle_event(
+    event_name: str,
+    *,
+    model_role: str,
+    model_id: str,
+    stage_id: str,
+    status: str,
+    message_user: str,
+    progress: int,
+    device: Optional[str] = None,
+    dtype: Optional[str] = None,
+    device_map: Optional[Any] = None,
+    error_code: Optional[str] = None,
+    reason_code: Optional[str] = None,
+    retryable: bool = False,
+    recommended_action: Optional[str] = None,
+) -> None:
+    """Emit a model lifecycle transparency event (load_started / load_completed / load_failed)."""
+    extra: dict = {
+        "event_name": event_name,
+        "stage_id": stage_id,
+        "status": status,
+        "severity": "error" if status == "failed" else "info",
+        "message_user": message_user,
+        "model_role": model_role,
+        "model_id_resolved": model_id,
+    }
+    if device is not None:
+        extra["device_map"] = device_map if device_map is not None else device
+        extra["selected_device"] = device
+    if dtype is not None:
+        extra["dtype"] = dtype
+    if error_code is not None:
+        extra["error_code"] = error_code
+        extra["reason_code"] = reason_code
+        extra["retryable"] = retryable
+    if recommended_action is not None:
+        extra["recommended_action"] = recommended_action
+
+    _emit_event(event_name, stage_id, message_user, progress, **extra)
+
 
 
 PLACEHOLDER_MARKDOWN_SENTINELS = (
@@ -574,7 +756,7 @@ class HITLPipeline:
     def __init__(self, work_dir: str = "hitl_workspace"):
         self.work_dir = Path(work_dir)
         self.work_dir.mkdir(exist_ok=True, parents=True)
-        logger.info(f"📁 HITL workspace: {self.work_dir}")
+        logger.info(f"[INFO] HITL workspace: {self.work_dir}")
 
     @staticmethod
     def _is_placeholder_markdown(markdown_path: Path) -> bool:
@@ -597,18 +779,38 @@ class HITLPipeline:
         markdown_file.parent.mkdir(parents=True, exist_ok=True)
 
         if not self._is_placeholder_markdown(markdown_file):
-            logger.info(f"✅ Using existing markdown: {markdown_file}")
+            logger.info(f"[OK] Using existing markdown: {markdown_file}")
             return str(markdown_file)
 
         logger.info("\n" + "=" * 80)
-        logger.info("📄 STAGE 0: Docling PDF → Markdown Extraction")
+        logger.info("[STAGE] STAGE 0: Docling PDF -> Markdown Extraction")
         logger.info("=" * 80)
-        logger.info(f"🔄 Generating markdown from PDF: {Path(pdf_path).name}")
+        logger.info(f"[INFO] Generating markdown from PDF: {Path(pdf_path).name}")
 
         docling_url = os.getenv("DOCLING_URL", "http://localhost:5001")
         temp_output = markdown_file.with_suffix(".docling.tmp.md")
 
+        lifecycle = DoclingLifecycleManager(docling_url=docling_url)
+        _lifecycle_started = False
         try:
+            _emit_event(
+                "lifecycle.docling.starting",
+                "extraction",
+                "Starting Docling service (on-demand)…" if lifecycle.is_on_demand
+                else "Waiting for Docling service…",
+                5,
+                step="Stage 0: PDF → Markdown Extraction",
+                on_demand=lifecycle.is_on_demand,
+            )
+            lifecycle.start()
+            _lifecycle_started = True
+            _emit_event(
+                "lifecycle.docling.ready",
+                "extraction",
+                "Docling service is ready; starting PDF extraction.",
+                6,
+                on_demand=lifecycle.is_on_demand,
+            )
             _convert_pdf_to_markdown(
                 pdf_path=pdf_path,
                 output_path=str(temp_output),
@@ -623,9 +825,19 @@ class HITLPipeline:
                 raise ValueError("Docling output still contains placeholder markdown sentinel text")
 
             markdown_file.write_text(generated_content, encoding="utf-8")
-            logger.info(f"✅ Docling markdown saved: {markdown_file}")
+            logger.info(f"[OK] Docling markdown saved: {markdown_file}")
             return str(markdown_file)
         finally:
+            # stop() never raises — guaranteed release attempt on both success and failure paths.
+            lifecycle.stop()
+            if lifecycle.is_on_demand and _lifecycle_started:
+                _emit_event(
+                    "lifecycle.docling.stopped",
+                    "extraction",
+                    "Docling service stopped; GPU memory released for VLM stage.",
+                    12,
+                    on_demand=True,
+                )
             temp_output.unlink(missing_ok=True)
 
     def _run_validation_stage(
@@ -672,26 +884,148 @@ class HITLPipeline:
             return file_handle.read()
 
     def _run_optional_vlm_comparison(self, *, markdown_path: str, pdf_path: str, validation_report) -> None:
-        logger.info("\n📊 Step 2b: Running VLM deep comparison (this takes ~70-80 min)...")
-        logger.info("⚠️  Note: You can skip VLM comparison by pressing Ctrl+C")
+        logger.info("\n[INFO] Step 2b: Running VLM deep comparison...")
+        logger.info("[WARNING] Note: You can skip VLM comparison by pressing Ctrl+C")
         logger.info("         Basic validation is already complete.")
-        _emit_event("progress", "validation", "Running VLM deep comparison (this may take ~70 min)...", 40)
+        _emit_event(
+            "progress",
+            "validation",
+            "Running VLM deep comparison (duration varies by document size)...",
+            40,
+        )
 
         try:
             from ..validation.vlm_comparison import compare_with_vlm
 
             markdown_content = self._read_markdown_content(markdown_path)
+            started_at = perf_counter()
             vlm_result = compare_with_vlm(markdown_content, pdf_path)
+            elapsed_seconds = max(perf_counter() - started_at, 0.0)
             if vlm_result and 'format_issues' in vlm_result:
                 validation_report.metadata['vlm_validation'] = vlm_result
-                logger.info("✅ VLM validation complete")
-            _emit_event("progress", "validation", "VLM deep comparison complete.", 55)
+                logger.info("[OK] VLM validation complete")
+
+            confidence = None
+            if isinstance(vlm_result, dict):
+                try:
+                    confidence = float(vlm_result.get("confidence"))
+                except (TypeError, ValueError):
+                    confidence = None
+
+            if confidence is not None and confidence <= 0.0:
+                _emit_event(
+                    "progress",
+                    "validation",
+                    f"VLM comparison finished in {elapsed_seconds:.1f}s with low-confidence fallback.",
+                    55,
+                )
+            else:
+                _emit_event(
+                    "progress",
+                    "validation",
+                    f"VLM deep comparison complete in {elapsed_seconds:.1f}s.",
+                    55,
+                )
         except KeyboardInterrupt:
-            logger.warning("⚠️  VLM comparison skipped by user")
+            logger.warning("[WARNING] VLM comparison skipped by user")
             _emit_event("progress", "validation", "VLM comparison skipped by user.", 55)
         except Exception as exc:
-            logger.warning(f"⚠️  VLM comparison failed (continuing with basic validation): {exc}")
+            logger.warning(f"[WARNING] VLM comparison failed (continuing with basic validation): {exc}")
             _emit_event("progress", "validation", f"VLM comparison skipped: {exc}", 55)
+
+    def _write_image_description_failure_log(
+        self,
+        *,
+        return_code: int | str,
+        command: list[str],
+        stdout_text: str,
+        stderr_text: str,
+    ) -> Path:
+        """Persist full subprocess diagnostics for image-description failures."""
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        failure_log_path = self.work_dir / f"image_description_failure_{timestamp}.log"
+        failure_report = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "returncode": return_code,
+            "command": command,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+        }
+        with open(failure_log_path, "w", encoding="utf-8") as f:
+            json.dump(failure_report, f, indent=2)
+        return failure_log_path
+
+    @staticmethod
+    def _coerce_subprocess_stream(output: Any) -> str:
+        """Convert subprocess output payloads to text for JSON-safe diagnostics."""
+        if output is None:
+            return ""
+        if isinstance(output, bytes):
+            return output.decode("utf-8", errors="replace")
+        return str(output)
+
+    def _read_image_description_progress_metrics(
+        self,
+        *,
+        pdf_path: str,
+        pages_requested: int,
+    ) -> dict[str, int]:
+        """Read persisted page-level completion metrics for image-description stage."""
+        requested = max(int(pages_requested), 0)
+        metrics = {
+            "pages_requested": requested,
+            "pages_succeeded": 0,
+            "pages_failed": requested,
+        }
+
+        progress_path = self.work_dir / f"{Path(pdf_path).stem}_progress.json"
+        if not progress_path.exists():
+            return metrics
+
+        try:
+            progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not parse image-description progress file %s: %s", progress_path, exc)
+            return metrics
+
+        completed_items = progress_payload.get("completed_items")
+        failed_items = progress_payload.get("failed_items")
+        total_items = progress_payload.get("total_items")
+
+        pages_succeeded = len(completed_items) if isinstance(completed_items, list) else 0
+        pages_failed = len(failed_items) if isinstance(failed_items, list) else 0
+
+        if isinstance(total_items, int) and total_items >= 0:
+            requested = total_items
+        elif requested == 0:
+            requested = pages_succeeded + pages_failed
+
+        # Normalize for consistency in user-facing reporting.
+        # Treat missing coverage as failed so "complete" reflects full requested-page coverage.
+        if requested > 0:
+            pages_succeeded = min(max(pages_succeeded, 0), requested)
+            inferred_failed = max(requested - pages_succeeded, 0)
+            pages_failed = max(pages_failed, inferred_failed)
+
+            if pages_succeeded + pages_failed > requested:
+                pages_failed = max(requested - pages_succeeded, 0)
+
+        return {
+            "pages_requested": max(requested, 0),
+            "pages_succeeded": max(pages_succeeded, 0),
+            "pages_failed": max(pages_failed, 0),
+        }
+
+    @staticmethod
+    def _summarize_subprocess_failure(stderr_text: str, stdout_text: str) -> str:
+        """Return a concise error summary without dropping full diagnostics."""
+        stderr_lines = [line.strip() for line in stderr_text.splitlines() if line.strip()]
+        if stderr_lines:
+            return stderr_lines[-1]
+        stdout_lines = [line.strip() for line in stdout_text.splitlines() if line.strip()]
+        if stdout_lines:
+            return stdout_lines[-1]
+        return "Image description subprocess exited with no output"
 
     def _execute_image_description_subprocess(
         self,
@@ -714,18 +1048,98 @@ class HITLPipeline:
         updated_markdown_path = markdown_path
         stage_result: dict[str, Any]
 
+        # Resolve vision model id for lifecycle events
+        vision_model_id = vlm_model
+        selected_device_hint: Optional[str] = None
         try:
+            _info = gather_gpu_preflight_info()
+            if _info.get("selected_device"):
+                selected_device_hint = _info["selected_device"]
+        except Exception:
+            pass
+
+        # ── Layer 2: Preflight VRAM gate ───────────────────────────────────────
+        # Check before acquiring the lock so we fail fast without blocking other jobs.
+        # Raised outside the try/except so VRAM errors propagate cleanly as RuntimeError.
+        _free_vram_bytes: Optional[int] = None
+        try:
+            smi_result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.free",
+                    "--format=csv,noheader,nounits",
+                    "-i",
+                    str(_VLM_GPU_INDEX),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            _free_vram_bytes = int(smi_result.stdout.strip()) * 1024 * 1024
+        except Exception as smi_exc:
+            logger.warning(f"[WARNING] VRAM preflight check failed (proceeding anyway): {smi_exc}")
+
+        if _free_vram_bytes is not None and _free_vram_bytes < _VLM_MIN_FREE_VRAM_BYTES:
+            free_gib = _free_vram_bytes / (1024 ** 3)
+            required_gib = _VLM_MIN_FREE_VRAM_BYTES / (1024 ** 3)
+            msg = (
+                f"Insufficient VRAM on GPU {_VLM_GPU_INDEX}: "
+                f"{free_gib:.2f} GiB free, {required_gib:.1f} GiB required. "
+                "Aborting VLM stage to prevent CUDA OOM."
+            )
+            logger.warning(f"[WARNING] {msg}")
+            _emit_event("progress", "validation", msg, 56)
+            raise RuntimeError(msg)
+
+        # ── Layer 1: File-based VLM worker lock ──────────────────────────────────
+        # Ensures only one VLM subprocess runs at a time system-wide, preventing
+        # concurrent processes from exhausting GPU memory.
+        logger.info(f"[INFO] Acquiring VLM worker lock ({_VLM_LOCK_PATH})...")
+        _emit_event("progress", "validation", "Waiting for VLM worker slot (serializing GPU access)...", 56)
+        lock_file = open(_VLM_LOCK_PATH, "w")  # noqa: WPS515
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)  # blocking exclusive lock
+            logger.info("[INFO] VLM worker lock acquired.")
+        except Exception as lock_exc:
+            lock_file.close()
+            raise RuntimeError(f"Failed to acquire VLM worker lock: {lock_exc}") from lock_exc
+
+        try:
+            _emit_model_lifecycle_event(
+                "model.lifecycle.load_started",
+                model_role="vision",
+                model_id=vision_model_id,
+                stage_id="validation",
+                status="loading",
+                message_user=(
+                    f"Loading {vision_model_id} on required GPU"
+                    + (f" ({selected_device_hint})" if selected_device_hint else "")
+                    + "..."
+                ),
+                progress=56,
+                device=selected_device_hint,
+            )
             result = subprocess.run(
                 image_description_cmd,
                 capture_output=True,
                 text=True,
                 timeout=2400,
                 cwd=str(Path(__file__).resolve().parents[3]),
-                env=os.environ.copy(),
+                env=build_gpu1_constrained_subprocess_env(os.environ),
             )
 
             if result.returncode == 0:
-                logger.info("✅ Image descriptions generated")
+                logger.info("[OK] Image descriptions generated")
+                _emit_model_lifecycle_event(
+                    "model.lifecycle.load_completed",
+                    model_role="vision",
+                    model_id=vision_model_id,
+                    stage_id="validation",
+                    status="completed",
+                    message_user=f"Vision model inference complete on {selected_device_hint or 'cuda:?'}.",
+                    progress=60,
+                    device=selected_device_hint,
+                )
                 updated_markdown_path = str(markdown_enhanced_path)
                 validation_report, manifest = self._run_validation_stage(
                     pdf_path=pdf_path,
@@ -738,27 +1152,134 @@ class HITLPipeline:
                     reviewer=reviewer,
                     page_markdown_map=page_markdown_map,
                 )
+
+                metrics = self._read_image_description_progress_metrics(
+                    pdf_path=pdf_path,
+                    pages_requested=image_loss_count,
+                )
+                pages_requested = metrics["pages_requested"]
+                pages_succeeded = metrics["pages_succeeded"]
+                pages_failed = metrics["pages_failed"]
+
+                if pages_requested > 0 and pages_succeeded == pages_requested and pages_failed == 0:
+                    status = "complete"
+                elif pages_succeeded > 0:
+                    status = "partial"
+                else:
+                    status = "failed"
+
+                summary_message = (
+                    f"Image descriptions generated for {pages_succeeded} pages "
+                    f"({pages_failed} failed)."
+                )
+
                 stage_result = {
-                    "status": "complete",
+                    "status": status,
                     "output": str(markdown_enhanced_path),
-                    "pages_processed": image_loss_count,
+                    "pages_processed": pages_succeeded,
+                    "pages_requested": pages_requested,
+                    "pages_succeeded": pages_succeeded,
+                    "pages_failed": pages_failed,
                 }
-                _emit_event("progress", "validation",
-                            f"Image descriptions generated for {image_loss_count} pages.", 64)
+                _emit_event("progress", "validation", summary_message, 64)
             else:
-                failure_output = (result.stderr or result.stdout or "")[:500]
-                logger.warning(f"⚠️  Image description failed: {failure_output}")
+                stderr_text = self._coerce_subprocess_stream(result.stderr)
+                stdout_text = self._coerce_subprocess_stream(result.stdout)
+                failure_log_path = self._write_image_description_failure_log(
+                    return_code=result.returncode,
+                    command=image_description_cmd,
+                    stdout_text=stdout_text,
+                    stderr_text=stderr_text,
+                )
+                failure_summary = self._summarize_subprocess_failure(stderr_text, stdout_text)
+                logger.warning(f"[WARNING] Image description failed: {failure_summary}")
+                logger.info(f"   Full diagnostics saved: {failure_log_path}")
                 logger.info("   Continuing with original markdown...")
-                stage_result = {"status": "failed", "error": failure_output}
+                stage_result = {
+                    "status": "failed",
+                    "error": failure_summary,
+                    "returncode": result.returncode,
+                    "stdout": stdout_text,
+                    "stderr": stderr_text,
+                    "diagnostics_log": str(failure_log_path),
+                    "pages_processed": 0,
+                    "pages_requested": image_loss_count,
+                    "pages_succeeded": 0,
+                    "pages_failed": image_loss_count,
+                }
+                _emit_model_lifecycle_event(
+                    "model.lifecycle.load_failed",
+                    model_role="vision",
+                    model_id=vision_model_id,
+                    stage_id="validation",
+                    status="failed",
+                    message_user=f"Vision model load/inference failed: {failure_summary}",
+                    progress=64,
+                    device=selected_device_hint,
+                    error_code="SUBPROCESS_NONZERO_EXIT",
+                    reason_code=failure_summary,
+                    recommended_action=(
+                        f"Check diagnostics log at {failure_log_path.name}. "
+                        "Verify required GPU is available and model weights are accessible."
+                    ),
+                )
                 _emit_event("progress", "validation", "Image description failed, using original markdown.", 64)
         except subprocess.TimeoutExpired:
-            logger.warning("⚠️  Image description timed out - continuing with original markdown")
-            stage_result = {"status": "timeout"}
+            logger.warning("[WARNING] Image description timed out - continuing with original markdown")
+            stage_result = {
+                "status": "timeout",
+                "pages_processed": 0,
+                "pages_requested": image_loss_count,
+                "pages_succeeded": 0,
+                "pages_failed": image_loss_count,
+            }
+            _emit_model_lifecycle_event(
+                "model.lifecycle.load_failed",
+                model_role="vision",
+                model_id=vision_model_id,
+                stage_id="validation",
+                status="failed",
+                message_user="Vision model inference timed out (>2400 s).",
+                progress=64,
+                device=selected_device_hint,
+                error_code="SUBPROCESS_TIMEOUT",
+                reason_code="Image description subprocess exceeded 2400 s timeout.",
+                retryable=True,
+                recommended_action="Consider reducing image count or increasing GENERATION_TIMEOUT_SECONDS.",
+            )
             _emit_event("progress", "validation", "Image description timed out, continuing.", 64)
         except Exception as exc:
-            logger.warning(f"⚠️  Image description error: {exc}")
-            stage_result = {"status": "error", "error": str(exc)}
+            logger.warning(f"[WARNING] Image description error: {exc}")
+            stage_result = {
+                "status": "error",
+                "error": str(exc),
+                "pages_processed": 0,
+                "pages_requested": image_loss_count,
+                "pages_succeeded": 0,
+                "pages_failed": image_loss_count,
+            }
+            _emit_model_lifecycle_event(
+                "model.lifecycle.load_failed",
+                model_role="vision",
+                model_id=vision_model_id,
+                stage_id="validation",
+                status="failed",
+                message_user=f"Vision model error: {exc}",
+                progress=64,
+                device=selected_device_hint,
+                error_code="SUBPROCESS_EXCEPTION",
+                reason_code=str(exc),
+            )
             _emit_event("progress", "validation", f"Image description error: {exc}", 64)
+
+        finally:
+            # ── Release VLM worker lock ──────────────────────────────────────────
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+                logger.info("[INFO] VLM worker lock released.")
+            except Exception:
+                pass
 
         return updated_markdown_path, stage_result, validation_report, manifest
 
@@ -780,19 +1301,26 @@ class HITLPipeline:
         image_loss_count = _count_image_loss_pages(validation_report)
 
         if image_loss_count <= 0:
-            logger.info("✅ No image loss detected - skipping image description")
+            logger.info("[OK] No image loss detected - skipping image description")
             _emit_event("progress", "validation", "No image loss detected, skipping description generation.", 64)
             markdown_content = self._read_markdown_content(markdown_path)
             return (
                 markdown_path,
                 markdown_content,
-                {"status": "skipped", "reason": "no_image_loss"},
+                {
+                    "status": "skipped",
+                    "reason": "no_image_loss",
+                    "pages_processed": 0,
+                    "pages_requested": 0,
+                    "pages_succeeded": 0,
+                    "pages_failed": 0,
+                },
                 validation_report,
                 manifest,
             )
 
-        logger.info(f"📊 Detected {image_loss_count} pages with image loss")
-        logger.info(f"🤖 Generating image descriptions with {vlm_model}...")
+        logger.info(f"[INFO] Detected {image_loss_count} pages with image loss")
+        logger.info(f"[INFO] Generating image descriptions with {vlm_model}...")
         logger.info("   This takes ~20-30 min...")
         _emit_event("progress", "validation",
                     f"Detected {image_loss_count} pages with image loss. Generating descriptions (~20-30 min)...", 56)
@@ -844,11 +1372,30 @@ class HITLPipeline:
         Returns pipeline result summary
         """
         logger.info("=" * 80)
-        logger.info("🚀 ENHANCED HITL PIPELINE - START")
+        logger.info("[START] ENHANCED HITL PIPELINE - START")
         logger.info("=" * 80)
 
         vlm_model = vlm_model or get_vision_model_id()
         reformatter_model = reformatter_model or get_text_model_id()
+
+        # GPU preflight transparency events (before any stage begins)
+        # If required GPU is not available, fail immediately — CPU fallback is disabled.
+        _gpu_preflight = _emit_gpu_runtime_events()
+        if not _gpu_preflight.get("preflight_passed"):
+            return {
+                "document": Path(pdf_path).stem,
+                "stages": {},
+                "summary": {
+                    "pipeline_status": "failed",
+                    "review_required": False,
+                    "error_code": _gpu_preflight.get("error_code", "GPU_PREFLIGHT_FAILED"),
+                    "failure_reason": _gpu_preflight.get("failure_reason", "Required GPU not available"),
+                    "recommended_action": _gpu_preflight.get(
+                        "recommended_action", "Ensure the required GPU index is present and visible to this process."
+                    ),
+                    "next_action": "fix_gpu_configuration",
+                },
+            }
 
         _emit_event("stage_start", "extraction", "Stage 0: PDF → Markdown Extraction", 5,
                     step="Stage 0: PDF → Markdown Extraction")
@@ -874,7 +1421,7 @@ class HITLPipeline:
         
         # Stage 1: Create lineage manifest
         logger.info("\n" + "=" * 80)
-        logger.info("📋 STAGE 1: Create Document Manifest")
+        logger.info("[STAGE] STAGE 1: Create Document Manifest")
         logger.info("=" * 80)
         _emit_event("stage_start", "extraction", "Stage 1: Document Manifest", 20,
                     step="Stage 1: Document Manifest")
@@ -897,13 +1444,13 @@ class HITLPipeline:
         
         # Stage 2: Enhanced validation with the configured vision model
         logger.info("\n" + "=" * 80)
-        logger.info(f"🔍 STAGE 2: VLM-Powered Validation ({vlm_model})")
+        logger.info(f"[STAGE] STAGE 2: VLM-Powered Validation ({vlm_model})")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 2: VLM-Powered Validation", 25,
                     step="Stage 2: VLM-Powered Validation")
         
         # First: Basic per-page evidence extraction
-        logger.info("📊 Step 2a: Extracting per-page evidence...")
+        logger.info("[INFO] Step 2a: Extracting per-page evidence...")
         _emit_event("progress", "validation", "Extracting per-page content evidence...", 26)
         validation_path = self.work_dir / f"{doc_name}_validation.json"
         validation_report, manifest = self._run_validation_stage(
@@ -938,7 +1485,7 @@ class HITLPipeline:
         
         # Stage 2b: VLM Image Description (if image loss detected)
         logger.info("\n" + "=" * 80)
-        logger.info("🖼️  STAGE 2b: VLM Image Description Generation")
+        logger.info("[STAGE] STAGE 2b: VLM Image Description Generation")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 2b: VLM Image Description Generation", 55,
                     step="Stage 2b: VLM Image Description Generation")
@@ -957,7 +1504,7 @@ class HITLPipeline:
             docling_version=docling_version,
         )
 
-        if image_stage_result.get("status") == "complete":
+        if image_stage_result.get("status") in {"complete", "partial"}:
             results["stages"]["validation"] = {
                 "status": "complete",
                 "output": str(validation_path),
@@ -971,7 +1518,7 @@ class HITLPipeline:
         
         # Stage 3: Table and figure extraction
         logger.info("\n" + "=" * 80)
-        logger.info("📊 STAGE 3: Table and Figure Analysis")
+        logger.info("[STAGE] STAGE 3: Table and Figure Analysis")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 3: Table & Figure Analysis", 65,
                     step="Stage 3: Table & Figure Analysis")
@@ -993,7 +1540,7 @@ class HITLPipeline:
         
         # Stage 4: Page-based review workspace (primary) + section metadata (compatibility)
         logger.info("\n" + "=" * 80)
-        logger.info("📋 STAGE 4: Create Page-Based Review Workspace")
+        logger.info("[STAGE] STAGE 4: Create Page-Based Review Workspace")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 4: Building Review Workspace", 72,
                     step="Stage 4: Building Review Workspace")
@@ -1020,7 +1567,7 @@ class HITLPipeline:
         
         # Stage 5: Initial version
         logger.info("\n" + "=" * 80)
-        logger.info("💾 STAGE 5: Create Initial Version")
+        logger.info("[STAGE] STAGE 5: Create Initial Version")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 5: Versioning", 80,
                     step="Stage 5: Versioning")
@@ -1043,7 +1590,7 @@ class HITLPipeline:
         
         # Stage 6: Compute QA metrics (pre-review)
         logger.info("\n" + "=" * 80)
-        logger.info("📊 STAGE 6: Compute Pre-Review QA Metrics")
+        logger.info("[STAGE] STAGE 6: Compute Pre-Review QA Metrics")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 6: Pre-Review QA Metrics", 85,
                     step="Stage 6: Pre-Review QA Metrics")
@@ -1077,7 +1624,7 @@ class HITLPipeline:
         
         # Stage 7: Generate audit report
         logger.info("\n" + "=" * 80)
-        logger.info("📋 STAGE 7: Generate Audit Report")
+        logger.info("[STAGE] STAGE 7: Generate Audit Report")
         logger.info("=" * 80)
         _emit_event("stage_start", "validation", "Stage 7: Audit Report", 92,
                     step="Stage 7: Audit Report")
@@ -1088,7 +1635,7 @@ class HITLPipeline:
         with open(audit_path, 'w') as f:
             f.write(audit_report)
         
-        logger.info(f"💾 Audit report: {audit_path}")
+        logger.info(f"[INFO] Audit report: {audit_path}")
         _emit_event("progress", "validation", f"Audit trail written to {audit_path.name}.", 98)
         
         results["stages"]["audit"] = {
@@ -1098,9 +1645,9 @@ class HITLPipeline:
         
         # Pipeline summary
         logger.info("\n" + "=" * 80)
-        logger.info("✅ HITL PIPELINE COMPLETE")
+        logger.info("[OK] HITL PIPELINE COMPLETE")
         logger.info("=" * 80)
-        logger.info(f"\n📊 PIPELINE SUMMARY:")
+        logger.info("\n[SUMMARY] PIPELINE SUMMARY:")
         logger.info(f"   Document: {doc_name}")
         logger.info(f"   Reviewer: {reviewer}")
         logger.info(f"   Validation Confidence: {validation_report.overall_confidence:.2%}")
@@ -1111,21 +1658,21 @@ class HITLPipeline:
         logger.info(f"   Tables: {len(tables)}")
         logger.info(f"   Figures: {len(figures)}")
         logger.info(f"   QA Decision: {qa_result.decision}")
-        logger.info(f"\n📁 Outputs:")
+        logger.info("\n[OUTPUTS]")
         logger.info(f"   Workspace: {self.work_dir}")
         logger.info(f"   Review Sections: {review_workspace}")
         logger.info(f"   Manifest: {manifest_path}")
         logger.info(f"   Audit: {audit_path}")
         
         # Next steps
-        logger.info(f"\n📋 NEXT STEPS FOR REVIEWER:")
+        logger.info("\n[NEXT STEPS FOR REVIEWER]")
         logger.info(f"   1. Review pages in: {review_workspace}")
         logger.info(f"   2. Fill out checklists for each page")
         logger.info(f"   3. Address {len(qa_result.failed_criteria)} failed QA criteria")
         logger.info(f"   4. Focus on {validation_report.metadata['critical_issues']} critical issues")
         
         if qa_result.recommendations:
-            logger.info(f"\n💡 RECOMMENDATIONS:")
+            logger.info("\n[RECOMMENDATIONS]")
             for rec in qa_result.recommendations[:5]:
                 logger.info(f"   - {rec}")
         
@@ -1142,7 +1689,7 @@ class HITLPipeline:
         with open(results_path, 'w') as f:
             json.dump(results, f, indent=2)
         
-        logger.info(f"\n💾 Pipeline results saved: {results_path}")
+        logger.info(f"\n[INFO] Pipeline results saved: {results_path}")
         
         return results
     
@@ -1215,7 +1762,7 @@ class HITLPipeline:
         
         progress = get_review_progress(str(review_workspace))
         
-        logger.info(f"📊 Review Progress for {doc_name}:")
+        logger.info(f"[INFO] Review Progress for {doc_name}:")
         logger.info(f"   Total sections: {progress['total_sections']}")
         logger.info(f"   Completion: {progress['completion_percentage']:.1f}%")
         logger.info(f"   By status:")
@@ -1227,13 +1774,13 @@ class HITLPipeline:
 
 def _log_pipeline_banner() -> None:
     logger.info("=" * 80)
-    logger.info("🚀 ENHANCED HITL PIPELINE ORCHESTRATOR")
+    logger.info("[START] ENHANCED HITL PIPELINE ORCHESTRATOR")
     logger.info("=" * 80)
 
 
 def _handle_run_action(args, pipeline: HITLPipeline) -> int:
     if not args.pdf or not args.markdown:
-        logger.error("❌ --pdf and --markdown required for run action")
+        logger.error("[ERROR] --pdf and --markdown required for run action")
         return 1
 
     try:
@@ -1245,42 +1792,54 @@ def _handle_run_action(args, pipeline: HITLPipeline) -> int:
             args.vlm_model,
             args.reformatter_model,
         )
-        logger.info("\n✅ Pipeline execution complete")
+        logger.info("\n[OK] Pipeline execution complete")
 
-        if results["summary"]["qa_decision"] == "approved":
-            logger.info("\n🎉 Document APPROVED!")
+        pipeline_status = results.get("summary", {}).get("pipeline_status", "unknown")
+        if pipeline_status == "failed":
+            error_code = results["summary"].get("error_code", "UNKNOWN")
+            reason = results["summary"].get("failure_reason", "unknown failure")
+            action = results["summary"].get("recommended_action", "")
+            logger.error(f"\n[ERROR] Pipeline failed [{error_code}]: {reason}")
+            if action:
+                logger.error(f"   Action: {action}")
+            return 1
+
+        qa_decision = results.get("summary", {}).get("qa_decision")
+        if qa_decision == "approved":
+            logger.info("\n[OK] Document APPROVED")
             logger.info("   Next step: Run reformatting")
             logger.info(f"   Command: python3 rag_hitl_pipeline.py reformat --doc-name \"{Path(args.pdf).stem}\"")
         else:
-            logger.info("\n⚠️  Document needs review")
-            logger.info(f"   Review workspace: {results['stages']['review_workspace']['output']}")
+            logger.info("\n[WARNING] Document needs review")
+            review_output = results.get("stages", {}).get("review_workspace", {}).get("output", "N/A")
+            logger.info(f"   Review workspace: {review_output}")
 
         return 0
     except Exception as exc:
-        logger.error(f"❌ Pipeline failed: {exc}", exc_info=True)
+        logger.error(f"[ERROR] Pipeline failed: {exc}", exc_info=True)
         return 1
 
 
 def _handle_status_action(args, pipeline: HITLPipeline) -> int:
     if not args.doc_name:
-        logger.error("❌ --doc-name required for status action")
+        logger.error("[ERROR] --doc-name required for status action")
         return 1
 
     try:
         status = pipeline.get_review_status(args.doc_name)
         if "error" in status:
-            logger.error(f"❌ {status['error']}")
+            logger.error(f"[ERROR] {status['error']}")
             return 1
         return 0
     except Exception as exc:
-        logger.error(f"❌ Status check failed: {exc}")
+        logger.error(f"[ERROR] Status check failed: {exc}")
         return 1
 
 
 def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None]:
     doc_name = args.doc_name or (Path(args.pdf).stem if args.pdf else None)
     if not doc_name:
-        logger.error("❌ --doc-name or --pdf required for reformat action")
+        logger.error("[ERROR] --doc-name or --pdf required for reformat action")
         return None, None, None
 
     workspace = Path(args.workspace)
@@ -1292,7 +1851,7 @@ def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None]:
         if version_path.exists():
             markdown_path = str(version_path)
         else:
-            logger.error("❌ --markdown required and could not auto-detect")
+            logger.error("[ERROR] --markdown required and could not auto-detect")
             return None, None, None
 
     return doc_name, str(validation_path), markdown_path
@@ -1304,11 +1863,11 @@ def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
         return 1
 
     if not args.pdf:
-        logger.error("❌ --pdf required for reformat action")
+        logger.error("[ERROR] --pdf required for reformat action")
         return 1
 
     try:
-        logger.info(f"📄 Reformatting: {doc_name}")
+        logger.info(f"[INFO] Reformatting: {doc_name}")
         logger.info(f"   PDF: {args.pdf}")
         logger.info(f"   Markdown: {markdown_path}")
         logger.info(f"   Validation: {validation_path}")
@@ -1321,14 +1880,14 @@ def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
         )
 
         if result["status"] == "complete":
-            logger.info("\n✅ Reformatting complete!")
+            logger.info("\n[OK] Reformatting complete")
             logger.info("   Ready for vector DB ingestion")
             return 0
 
-        logger.error(f"\n❌ Reformatting failed: {result.get('message', 'Unknown error')}")
+        logger.error(f"\n[ERROR] Reformatting failed: {result.get('message', 'Unknown error')}")
         return 1
     except Exception as exc:
-        logger.error(f"❌ Reformat failed: {exc}", exc_info=True)
+        logger.error(f"[ERROR] Reformat failed: {exc}", exc_info=True)
         return 1
 
 
