@@ -389,6 +389,68 @@ def test_feedback_metrics_summary_basics(client: TestClient, fake_db: FakeAsyncS
     assert any(item["reason_code"] == "incorrect" and item["count"] == 3 for item in payload["reason_breakdown"])
 
 
+def test_feedback_metrics_summary_with_null_scopes(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    seeded_chat: dict[str, str],
+):
+    second_answer_id = str(uuid.uuid4())
+    fake_db.chat_messages[second_answer_id] = {
+        "id": second_answer_id,
+        "conversation_id": seeded_chat["conversation_id"],
+        "role": "assistant",
+        "content": "Scoped and unscoped answer",
+    }
+
+    down_response = client.post(
+        FEEDBACK_ENDPOINT,
+        json={
+            "answer_message_id": seeded_chat["answer_message_id"],
+            "conversation_id": seeded_chat["conversation_id"],
+            "sentiment": "down",
+            "reason_code": "incorrect",
+        },
+    )
+    assert down_response.status_code == 200
+
+    up_response = client.post(
+        FEEDBACK_ENDPOINT,
+        json={
+            "answer_message_id": second_answer_id,
+            "conversation_id": seeded_chat["conversation_id"],
+            "sentiment": "up",
+            "reason_code": "helpful",
+            "system_scope": "Liquefaction",
+            "area_scope": "Liquefaction",
+        },
+    )
+    assert up_response.status_code == 200
+
+    async def override_reviewer_payload():
+        return {"sub": str(TEST_USER_ID), "role": "plantig_reviewer", "scope": [CHAT_READ_SCOPE]}
+
+    app.dependency_overrides[get_jwt_payload] = override_reviewer_payload
+    try:
+        metrics_response = client.get(
+            "/api/v1/chat/feedback/metrics",
+            params={"window_days": 30},
+        )
+    finally:
+        async def override_user_payload():
+            return {"sub": str(TEST_USER_ID), "role": "plantig_user", "scope": [CHAT_READ_SCOPE]}
+
+        app.dependency_overrides[get_jwt_payload] = override_user_payload
+
+    assert metrics_response.status_code == 200
+    payload = metrics_response.json()
+    assert payload["total_feedback_events"] == 2
+    assert payload["positive_feedback_events"] == 1
+    assert payload["negative_feedback_events"] == 1
+    assert payload["flagged_answers"] == 0
+    assert any(item["reason_code"] == "incorrect" and item["count"] == 1 for item in payload["reason_breakdown"])
+    assert any(item["reason_code"] == "helpful" and item["count"] == 1 for item in payload["reason_breakdown"])
+
+
 def test_chat_query_contract_remains_compatible(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     async def fake_process_query(**_kwargs):
         return ChatQueryResponse(
