@@ -238,9 +238,9 @@ class AnswerFeedbackService:
 					COUNT(*) FILTER (WHERE sentiment = 'up')::int AS positive_feedback_events,
 					COUNT(*) FILTER (WHERE sentiment = 'down')::int AS negative_feedback_events
 				FROM answer_feedback_events
-				WHERE created_at >= NOW() - (:window_days || ' days')::interval
-				  AND (:system_scope IS NULL OR LOWER(system_scope) = LOWER(:system_scope))
-				  AND (:area_scope IS NULL OR LOWER(area_scope) = LOWER(:area_scope))
+				WHERE created_at >= NOW() - (CAST(:window_days AS INTEGER) * INTERVAL '1 day')
+				  AND (CAST(:system_scope AS TEXT) IS NULL OR LOWER(system_scope) = LOWER(CAST(:system_scope AS TEXT)))
+				  AND (CAST(:area_scope AS TEXT) IS NULL OR LOWER(area_scope) = LOWER(CAST(:area_scope AS TEXT)))
 				"""
 			),
 			params,
@@ -253,9 +253,9 @@ class AnswerFeedbackService:
 				SELECT COUNT(*)::int AS flagged_answers
 				FROM answer_quality_snapshots
 				WHERE is_flagged = TRUE
-				  AND last_feedback_at >= NOW() - (:window_days || ' days')::interval
-				  AND (:system_scope IS NULL OR LOWER(system_scope) = LOWER(:system_scope))
-				  AND (:area_scope IS NULL OR LOWER(area_scope) = LOWER(:area_scope))
+				  AND last_feedback_at >= NOW() - (CAST(:window_days AS INTEGER) * INTERVAL '1 day')
+				  AND (CAST(:system_scope AS TEXT) IS NULL OR LOWER(system_scope) = LOWER(CAST(:system_scope AS TEXT)))
+				  AND (CAST(:area_scope AS TEXT) IS NULL OR LOWER(area_scope) = LOWER(CAST(:area_scope AS TEXT)))
 				"""
 			),
 			params,
@@ -267,11 +267,11 @@ class AnswerFeedbackService:
 				"""
 				SELECT reason_code, COUNT(*)::int AS count
 				FROM answer_feedback_events
-				WHERE created_at >= NOW() - (:window_days || ' days')::interval
+				WHERE created_at >= NOW() - (CAST(:window_days AS INTEGER) * INTERVAL '1 day')
 				  AND reason_code IS NOT NULL
 				  AND reason_code <> ''
-				  AND (:system_scope IS NULL OR LOWER(system_scope) = LOWER(:system_scope))
-				  AND (:area_scope IS NULL OR LOWER(area_scope) = LOWER(:area_scope))
+				  AND (CAST(:system_scope AS TEXT) IS NULL OR LOWER(system_scope) = LOWER(CAST(:system_scope AS TEXT)))
+				  AND (CAST(:area_scope AS TEXT) IS NULL OR LOWER(area_scope) = LOWER(CAST(:area_scope AS TEXT)))
 				GROUP BY reason_code
 				ORDER BY count DESC, reason_code ASC
 				"""
