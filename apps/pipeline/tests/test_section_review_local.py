@@ -12,6 +12,8 @@ from pipeline.src.review import section_review as mod
 def test_section_has_images_recognizes_markdown_and_figure_text():
     assert mod._section_has_images("![alt](img.png)") is True
     assert mod._section_has_images("**[Figure 2: LNG tank]**") is True
+    assert mod._section_has_images("**Figure 3: LNG tank without brackets**") is True
+    assert mod._section_has_images("**fIgUrE 4: LNG tank case-insensitive**") is True
     assert mod._section_has_images("No image") is False
 
 
