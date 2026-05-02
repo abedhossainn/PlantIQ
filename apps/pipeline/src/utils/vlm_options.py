@@ -17,6 +17,211 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 ROOT_ENV_PATH = REPO_ROOT / ".env"
 DEFAULT_TEXT_MODEL_ID = "Qwen/Qwen3-4B"
 DEFAULT_VISION_MODEL_ID = "Qwen/Qwen3-VL-4B-Instruct"
+DEFAULT_REQUIRED_CUDA_PHYSICAL_INDEX = 0
+
+
+def _get_required_cuda_physical_index() -> int:
+    """Return the required physical CUDA device index for pipeline model execution."""
+    raw_value = str(os.getenv("PIPELINE_CUDA_DEVICE_INDEX", DEFAULT_REQUIRED_CUDA_PHYSICAL_INDEX)).strip()
+    try:
+        index = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "PIPELINE_CUDA_DEVICE_INDEX must be an integer. "
+            f"Received: {raw_value!r}."
+        ) from exc
+
+    if index < 0:
+        raise RuntimeError(
+            "PIPELINE_CUDA_DEVICE_INDEX must be >= 0. "
+            f"Received: {index}."
+        )
+    return index
+
+
+def _parse_visible_cuda_devices(cuda_visible_devices: str | None) -> list[int] | None:
+    """Parse CUDA_VISIBLE_DEVICES into physical GPU indices when possible."""
+    if cuda_visible_devices is None:
+        return None
+
+    raw = cuda_visible_devices.strip()
+    if not raw:
+        return None
+
+    parsed_indices: list[int] = []
+    for token in raw.split(","):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        try:
+            parsed_indices.append(int(cleaned))
+        except ValueError:
+            # Non-integer tokens (UUIDs/MIG aliases) cannot be safely mapped here.
+            return None
+    return parsed_indices
+
+
+def get_required_cuda_index_for_runtime(environ: Dict[str, str] | None = None) -> int:
+    """Resolve required CUDA index for the current runtime, honoring CUDA_VISIBLE_DEVICES remapping."""
+    env = environ or os.environ
+    required_physical_index = _get_required_cuda_physical_index()
+    visible_devices = _parse_visible_cuda_devices(env.get("CUDA_VISIBLE_DEVICES"))
+
+    if visible_devices is None:
+        return required_physical_index
+
+    if required_physical_index not in visible_devices:
+        raise RuntimeError(
+            "Required GPU is not visible in current runtime. "
+            f"Required physical GPU index: {required_physical_index}. "
+            f"Current CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES')!r}. "
+            "Set CUDA_VISIBLE_DEVICES to include the required GPU or unset it."
+        )
+
+    return visible_devices.index(required_physical_index)
+
+
+def build_gpu1_constrained_subprocess_env(base_env: Dict[str, str] | None = None) -> Dict[str, str]:
+    """Build subprocess environment constrained to the required physical GPU only."""
+    source_env = base_env if base_env is not None else os.environ
+    env = dict(source_env)
+    required_physical_index = _get_required_cuda_physical_index()
+
+    # Stable mapping: only required physical GPU is visible to child process,
+    # where it becomes cuda:0 from the subprocess perspective.
+    env["CUDA_VISIBLE_DEVICES"] = str(required_physical_index)
+    env["PIPELINE_CUDA_DEVICE_INDEX"] = str(required_physical_index)
+    return env
+
+
+def gather_gpu_preflight_info(
+    torch_module: Any = None, environ: Dict[str, str] | None = None
+) -> Dict[str, Any]:
+    """Probe GPU runtime availability and return structured metadata without side effects.
+
+    Does NOT call ``set_device`` or raise exceptions. Suitable for early transparency
+    logging and preflight validation before model loading begins.
+
+    Returned keys
+    -------------
+    cuda_available           : bool
+    cuda_device_count_visible: int
+    cuda_visible_devices_raw : str | None   (raw CUDA_VISIBLE_DEVICES value)
+    required_gpu_physical_index: int
+    resolved_runtime_index   : int | None   (runtime-mapped index, None on failure)
+    selected_device          : str | None   (e.g. "cuda:0")
+    device_name              : str | None
+    preflight_passed         : bool
+    failure_reason           : str | None
+    error_code               : str | None
+    retryable                : bool
+    recommended_action       : str | None
+    """
+    env = environ if environ is not None else os.environ
+    visible_devices_raw = env.get("CUDA_VISIBLE_DEVICES")
+    required_physical_index = _get_required_cuda_physical_index()
+
+    result: Dict[str, Any] = {
+        "required_gpu_physical_index": required_physical_index,
+        "cuda_visible_devices_raw": visible_devices_raw,
+        "cuda_available": False,
+        "cuda_device_count_visible": 0,
+        "resolved_runtime_index": None,
+        "selected_device": None,
+        "device_name": None,
+        "preflight_passed": False,
+        "failure_reason": None,
+        "error_code": None,
+        "retryable": False,
+        "recommended_action": None,
+    }
+
+    if torch_module is None:
+        result["failure_reason"] = "torch_unavailable"
+        result["error_code"] = "TORCH_UNAVAILABLE"
+        result["recommended_action"] = "Install torch with CUDA support in the active environment."
+        return result
+
+    cuda_available = bool(torch_module.cuda.is_available())
+    result["cuda_available"] = cuda_available
+
+    if not cuda_available:
+        result["failure_reason"] = "cuda_unavailable"
+        result["error_code"] = "CUDA_UNAVAILABLE"
+        result["recommended_action"] = (
+            "Verify NVIDIA drivers/runtime and that the required GPU is accessible. "
+            "This pipeline requires GPU execution and will not fall back to CPU."
+        )
+        return result
+
+    device_count = int(torch_module.cuda.device_count())
+    result["cuda_device_count_visible"] = device_count
+
+    try:
+        resolved_index = get_required_cuda_index_for_runtime(env)
+    except RuntimeError as exc:
+        result["failure_reason"] = str(exc)
+        result["error_code"] = "GPU_NOT_IN_VISIBLE_DEVICES"
+        result["recommended_action"] = (
+            "Set CUDA_VISIBLE_DEVICES to include the required GPU or unset it."
+        )
+        return result
+
+    result["resolved_runtime_index"] = resolved_index
+
+    if resolved_index >= device_count:
+        result["failure_reason"] = (
+            f"Required GPU runtime index {resolved_index} exceeds "
+            f"visible device count {device_count}."
+        )
+        result["error_code"] = "GPU_INDEX_OUT_OF_RANGE"
+        result["recommended_action"] = "Ensure the required GPU index is present and visible to this process."
+        return result
+
+    result["selected_device"] = f"cuda:{resolved_index}"
+    result["preflight_passed"] = True
+
+    try:
+        result["device_name"] = torch_module.cuda.get_device_name(resolved_index)
+    except Exception:
+        result["device_name"] = f"cuda:{resolved_index}"
+
+    return result
+
+
+def ensure_gpu1_runtime(torch_module: Any) -> int:
+    """Validate and activate required CUDA device, failing fast when unavailable."""
+    if torch_module is None:
+        raise RuntimeError("Torch runtime is unavailable; cannot enforce required GPU execution.")
+
+    if not torch_module.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is unavailable for pipeline model execution. "
+            "This pipeline requires GPU execution and will not fall back to CPU. "
+            "Verify NVIDIA drivers/runtime and that the required GPU is accessible."
+        )
+
+    required_cuda_index = get_required_cuda_index_for_runtime()
+    device_count = int(torch_module.cuda.device_count())
+    if required_cuda_index >= device_count:
+        required_physical_index = _get_required_cuda_physical_index()
+        raise RuntimeError(
+            "Required GPU is unavailable in the current runtime. "
+            f"Required physical index: {required_physical_index}, "
+            f"resolved runtime index: {required_cuda_index}, "
+            f"visible CUDA device count: {device_count}. "
+            "Ensure the required GPU index is present and visible to this process."
+        )
+
+    try:
+        torch_module.cuda.set_device(required_cuda_index)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to activate required CUDA device for pipeline execution "
+            f"(runtime index: {required_cuda_index})."
+        ) from exc
+
+    return required_cuda_index
 
 
 def resolve_model_reference(value: str) -> str:
@@ -422,19 +627,10 @@ class VLMOptions:
         Returns:
             Dictionary of model loading parameters
         """
-        resolved_device_map: Any = self.device_map
+        import torch
 
-        if self.device_map == "auto":
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    # Core active models fit on a single accelerator in the current
-                    # architecture. Prefer the primary visible CUDA device to avoid
-                    # partial CPU offload and mixed-GPU allocation failures.
-                    resolved_device_map = {"": 0}
-            except Exception:
-                resolved_device_map = self.device_map
+        required_cuda_index = ensure_gpu1_runtime(torch)
+        resolved_device_map: Any = {"": required_cuda_index}
 
         return {
             'device_map': resolved_device_map,
