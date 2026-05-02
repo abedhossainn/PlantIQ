@@ -21,6 +21,83 @@ from ..utils.vlm_options import get_vision_model_id
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
+FIGURE_DESCRIPTION_PATTERN = re.compile(
+    r"\*\*\s*\[?\s*Figure\s+\d+\s*:",
+    flags=re.IGNORECASE,
+)
+
+ADDITIONAL_VISUAL_BLOCK_HEADING_PATTERN = re.compile(
+    r"(?m)^##\s+Additional\s+Visual\s+Elements\s*\(\s*Page\s*(?P<page_number>\d+)\s*\)\s*$"
+)
+
+
+def _extract_additional_visual_blocks(markdown_content: str) -> tuple[str, Dict[int, str]]:
+    """Extract per-page visual appendix blocks and return markdown without those blocks.
+
+    Returns:
+        (clean_markdown, appendix_blocks_by_page)
+
+    Appendix blocks are expected in this format:
+        ## Additional Visual Elements (Page N)
+        ...block content...
+
+    Each extracted block is preserved exactly as it appears in source markdown.
+    """
+    matches = list(ADDITIONAL_VISUAL_BLOCK_HEADING_PATTERN.finditer(markdown_content))
+    if not matches:
+        return markdown_content, {}
+
+    clean_parts: List[str] = []
+    appendix_blocks_by_page: Dict[int, str] = {}
+    cursor = 0
+
+    for index, match in enumerate(matches):
+        block_start = match.start()
+        block_end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown_content)
+
+        clean_parts.append(markdown_content[cursor:block_start])
+
+        block_text = markdown_content[block_start:block_end]
+        page_number = int(match.group("page_number"))
+
+        existing_block = appendix_blocks_by_page.get(page_number)
+        if existing_block:
+            appendix_blocks_by_page[page_number] = f"{existing_block.rstrip()}\n\n{block_text.lstrip()}"
+        else:
+            appendix_blocks_by_page[page_number] = block_text
+
+        cursor = block_end
+
+    clean_parts.append(markdown_content[cursor:])
+    clean_markdown = "".join(clean_parts)
+    return clean_markdown, appendix_blocks_by_page
+
+
+def _append_additional_visual_blocks_to_page_map(
+    page_map: Dict[int, str],
+    appendix_blocks_by_page: Dict[int, str],
+) -> Dict[int, str]:
+    """Append extracted visual appendix blocks to only their intended page entries."""
+    if not page_map or not appendix_blocks_by_page:
+        return page_map
+
+    for page_number, appendix_block in appendix_blocks_by_page.items():
+        if page_number not in page_map:
+            continue
+
+        page_content = (page_map.get(page_number) or "").rstrip()
+        appendix_content = appendix_block.strip()
+
+        if not appendix_content:
+            continue
+
+        if page_content:
+            page_map[page_number] = f"{page_content}\n\n{appendix_content}"
+        else:
+            page_map[page_number] = appendix_content
+
+    return page_map
+
 
 def _normalize_text_for_match(text: str) -> str:
     """Normalize text for fuzzy matching between PDF previews and markdown."""
@@ -55,6 +132,17 @@ def _fallback_markdown_section(markdown_content: str, page_number: int, total_pa
     return "\n".join(lines[start_line:end_line])
 
 
+def _compute_adaptive_window_params(lines_count: int, total_pages: int) -> tuple[int, int]:
+    """Compute adaptive window size and lookback based on document density.
+
+    Returns: (section_window, lookback)
+    """
+    lines_per_page = max(1.0, lines_count / max(1, total_pages))
+    section_window = max(15, min(160, int(lines_per_page * 1.5)))
+    lookback = max(3, min(40, int(lines_per_page * 0.4)))
+    return section_window, lookback
+
+
 def _extract_relevant_markdown_section(
     markdown_content: str,
     text_preview: str,
@@ -75,8 +163,10 @@ def _extract_relevant_markdown_section(
     if best_index is None or best_score <= 0:
         return _fallback_markdown_section(markdown_content, page_number, total_pages)
 
-    start_line = max(0, best_index - 40)
-    end_line = min(len(lines), best_index + 120)
+    section_window, lookback = _compute_adaptive_window_params(len(lines), total_pages)
+
+    start_line = max(0, best_index - lookback)
+    end_line = min(len(lines), start_line + section_window)
     return "\n".join(lines[start_line:end_line])
 
 
@@ -111,11 +201,27 @@ def _count_table_markers(markdown_section: str) -> int:
     return sum(1 for line in markdown_section.splitlines() if line.count("|") >= 2)
 
 
+def _count_vlm_image_descriptions_in_ave(markdown_section: str) -> int:
+    """Count VLM-generated image descriptions inside Additional Visual Elements blocks.
+
+    The VLM image describer emits standalone bold-title lines (**Title**) for each
+    described image inside those blocks.  Each such line counts as one represented image.
+    """
+    ave_match = ADDITIONAL_VISUAL_BLOCK_HEADING_PATTERN.search(markdown_section)
+    if not ave_match:
+        return 0
+    ave_content = markdown_section[ave_match.start():]
+    return len(re.findall(r'^\*\*[^*\n]+\*\*\s*$', ave_content, re.M))
+
+
 def _count_figure_markers(markdown_section: str) -> int:
     """Count both classic markdown image refs and description-mode figure markers."""
     markdown_images = markdown_section.count("![")
-    described_figures = len(re.findall(r"\*\*\[Figure\s+\d+:", markdown_section, flags=re.IGNORECASE))
-    return markdown_images + described_figures
+    described_figures = len(FIGURE_DESCRIPTION_PATTERN.findall(markdown_section))
+    # VLM image describer replaces images with **Bold Title** + description text inside
+    # Additional Visual Elements blocks — count those as represented images too.
+    vlm_descriptions = _count_vlm_image_descriptions_in_ave(markdown_section)
+    return markdown_images + described_figures + vlm_descriptions
 
 
 def _candidate_sort_key(item: tuple[int, int], expected_center: int) -> tuple[int, int, int]:
@@ -134,12 +240,16 @@ def _build_search_window(
     total_pages: int,
     lines_count: int,
     search_floor: int,
+    section_window: int = 160,
 ) -> tuple[int, int, int]:
     """Build expected center and bounded search window for one page."""
     expected_center = int((idx - 0.5) * lines_count / total_pages)
     window_start = max(0, min(search_floor, lines_count - 1))
     next_expected = int((idx + 0.5) * lines_count / total_pages) if idx < total_pages else lines_count - 1
-    window_end = min(lines_count, max(window_start + 160, next_expected + 120))
+    window_end = min(
+        lines_count,
+        max(window_start + section_window, next_expected + int(section_window * 0.75)),
+    )
     return expected_center, window_start, window_end
 
 
@@ -189,11 +299,13 @@ def _select_section_from_candidates(
     lines: List[str],
     window_start: int,
     previous_hash: Optional[int],
+    section_window: int = 160,
+    lookback: int = 40,
 ) -> tuple[str, int, int, int, bool]:
     """Select a non-empty section from top candidates with duplicate avoidance."""
     for candidate_index in candidate_indices[:8]:
-        start_line = max(window_start, candidate_index - 40) if has_candidates else max(0, candidate_index - 40)
-        end_line = min(len(lines), start_line + 160)
+        start_line = max(window_start, candidate_index - lookback) if has_candidates else max(0, candidate_index - lookback)
+        end_line = min(len(lines), start_line + section_window)
         section = "\n".join(lines[start_line:end_line]).strip()
         if not section:
             continue
@@ -214,11 +326,12 @@ def _build_fallback_selection(
     expected_center: int,
     window_start: int,
     lines_count: int,
+    section_window: int = 160,
 ) -> tuple[str, int, int, int]:
     """Build fallback page section selection when anchor matching fails."""
     fallback = _fallback_markdown_section(markdown_content, page_number, total_pages).strip()
     start_line = max(window_start, min(expected_center, lines_count - 1))
-    end_line = min(lines_count, start_line + 160)
+    end_line = min(lines_count, start_line + section_window)
     return fallback, start_line, end_line, hash(fallback)
 
 
@@ -244,6 +357,140 @@ def _dedupe_section_with_fallback(
 def _compute_progression_step(selected_start: int, selected_end: int) -> int:
     """Compute bounded forward progression step in markdown scan."""
     return max(1, int((selected_end - selected_start) * 0.35))
+
+
+def _resolve_monotonic_anchor_starts(
+    *,
+    sorted_evidences: List["PageEvidence"],
+    normalized_lines: List[str],
+    lines_count: int,
+    total_pages: int,
+    search_radius: int,
+) -> List[int]:
+    """Resolve one forward-only anchor start index per page."""
+    anchor_starts: List[int] = []
+    search_floor = 0
+
+    for idx, evidence in enumerate(sorted_evidences, start=1):
+        anchors = _preview_anchor_candidates(evidence.text_preview or "")
+        expected_center = int((idx - 0.5) * lines_count / total_pages)
+        expected_center = max(search_floor, min(expected_center, lines_count - 1))
+
+        window_start = max(search_floor, expected_center - search_radius)
+        window_end = min(lines_count, max(window_start + 1, expected_center + search_radius))
+
+        candidates = _collect_scored_candidates(
+            anchors=anchors,
+            normalized_lines=normalized_lines,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        candidate_indices, has_candidates = _resolve_candidate_indices(
+            candidates=candidates,
+            expected_center=expected_center,
+            lines_count=lines_count,
+        )
+
+        anchor_start = max(search_floor, candidate_indices[0] if has_candidates else expected_center)
+        anchor_start = min(anchor_start, lines_count - 1)
+        if anchor_starts and anchor_start <= anchor_starts[-1]:
+            anchor_start = min(lines_count - 1, anchor_starts[-1] + 1)
+
+        anchor_starts.append(anchor_start)
+        search_floor = min(lines_count - 1, anchor_start + 1)
+
+    return anchor_starts
+
+
+def _bounded_slice_lines(
+    *,
+    lines: List[str],
+    start_line: int,
+    next_start: int,
+    has_next_anchor: bool,
+    lines_count: int,
+    min_section_lines: int,
+    max_section_lines: int,
+    boundary_backfill: int,
+) -> str:
+    """Slice bounded page-local markdown using [start_i, start_{i+1}) semantics."""
+    if next_start <= start_line:
+        next_start = min(lines_count, start_line + max(min_section_lines, 1))
+
+    if has_next_anchor:
+        end_line = min(next_start, start_line + max_section_lines)
+    else:
+        end_line = min(lines_count, max(next_start, start_line + min_section_lines))
+
+    if end_line <= start_line:
+        end_line = min(lines_count, start_line + max(min_section_lines, 1))
+
+    selected_section = "\n".join(lines[start_line:end_line]).strip()
+    if selected_section or boundary_backfill <= 0:
+        return selected_section
+
+    backfilled_start = max(0, start_line - boundary_backfill)
+    return "\n".join(lines[backfilled_start:end_line]).strip()
+
+
+def _build_non_overlapping_page_sections(
+    *,
+    sorted_evidences: List["PageEvidence"],
+    anchor_starts: List[int],
+    lines: List[str],
+    markdown_content: str,
+    total_pages: int,
+    section_window: int,
+    min_section_lines: int,
+    max_section_lines: int,
+    boundary_backfill: int,
+) -> Dict[int, str]:
+    """Build page map from monotonic anchors with duplicate-safe fallback."""
+    lines_count = len(lines)
+    seen_hashes: set[int] = set()
+    page_map: Dict[int, str] = {}
+
+    for index, evidence in enumerate(sorted_evidences):
+        start_line = anchor_starts[index]
+        has_next_anchor = index + 1 < len(anchor_starts)
+        next_start = anchor_starts[index + 1] if has_next_anchor else lines_count
+
+        selected_section = _bounded_slice_lines(
+            lines=lines,
+            start_line=start_line,
+            next_start=next_start,
+            has_next_anchor=has_next_anchor,
+            lines_count=lines_count,
+            min_section_lines=min_section_lines,
+            max_section_lines=max_section_lines,
+            boundary_backfill=boundary_backfill,
+        )
+
+        if not selected_section:
+            selected_section, _, _, _ = _build_fallback_selection(
+                markdown_content=markdown_content,
+                page_number=evidence.page_number,
+                total_pages=total_pages,
+                expected_center=start_line,
+                window_start=start_line,
+                lines_count=lines_count,
+                section_window=section_window,
+            )
+            selected_section = selected_section.strip()
+
+        selected_hash = hash(selected_section)
+        selected_section, selected_hash = _dedupe_section_with_fallback(
+            selected_section=selected_section,
+            selected_hash=selected_hash,
+            seen_hashes=seen_hashes,
+            markdown_content=markdown_content,
+            page_number=evidence.page_number,
+            total_pages=total_pages,
+        )
+        seen_hashes.add(selected_hash)
+        page_map[evidence.page_number] = selected_section
+
+    return page_map
 
 
 class IssueType(Enum):
@@ -314,74 +561,43 @@ def _build_page_markdown_map_from_previews(
     while still using preview anchors, which keeps slices page-local and prevents
     repeated identical sections across multiple page numbers.
     """
-    lines = markdown_content.splitlines()
+    clean_markdown_content, appendix_blocks_by_page = _extract_additional_visual_blocks(markdown_content)
+
+    lines = clean_markdown_content.splitlines()
     if not lines or not page_evidences:
         return {}
 
+    sorted_evidences = _sorted_page_evidences(page_evidences)
+    total_pages = max(1, len(sorted_evidences))
+    lines_count = len(lines)
     normalized_lines = [_normalize_text_for_match(line) for line in lines]
-    total_pages = max(1, len(page_evidences))
-    search_floor = 0
-    previous_hash = None
-    seen_hashes: set[int] = set()
-    page_map: Dict[int, str] = {}
 
-    for idx, evidence in enumerate(_sorted_page_evidences(page_evidences), start=1):
-        anchors = _preview_anchor_candidates(evidence.text_preview or "")
-        expected_center, window_start, window_end = _build_search_window(
-            idx=idx,
-            total_pages=total_pages,
-            lines_count=len(lines),
-            search_floor=search_floor,
-        )
-        candidates = _collect_scored_candidates(
-            anchors=anchors,
-            normalized_lines=normalized_lines,
-            window_start=window_start,
-            window_end=window_end,
-        )
-        candidate_indices, has_candidates = _resolve_candidate_indices(
-            candidates=candidates,
-            expected_center=expected_center,
-            lines_count=len(lines),
-        )
-        selected_section, selected_start, selected_end, selected_hash, is_new_hash = _select_section_from_candidates(
-            candidate_indices=candidate_indices,
-            has_candidates=has_candidates,
-            lines=lines,
-            window_start=window_start,
-            previous_hash=previous_hash,
-        )
+    lines_per_page = max(1.0, lines_count / total_pages)
+    section_window, _ = _compute_adaptive_window_params(lines_count, total_pages)
+    max_section_lines = max(20, min(section_window, int(lines_per_page * 2.0)))
+    min_section_lines = max(8, min(max_section_lines, int(lines_per_page * 0.45)))
+    search_radius = max(40, min(lines_count, int(lines_per_page * 2.2)))
+    boundary_backfill = max(3, min(24, int(lines_per_page * 0.25)))
 
-        if not selected_section:
-            selected_section, selected_start, selected_end, selected_hash = _build_fallback_selection(
-                markdown_content=markdown_content,
-                page_number=evidence.page_number,
-                total_pages=total_pages,
-                expected_center=expected_center,
-                window_start=window_start,
-                lines_count=len(lines),
-            )
-            is_new_hash = True
-
-        if is_new_hash:
-            previous_hash = selected_hash
-
-        selected_section, selected_hash = _dedupe_section_with_fallback(
-            selected_section=selected_section,
-            selected_hash=selected_hash,
-            seen_hashes=seen_hashes,
-            markdown_content=markdown_content,
-            page_number=evidence.page_number,
-            total_pages=total_pages,
-        )
-        seen_hashes.add(selected_hash)
-
-        page_map[evidence.page_number] = selected_section
-
-        progression_step = _compute_progression_step(selected_start, selected_end)
-        search_floor = min(len(lines) - 1, max(search_floor, selected_start + progression_step))
-
-    return page_map
+    anchor_starts = _resolve_monotonic_anchor_starts(
+        sorted_evidences=sorted_evidences,
+        normalized_lines=normalized_lines,
+        lines_count=lines_count,
+        total_pages=total_pages,
+        search_radius=search_radius,
+    )
+    page_map = _build_non_overlapping_page_sections(
+        sorted_evidences=sorted_evidences,
+        anchor_starts=anchor_starts,
+        lines=lines,
+        markdown_content=clean_markdown_content,
+        total_pages=total_pages,
+        section_window=section_window,
+        min_section_lines=min_section_lines,
+        max_section_lines=max_section_lines,
+        boundary_backfill=boundary_backfill,
+    )
+    return _append_additional_visual_blocks_to_page_map(page_map, appendix_blocks_by_page)
 
 
 def extract_page_evidence(pdf_path: str) -> List[PageEvidence]:
@@ -476,7 +692,13 @@ def validate_page_against_markdown(
     # Check for missing tables
     if page_evidence.table_count > 0:
         table_rows_in_md = _count_table_markers(markdown_section)
-        if table_rows_in_md < page_evidence.table_count * 2:
+        # Each VLM-described image on a page may represent an image-table (UI screenshot /
+        # grid captured as an image by the PDF renderer).  Reduce the expected markdown-table
+        # count by the number of such VLM descriptions before comparing against the threshold
+        # so that image-tables that were VLM-described do not produce false table_fidelity alarms.
+        vlm_image_count = _count_vlm_image_descriptions_in_ave(markdown_section)
+        effective_table_count = max(0, page_evidence.table_count - vlm_image_count)
+        if table_rows_in_md < effective_table_count * 2:
             issues.append(ValidationIssue(
                 issue_type=IssueType.TABLE_FIDELITY.value,
                 severity="major",
