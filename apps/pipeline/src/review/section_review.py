@@ -21,11 +21,15 @@ logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
 
 REVIEW_MANIFEST_FILENAME = "review_manifest.json"
 PAGE_REVIEW_MANIFEST_FILENAME = "page_review_manifest.json"
+FIGURE_DESCRIPTION_PATTERN = re.compile(
+    r'\*\*\s*\[?\s*Figure\s+\d+\s*:',
+    flags=re.IGNORECASE,
+)
 
 
 def _section_has_images(content: str) -> bool:
     """Recognize both classic markdown images and description-mode figures."""
-    return ('![' in content) or bool(re.search(r'\*\*\[Figure\s+\d+:', content, flags=re.IGNORECASE))
+    return ('![' in content) or bool(FIGURE_DESCRIPTION_PATTERN.search(content))
 
 
 class ReviewStatus(Enum):
