@@ -54,7 +54,7 @@ export async function uploadDocument(
     formData.append('notes', request.notes);
   }
 
-  return fastapiFetch<DocumentUploadResponse>('/api/v1/documents/upload', {
+  return fastapiFetch<DocumentUploadResponse>('/api/v1/documents/upload/', {
     method: 'POST',
     body: formData,
     headers: {
