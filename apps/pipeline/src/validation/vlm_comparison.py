@@ -65,13 +65,20 @@ def compare_with_vlm(markdown_content: str, _pdf_path: str, vlm_options: VLMOpti
         vlm_options.verbose = True
     
     with log_operation("VLM Comparison", model=vlm_options.model_id):
+        import gc
+        torch_available = False
+        try:
+            import torch
+            torch_available = True
+        except ImportError:
+            pass
+        model = None
+        processor = None
         try:
             # Use the generic multimodal auto-loader because exact Qwen3-VL class names
             # vary across Transformers releases.
             from transformers import AutoModelForImageTextToText, AutoProcessor
             from qwen_vl_utils import process_vision_info
-            import torch
-            import gc
             
             # Clear memory
             gc.collect()
@@ -86,9 +93,15 @@ def compare_with_vlm(markdown_content: str, _pdf_path: str, vlm_options: VLMOpti
                 vlm_options.model_id,
                 **vlm_options.get_model_kwargs()
             )
+            first_param = next(model.parameters())
+            if getattr(first_param.device, "type", None) != "cuda":
+                raise RuntimeError(
+                    "VLM comparison model is not on CUDA. "
+                    "CPU fallback is disabled for this pipeline path."
+                )
             
-            # Keep pdf_path referenced for observability and to satisfy static analysis.
-            logger.debug("Running VLM comparison for pdf=%s", pdf_path)
+            # Keep _pdf_path referenced for observability and to satisfy static analysis.
+            logger.debug("Running VLM comparison for pdf=%s", _pdf_path)
 
             # Prepare comparison prompt with schema enforcement
             base_prompt = f"""Analyze this markdown content from a PDF conversion.
@@ -136,14 +149,6 @@ Markdown excerpt (first 2000 chars):
                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0]
             
-            # Unload model from GPU
-            logger.info("🗑️  Unloading VLM model from GPU...")
-            del model
-            del processor
-            gc.collect()
-            torch.cuda.empty_cache()
-            logger.info("✅ Model unloaded, GPU memory freed")
-            
             # Parse response with structured parser
             fallback = ValidationResult(
                 format_issues=[
@@ -173,24 +178,26 @@ Markdown excerpt (first 2000 chars):
             
         except (RuntimeError, OSError, TypeError, ValueError) as e:
             logger.error(f"❌ VLM comparison failed: {e}")
-            # Clean up on error too
-            try:
-                del model
-                del processor
-                gc.collect()
-                torch.cuda.empty_cache()
-            except NameError:
-                # Model/processors may fail before initialization.
-                pass
-            except Exception as cleanup_error:
-                logger.debug("VLM cleanup failed after comparison error: %s", cleanup_error)
-            
             return {
                 "format_issues": ["VLM analysis failed - please review manually"],
                 "missing_content": [],
                 "improvement_suggestions": [],
                 "confidence": 0.0
             }
+        finally:
+            # Always release GPU memory — even on exceptions
+            logger.info("🗑️  Unloading VLM model from GPU...")
+            try:
+                if model is not None:
+                    del model
+                if processor is not None:
+                    del processor
+                gc.collect()
+                if torch_available:
+                    torch.cuda.empty_cache()
+            except Exception as cleanup_error:
+                logger.debug("VLM cleanup failed: %s", cleanup_error)
+            logger.info("✅ Model unloaded, GPU memory freed")
 
 
 def main():
