@@ -7,6 +7,16 @@ import { fastapiFetch } from './client';
 import type { DocumentOptimizedChunksResponse, OptimizedChunkUpdate } from '@/types';
 
 /**
+ * The backend owns whether optimized review should be bypassed.
+ * Frontend callers must not infer skip behavior from `source_type` alone.
+ */
+export function shouldSkipOptimizedReview(
+  payload: DocumentOptimizedChunksResponse,
+): boolean {
+  return payload.skip_optimized_review;
+}
+
+/**
  * Load all optimized chunks for a document.
  * Returns the document name and the list of editable chunks
  * produced by the Stage 10 RAG optimization pipeline.
