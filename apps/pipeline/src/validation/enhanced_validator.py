@@ -600,11 +600,69 @@ def _build_page_markdown_map_from_previews(
     return _append_additional_visual_blocks_to_page_map(page_map, appendix_blocks_by_page)
 
 
+def _extract_xlsx_page_evidence(file_path: str) -> List[PageEvidence]:
+    """
+    Extract evidence from an XLSX workbook.
+    Each sheet is treated as one logical "page" for validation purposes.
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        logger.warning("openpyxl not installed — falling back to single synthetic page evidence for XLSX")
+        return [
+            PageEvidence(
+                page_number=1,
+                text_preview="[XLSX file — openpyxl not available for detailed evidence]",
+                image_count=0,
+                table_count=1,
+                has_figures=False,
+            )
+        ]
+
+    logger.info(f"📥 Extracting XLSX sheet evidence: {file_path}")
+    evidence_list: List[PageEvidence] = []
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    for sheet_index, sheet_name in enumerate(wb.sheetnames, start=1):
+        ws = wb[sheet_name]
+        rows_with_data = [
+            row for row in ws.iter_rows(values_only=True)
+            if any(cell is not None for cell in row)
+        ]
+        # Build a short text preview from the first few non-empty rows
+        preview_rows = rows_with_data[:8]
+        preview_lines = [
+            "\t".join(str(c) if c is not None else "" for c in row)
+            for row in preview_rows
+        ]
+        text_preview = f"Sheet: {sheet_name}\n" + "\n".join(preview_lines)
+        if len(text_preview) > 500:
+            text_preview = text_preview[:497] + "..."
+
+        evidence_list.append(
+            PageEvidence(
+                page_number=sheet_index,
+                text_preview=text_preview,
+                image_count=0,
+                table_count=1 if rows_with_data else 0,
+                has_figures=False,
+                thumbnail_path=None,
+            )
+        )
+        logger.info(f"✅ Sheet {sheet_index} '{sheet_name}': {len(rows_with_data)} data rows")
+
+    wb.close()
+    logger.info(f"✅ Extracted evidence for {len(evidence_list)} sheet(s)")
+    return evidence_list
+
+
 def extract_page_evidence(pdf_path: str) -> List[PageEvidence]:
     """
-    Extract evidence snapshots from each PDF page
-    Captures text preview, image/table counts for reviewer cross-check
+    Extract evidence snapshots from each page (PDF) or sheet (XLSX).
+    Captures text preview, image/table counts for reviewer cross-check.
     """
+    if Path(pdf_path).suffix.lower() in {".xlsx", ".xls"}:
+        return _extract_xlsx_page_evidence(pdf_path)
+
     try:
         import pdfplumber
         from PIL import Image
