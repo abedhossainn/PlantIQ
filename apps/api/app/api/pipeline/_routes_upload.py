@@ -26,6 +26,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_UPLOAD_SOURCE_TYPES_BY_EXTENSION = {
+    ".pdf": "pdf",
+    ".xlsx": "xlsx",
+    ".xls": "xlsx",
+}
+
+
+def _resolve_upload_source_type(file: UploadFile) -> str | None:
+    """Resolve supported upload source type from filename extension or MIME hint."""
+    suffix = Path(file.filename or "").suffix.lower()
+    source_type = _UPLOAD_SOURCE_TYPES_BY_EXTENSION.get(suffix)
+    if source_type is not None:
+        return source_type
+
+    content_type = str(getattr(file, "content_type", "") or "").lower()
+    if content_type == "application/pdf":
+        return "pdf"
+    if content_type in {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+    }:
+        return "xlsx"
+    return None
+
+
 async def _resolve_missing_subscription_queue(
     *,
     doc_id: str,
@@ -218,10 +243,16 @@ async def upload_document(
     - Triggers HITL pipeline subprocess
     - Returns document ID and initial status
     """
-    if not file.filename or not file.filename.endswith(".pdf"):
+    source_type = _resolve_upload_source_type(file)
+    if source_type is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are allowed",
+            detail="Only PDF, XLSX, and XLS files are allowed",
+        )
+    if source_type == "xlsx" and not settings.PIPELINE_XLSX_DISPATCH_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Spreadsheet uploads are currently disabled by configuration",
         )
 
     file.file.seek(0, 2)
@@ -307,6 +338,8 @@ async def upload_document(
             pdf_path=str(file_path),
             reviewer=str(current_user_id),
             db=db,
+            source_path=str(file_path),
+            source_type=source_type,
         )
 
         return DocumentUploadResponse(
