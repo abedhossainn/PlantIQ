@@ -256,6 +256,9 @@ export interface OptimizedChunk {
 
 export interface DocumentOptimizedChunksResponse {
   document_name: string;
+  source_type: "pdf" | "xlsx";
+  skip_optimized_review: boolean;
+  next_route?: string | null;
   review_unit: "optimized_chunk";
   chunks: OptimizedChunk[];
 }
