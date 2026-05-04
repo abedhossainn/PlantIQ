@@ -103,13 +103,31 @@ class Settings(BaseSettings):
         default=300,
         validation_alias="PIPELINE_STALLED_GRACE_SECONDS",
     )
+    PIPELINE_XLSX_DISPATCH_ENABLED: bool = Field(
+        default=True,
+        validation_alias="PIPELINE_XLSX_DISPATCH_ENABLED",
+    )
+    PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED",
+            "PIPELINE_CE_EXTRACTION_ENABLED",
+        ),
+    )
+    PIPELINE_XLSX_RETRIEVAL_ENABLED: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "PIPELINE_XLSX_RETRIEVAL_ENABLED",
+            "PIPELINE_CE_RETRIEVAL_ENABLED",
+        ),
+    )
     
     # File Storage
     UPLOAD_DIR: str = Field(default=str(REPO_ROOT / "data" / "raw"), validation_alias="UPLOAD_DIR")
     ARTIFACTS_DIR: str = Field(default=str(REPO_ROOT / "data" / "artifacts"), validation_alias="ARTIFACTS_DIR")
     MAX_UPLOAD_SIZE_MB: int = Field(default=100, validation_alias="MAX_UPLOAD_SIZE_MB")
     ALLOWED_EXTENSIONS: List[str] = Field(
-        default=[".pdf"],
+        default=[".pdf", ".xlsx", ".xls"],
         validation_alias="ALLOWED_EXTENSIONS"
     )
     
@@ -293,8 +311,10 @@ def get_artifacts_path(
         "table_figure": ["*_tables_figures.json"],
         "review": ["*_review"],
         "audit": ["*_audit.txt"],
+        "structured_relations": ["*_ce_relations.json", "*.ce_relations.json", "ce_relations.json"],
         "optimization_prep": ["*_optimization_prep.json"],
         "optimized_output": ["*_rag_optimized.json", "*_rag_optimized.md"],
+        "retrieval_chunks": ["*_rag_optimized.json"],
     }
 
     patterns = _SUFFIX_MAP.get(artifact_type, [f"*_{artifact_type}*"])
