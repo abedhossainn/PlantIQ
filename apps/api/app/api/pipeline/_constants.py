@@ -117,6 +117,7 @@ _FLAT_ARTIFACT_SUFFIXES: list[str] = [
     "_qa_report.json",
     "_qa_pre_review.json",
     "_tables_figures.json",
+    "_ce_relations.json",
     "_optimization_prep.json",
     "_rag_optimized.json",
     "_rag_optimized.md",
