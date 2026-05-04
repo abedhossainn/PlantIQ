@@ -9,8 +9,7 @@ import { AppLayout } from "@/components/shared/AppLayout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { getDocumentOptimizedChunks, updateOptimizedChunk } from "@/lib/api/optimized-review";
-import { fastapiFetch } from "@/lib/api";
+import { getDocumentOptimizedChunks, shouldSkipOptimizedReview, updateOptimizedChunk } from "@/lib/api/optimized-review";
 import type { OptimizedChunk, DocumentOptimizedChunksResponse } from "@/types";
 import { EditableList } from "./_components/EditableList";
 import { ChunkList } from "./_components/ChunkList";
@@ -44,6 +43,13 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
       try {
         const data: DocumentOptimizedChunksResponse = await getDocumentOptimizedChunks(docId);
         if (cancelled) return;
+
+        if (shouldSkipOptimizedReview(data)) {
+          const targetRoute = data.next_route ?? `/admin/documents/${docId}/qa-gates`;
+          router.replace(targetRoute);
+          return;
+        }
+
         setDocumentName(data.document_name ?? "");
         setChunks(data.chunks ?? []);
         const headings: Record<string, string> = {};
@@ -71,7 +77,7 @@ export default function OptimizedReviewClient({ docId }: { docId: string }) {
 
     void loadChunks();
     return () => { cancelled = true; };
-  }, [docId]);
+  }, [docId, router]);
 
   const saveChunk = useCallback(
     async (chunkId: string) => {
