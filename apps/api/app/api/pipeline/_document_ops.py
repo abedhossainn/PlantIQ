@@ -51,6 +51,35 @@ from ._review import _ensure_page_review_manifest
 logger = logging.getLogger(__name__)
 
 
+def _summarize_ce_structured_artifact(work_dir: Path, document_name: str) -> dict[str, Any] | None:
+    """Return lightweight CE artifact summary if a structured relations file exists."""
+    candidates = [
+        work_dir / f"{document_name}_ce_relations.json",
+        work_dir / "ce_relations.json",
+    ]
+    artifact_path = next((path for path in candidates if path.exists() and path.is_file()), None)
+    if artifact_path is None:
+        return None
+
+    payload = _load_optional_json(artifact_path)
+    if not payload:
+        return {
+            "artifact_path": str(artifact_path),
+            "schema_version": None,
+            "causes_count": 0,
+            "effects_count": 0,
+            "relations_count": 0,
+        }
+
+    return {
+        "artifact_path": str(artifact_path),
+        "schema_version": payload.get("schema_version"),
+        "causes_count": len(payload.get("causes") or []),
+        "effects_count": len(payload.get("effects") or []),
+        "relations_count": len(payload.get("relations") or []),
+    }
+
+
 def _ensure_repo_root_on_syspath() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
@@ -524,6 +553,11 @@ async def _approve_for_optimization(
                 detail="Validation artifact not found for this document",
             )
 
+        _manifest_path, _resolved_validation_path, _resolved_document_name, source_path = _resolve_optimization_context(
+            work_root=work_dir,
+            document_id=str(document_id),
+        )
+
         validation_report = _load_json_file(validation_path)
         table_figure_report = _load_optional_json(_find_table_figure_report_path(work_dir))
 
@@ -537,12 +571,15 @@ async def _approve_for_optimization(
             or validation_report.get("document_name")
             or str(document_id)
         )
+        ce_structured_artifact = _summarize_ce_structured_artifact(work_dir, document_name)
         optimization_prep = build_optimization_prep(
             document_id=str(document_id),
             document_name=document_name,
             review_dir=str(review_dir),
             validation_report=validation_report,
             table_figure_report=table_figure_report,
+            ce_structured_artifact=ce_structured_artifact,
+            source_path=source_path,
         )
 
         optimization_prep_path = work_dir / f"{document_name}_optimization_prep.json"
@@ -572,6 +609,7 @@ async def _approve_for_optimization(
             "status": PipelineStatus.APPROVED_FOR_OPTIMIZATION.value,
             "optimization_triggered": True,
             "optimization_prep_path": str(optimization_prep_path),
+            "ce_structured_artifact_path": (ce_structured_artifact or {}).get("artifact_path"),
         }
     except HTTPException:
         raise
