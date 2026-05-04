@@ -22,12 +22,20 @@ from ...models.pipeline import (
 from ._chunks import (
     _build_editable_optimized_chunks,
     _extract_page_numbers_from_chunk,
+    _has_usable_optimized_chunks,
     _preview_text,
     _save_optimized_chunks,
 )
 from ._constants import _CLEAR, _OPTIMIZED_OUTPUT_AVAILABLE_STATUSES, _OPTIMIZED_OUTPUT_EDITABLE_STATUSES
 from ._db_ops import _ensure_status_in, _require_document_status, _set_document_status
-from ._filesystem import _find_document_workspace, _find_review_workspace, _load_json_file
+from ._filesystem import (
+    _find_document_workspace,
+    _find_manifest_path,
+    _find_optimized_artifact_paths,
+    _find_review_workspace,
+    _load_json_file,
+    _load_optional_json,
+)
 from ._review import (
     _build_page_response,
     _build_review_progress,
@@ -151,6 +159,21 @@ def _persist_optimized_chunk_updates(
         optimized_markdown_path=optimized_markdown_path,
         work_dir=work_dir,
     )
+
+
+def _resolve_optimized_review_source_type(work_dir: Path, manifest_payload: dict) -> str:
+    source_path = str(manifest_payload.get("pdf_path") or "").strip()
+    source_suffix = Path(source_path).suffix.lower()
+    if source_suffix in {".xlsx", ".xls"}:
+        return "xlsx"
+
+    optimized_json_path, _optimized_markdown_path = _find_optimized_artifact_paths(work_dir)
+    optimized_payload = _load_optional_json(optimized_json_path)
+    optimized_source_type = str(optimized_payload.get("source_type") or "").strip().lower()
+    if optimized_source_type == "xlsx":
+        return "xlsx"
+
+    return "pdf"
 
 
 @router.get("/documents/{document_id}/sections")
@@ -330,11 +353,16 @@ async def get_document_optimized_chunks(
 
     try:
         work_dir = _find_document_workspace(document_id, require_document_dir=True)
+        manifest_path = _find_manifest_path(work_dir)
+        manifest_payload = _load_optional_json(manifest_path)
+        source_type = _resolve_optimized_review_source_type(work_dir, manifest_payload)
+
         _optimized_payload, document_name, editable_chunks, _json_path, _markdown_path = (
             _build_editable_optimized_chunks(work_dir)
         )
         return DocumentOptimizedChunksResponse(
             document_name=document_name,
+            source_type=source_type,
             chunks=[
                 OptimizedChunkResponse(
                     id=chunk["id"],
