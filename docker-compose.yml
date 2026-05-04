@@ -40,6 +40,8 @@ services:
       # Pipeline optimizer model — must be a local path, NOT an Ollama tag.
       # Separate from TEXT_MODEL_ID so chat (Ollama) and pipeline (transformers) can use different models.
       - PIPELINE_TEXT_MODEL_ID=${PIPELINE_TEXT_MODEL_ID:-/workspace/models/Qwen3.5-4B}
+      - PIPELINE_CE_EXTRACTION_ENABLED=${PIPELINE_CE_EXTRACTION_ENABLED:-false}
+      - PIPELINE_CE_RETRIEVAL_ENABLED=${PIPELINE_CE_RETRIEVAL_ENABLED:-false}
       - LLM_UNLOAD_AFTER_REQUEST=${LLM_UNLOAD_AFTER_REQUEST:-false}
       - LLM_DEMAND_HEARTBEAT_FILE=${LLM_DEMAND_HEARTBEAT_FILE:-/workspace/data/artifacts/runtime/llm_last_used}
       - LLM_STARTUP_WAIT_SECONDS=${LLM_STARTUP_WAIT_SECONDS:-45}
