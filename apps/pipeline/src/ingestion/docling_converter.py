@@ -64,6 +64,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_DOCLING_CHUNK_PAGES = 4
 DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS = 300
 DEFAULT_DOCLING_CONNECT_TIMEOUT_SECONDS = 10
+
+# Non-PDF formats sent as a single request (no page chunking)
+XLSX_EXTENSIONS: frozenset[str] = frozenset({".xlsx", ".xls"})
+XLSX_MIME_TYPES: dict[str, str] = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+}
+XLSX_WIDE_TABLE_COLUMN_THRESHOLD = 12
+XLSX_METADATA_DEDUPE_COLUMN_COUNT = 8
+XLSX_HEADER_PREFIX_SCAN_COUNT = 10
+CE_EXTRACTION_FLAG_ENV = "PIPELINE_CE_EXTRACTION_ENABLED"
+CE_RETRIEVAL_FLAG_ENV = "PIPELINE_CE_RETRIEVAL_ENABLED"
+CE_SCHEMA_VERSION = "1.0"
+CE_MARKER_SEMANTICS: dict[str, dict[str, str]] = {
+    "X": {
+        "semantic": "active_interlock",
+        "description": "Active cause/effect linkage in the matrix.",
+    },
+    "P": {
+        "semantic": "permissive_condition",
+        "description": "Permissive gate/condition linkage in the matrix.",
+    },
+}
 EMBEDDED_IMAGE_PATTERN = r'!\[([^\]]*)\]\((data:image/[^)]+)\)'
 DEFAULT_DOCLING_URL = "http://localhost:5001"
 DOCLING_CONVERT_ENDPOINT = "/v1/convert/file"
@@ -276,6 +299,566 @@ def _normalize_table_cells(md_content: str) -> str:
             result.append(line)
     
     return '\n'.join(result)
+
+
+def _normalize_xlsx_datetime_values(text: str) -> str:
+    """Remove verbose zero-time suffixes from XLSX-exported date strings."""
+    return re.sub(r'\b(\d{4}-\d{2}-\d{2}) 00:00:00\b', r'\1', text)
+
+
+def _is_xlsx_duplicate_noise_value(value: str) -> bool:
+    """Return True when an adjacent duplicate cell is likely merged-cell noise."""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    if stripped in {"X", "P", "-"}:
+        return False
+    if re.fullmatch(r'\d+(?:\.\d+)?', stripped):
+        return False
+    return True
+
+
+def _blank_adjacent_xlsx_duplicates(cells: list[str], *, limit: int) -> None:
+    """Blank repeated adjacent descriptive cells while preserving column count."""
+    retained_value = ""
+    for index in range(min(limit, len(cells))):
+        current_value = cells[index].strip()
+        if not current_value:
+            retained_value = ""
+            continue
+        if current_value == retained_value and _is_xlsx_duplicate_noise_value(current_value):
+            cells[index] = ""
+            continue
+        retained_value = current_value
+
+
+def _blank_repeated_xlsx_header_prefix(cells: list[str]) -> None:
+    """Blank repeated EFFECTS/DESCRIPTION prefix cells on wide XLSX tables."""
+    scan_limit = max(0, min(len(cells) - 1, XLSX_HEADER_PREFIX_SCAN_COUNT))
+    for index in range(scan_limit):
+        current_value = cells[index].strip().upper()
+        next_value = cells[index + 1].strip().upper() if index + 1 < len(cells) else ""
+        if current_value != "EFFECTS" or next_value != "EFFECTS":
+            continue
+
+        cells[index] = ""
+        cells[index + 1] = ""
+        if index + 2 < len(cells) and cells[index + 2].strip().upper() == "DESCRIPTION":
+            cells[index + 2] = ""
+        break
+
+
+def _normalize_xlsx_table_row(line: str) -> str:
+    """Normalize one XLSX-derived markdown table row while preserving table width."""
+    raw_cells = line.split('|')
+    if len(raw_cells) < 3:
+        return _normalize_xlsx_datetime_values(line)
+
+    cells = [_normalize_xlsx_datetime_values(cell) for cell in raw_cells[1:-1]]
+    if len(cells) < XLSX_WIDE_TABLE_COLUMN_THRESHOLD:
+        _blank_adjacent_xlsx_duplicates(cells, limit=len(cells))
+    return '|' + '|'.join(cells) + '|'
+
+
+def _normalize_xlsx_markdown(md_content: str) -> str:
+    """Reduce XLSX merged-cell/frozen-header markdown noise after Docling extraction."""
+    result: list[str] = []
+    for line in md_content.split('\n'):
+        if '|' in line and not line.strip().startswith('```'):
+            result.append(_normalize_xlsx_table_row(line))
+        else:
+            result.append(_normalize_xlsx_datetime_values(line))
+    return '\n'.join(result)
+
+
+def _is_feature_flag_enabled(env_name: str, *, default: bool = False) -> bool:
+    """Return feature-flag bool from environment with conservative defaults."""
+    raw_value = os.getenv(env_name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_ce_extraction_enabled(explicit_value: Optional[bool] = None) -> bool:
+    """Return whether CE structured extraction should run (default OFF)."""
+    if explicit_value is not None:
+        return bool(explicit_value)
+    return _is_feature_flag_enabled(CE_EXTRACTION_FLAG_ENV, default=False)
+
+
+def _is_ce_retrieval_enabled() -> bool:
+    """Return whether CE retrieval routing is enabled (default OFF)."""
+    return _is_feature_flag_enabled(CE_RETRIEVAL_FLAG_ENV, default=False)
+
+
+def _split_markdown_table_row_cells(line: str) -> list[str] | None:
+    """Split a markdown table row into inner cells; return None for non-table rows."""
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return [cell.strip() for cell in stripped.split("|")[1:-1]]
+
+
+def _is_markdown_separator_row(cells: list[str]) -> bool:
+    """Return True for markdown separator rows like |---|:---:|."""
+    if not cells:
+        return False
+    return all(re.fullmatch(r"[:\-\s]+", cell or "") for cell in cells)
+
+
+def _is_meaningful_effect_label(value: str) -> bool:
+    """Return True when a header value is a likely effect label."""
+    cleaned = value.strip()
+    if not cleaned:
+        return False
+    upper = cleaned.upper()
+    if upper in {"X", "P", "ACTION", "PERMISSIVE", "EFFECTS", "DESCRIPTION"}:
+        return False
+    if re.fullmatch(r"\d+", cleaned):
+        return False
+    return True
+
+
+def _build_ce_effect_index(
+    rows: list[tuple[int, list[str]]],
+    *,
+    sheet_sections: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """Build column-indexed effect metadata from ACTION/PERMISSIVE matrix header rows."""
+    effects_by_col: dict[int, dict[str, Any]] = {}
+    effect_counter = 1
+
+    for line_no, cells in rows:
+        if not any((cell or "").strip().upper() in {"ACTION", "PERMISSIVE"} for cell in cells):
+            continue
+
+        for col_index, raw_value in enumerate(cells):
+            if not _is_meaningful_effect_label(raw_value):
+                continue
+            if col_index in effects_by_col:
+                continue
+            sheet_section = _sheet_section_for_line(line_no, sheet_sections)
+            effects_by_col[col_index] = {
+                "effect_id": f"effect_{effect_counter:03d}",
+                "effect_label": raw_value.strip(),
+                "origin": {
+                    "sheet": (sheet_section or {}).get("sheet_name"),
+                    "page_number": (sheet_section or {}).get("page_number"),
+                    "line_number": line_no,
+                    "column_index": col_index,
+                },
+            }
+            effect_counter += 1
+
+    return effects_by_col
+
+
+def _build_ce_source_lineage(*, source_file: Path, lineage_context: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Build source-lineage payload for CE structured artifacts."""
+    lineage_context = lineage_context or {}
+    return {
+        "document_id": lineage_context.get("document_id"),
+        "document_revision": lineage_context.get("document_revision"),
+        "run_id": lineage_context.get("run_id") or os.getenv("PIPELINE_RUN_ID"),
+        "source_path": str(source_file),
+        "source_filename": source_file.name,
+    }
+
+
+def _build_sheet_sections(markdown_content: str) -> list[dict[str, Any]]:
+    """Parse markdown ``##`` headings into sheet/page sections."""
+    lines = markdown_content.splitlines()
+    sections: list[dict[str, Any]] = []
+    current: Optional[dict[str, Any]] = None
+
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if current is not None:
+                current["line_end"] = line_no - 1
+                sections.append(current)
+            current = {
+                "sheet_name": stripped[3:].strip(),
+                "page_number": len(sections) + 1,
+                "line_start": line_no,
+            }
+
+    if current is not None:
+        current["line_end"] = len(lines)
+        sections.append(current)
+
+    if sections:
+        return sections
+
+    if not markdown_content.strip():
+        return []
+
+    return [
+        {
+            "sheet_name": "Sheet1",
+            "page_number": 1,
+            "line_start": 1,
+            "line_end": max(len(lines), 1),
+        }
+    ]
+
+
+def _sheet_section_for_line(line_no: int, sheet_sections: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Resolve a source markdown line to its containing sheet section."""
+    for section in sheet_sections:
+        if int(section["line_start"]) <= int(line_no) <= int(section["line_end"]):
+            return section
+    return sheet_sections[0] if sheet_sections else None
+
+
+def _is_ce_relation_data_row(cells: list[str]) -> bool:
+    """Return True for wide matrix rows likely encoding cause/effect markers."""
+    if len(cells) < XLSX_WIDE_TABLE_COLUMN_THRESHOLD:
+        return False
+    if not any((cell or "").strip().upper() in {"X", "P"} for cell in cells):
+        return False
+    prefix = " ".join((cells[:4] if len(cells) >= 4 else cells)).strip()
+    return bool(prefix)
+
+
+def _collect_candidate_table_rows(markdown_content: str) -> list[tuple[int, list[str]]]:
+    """Collect non-separator markdown table rows with source line numbers."""
+    candidate_rows: list[tuple[int, list[str]]] = []
+    for line_no, line in enumerate(markdown_content.splitlines(), start=1):
+        cells = _split_markdown_table_row_cells(line)
+        if cells is None or _is_markdown_separator_row(cells):
+            continue
+        candidate_rows.append((line_no, cells))
+    return candidate_rows
+
+
+def _get_or_create_cause_payload(
+    *,
+    causes_by_key: dict[str, dict[str, Any]],
+    cause_key: str,
+    cells: list[str],
+    line_no: int,
+    sheet_sections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return existing cause payload or create one from row prefix cells."""
+    cause_payload = causes_by_key.get(cause_key)
+    if cause_payload is not None:
+        return cause_payload
+
+    sheet_section = _sheet_section_for_line(line_no, sheet_sections)
+    cause_payload = {
+        "cause_id": f"cause_{len(causes_by_key) + 1:03d}",
+        "cause_ref": (cells[0] if len(cells) > 0 else "").strip(),
+        "cause_tag": (cells[1] if len(cells) > 1 else "").strip(),
+        "cause_description": (cells[2] if len(cells) > 2 else "").strip(),
+        "origin": {
+            "sheet": (sheet_section or {}).get("sheet_name"),
+            "page_number": (sheet_section or {}).get("page_number"),
+            "line_number": line_no,
+        },
+    }
+    causes_by_key[cause_key] = cause_payload
+    return cause_payload
+
+
+def _build_relations_for_data_row(
+    *,
+    cells: list[str],
+    line_no: int,
+    cause_payload: dict[str, Any],
+    effects_by_col: dict[int, dict[str, Any]],
+    relation_counter_start: int,
+    sheet_sections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build CE relations for one matrix data row."""
+    relations: list[dict[str, Any]] = []
+    relation_counter = relation_counter_start
+    sheet_section = _sheet_section_for_line(line_no, sheet_sections)
+
+    for col_index, value in enumerate(cells):
+        marker = (value or "").strip().upper()
+        if marker not in CE_MARKER_SEMANTICS:
+            continue
+
+        effect_payload = effects_by_col.get(col_index)
+        if effect_payload is None:
+            continue
+
+        marker_semantics = CE_MARKER_SEMANTICS[marker]
+        relations.append(
+            {
+                "relation_id": f"rel_{relation_counter:04d}",
+                "cause_id": cause_payload["cause_id"],
+                "effect_id": effect_payload["effect_id"],
+                "marker": marker,
+                "marker_semantic": marker_semantics["semantic"],
+                "marker_description": marker_semantics["description"],
+                "confidence": "high",
+                "origin": {
+                    "sheet": (sheet_section or {}).get("sheet_name"),
+                    "page_number": (sheet_section or {}).get("page_number"),
+                    "line_number": line_no,
+                    "column_index": col_index,
+                },
+            }
+        )
+        relation_counter += 1
+
+    return relations
+
+
+def _build_ce_structured_payload(
+    *,
+    markdown_content: str,
+    source_file: Path,
+    lineage_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Extract conservative cause/effect relations from normalized XLSX markdown."""
+    candidate_rows = _collect_candidate_table_rows(markdown_content)
+    sheet_sections = _build_sheet_sections(markdown_content)
+
+    effects_by_col = _build_ce_effect_index(candidate_rows, sheet_sections=sheet_sections)
+    effects: list[dict[str, Any]] = [effects_by_col[index] for index in sorted(effects_by_col.keys())]
+
+    causes_by_key: dict[str, dict[str, Any]] = {}
+    relations: list[dict[str, Any]] = []
+
+    for line_no, cells in candidate_rows:
+        if not _is_ce_relation_data_row(cells):
+            continue
+
+        cause_key = "|".join(cells[:3]).strip()
+        if not cause_key:
+            continue
+
+        cause_payload = _get_or_create_cause_payload(
+            causes_by_key=causes_by_key,
+            cause_key=cause_key,
+            cells=cells,
+            line_no=line_no,
+            sheet_sections=sheet_sections,
+        )
+        relations.extend(
+            _build_relations_for_data_row(
+                cells=cells,
+                line_no=line_no,
+                cause_payload=cause_payload,
+                effects_by_col=effects_by_col,
+                relation_counter_start=len(relations) + 1,
+                sheet_sections=sheet_sections,
+            )
+        )
+
+    causes = list(causes_by_key.values())
+    source_lineage = _build_ce_source_lineage(source_file=source_file, lineage_context=lineage_context)
+    warnings: list[str] = []
+    if not relations:
+        warnings.append("No cause/effect relations detected from XLSX markdown.")
+
+    return {
+        "schema_version": CE_SCHEMA_VERSION,
+        "source_type": "xlsx",
+        "document_id": source_lineage.get("document_id"),
+        "document_revision": source_lineage.get("document_revision"),
+        "run_id": source_lineage.get("run_id"),
+        "source_lineage": source_lineage,
+        "sheet_page_origin": {
+            "source_type": "xlsx",
+            "sheet": sheet_sections[0]["sheet_name"] if sheet_sections else None,
+            "page": sheet_sections[0]["page_number"] if sheet_sections else None,
+        },
+        "sheets": [
+            {
+                "sheet_name": section["sheet_name"],
+                "page_number": section["page_number"],
+                "line_start": section["line_start"],
+                "line_end": section["line_end"],
+            }
+            for section in sheet_sections
+        ],
+        "marker_semantics": CE_MARKER_SEMANTICS,
+        "causes": causes,
+        "effects": effects,
+        "entities": [
+            {"entity_type": "cause", **cause}
+            for cause in causes
+        ] + [
+            {"entity_type": "effect", **effect}
+            for effect in effects
+        ],
+        "relations": relations,
+        "warnings": warnings,
+        "feature_flags": {
+            "ce_extraction_enabled": True,
+            "ce_retrieval_enabled": _is_ce_retrieval_enabled(),
+        },
+        "normalization_flags": {
+            "xlsx_datetime_normalized": True,
+            "xlsx_adjacent_duplicate_cleanup_applied": True,
+            "wide_matrix_rows_preserved": True,
+            "aggressive_wide_row_rewrite_disabled": True,
+        },
+        "confidence_flags": {
+            "effects_header_detected": bool(effects),
+            "relations_detected": len(relations) > 0,
+            "requires_human_review": len(relations) == 0,
+        },
+    }
+
+
+def _write_ce_structured_artifact(
+    *,
+    markdown_content: str,
+    source_file: Path,
+    ce_output_path: Path,
+    lineage_context: Optional[dict[str, Any]] = None,
+) -> Path:
+    """Persist CE structured payload for relation-aware retrieval."""
+    payload = _build_ce_structured_payload(
+        markdown_content=markdown_content,
+        source_file=source_file,
+        lineage_context=lineage_context,
+    )
+    ce_output_path.parent.mkdir(parents=True, exist_ok=True)
+    ce_output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return ce_output_path
+
+
+def _postprocess_spreadsheet_markdown(
+    *,
+    markdown_content: str,
+    source_file: Path,
+    output_path: str,
+    ce_output_path: Optional[str],
+    ce_extraction_enabled: Optional[bool],
+    lineage_context: Optional[dict[str, Any]],
+) -> str:
+    """Apply XLSX-safe normalization and optional CE structured artifact generation."""
+    print("   ✓ Normalizing XLSX merged-cell and frozen-header noise")
+    normalized_markdown = _normalize_xlsx_markdown(markdown_content)
+
+    if not _is_ce_extraction_enabled(ce_extraction_enabled):
+        return normalized_markdown
+
+    resolved_ce_output = Path(ce_output_path) if ce_output_path else Path(output_path).with_suffix(".ce_relations.json")
+    try:
+        written_path = _write_ce_structured_artifact(
+            markdown_content=normalized_markdown,
+            source_file=source_file,
+            ce_output_path=resolved_ce_output,
+            lineage_context=lineage_context,
+        )
+        print(f"   ✓ CE structured artifact generated: {written_path}")
+    except Exception as exc:
+        logger.warning("CE structured artifact generation failed (continuing markdown path): %s", exc)
+
+    return normalized_markdown
+
+
+def _cell_to_str(value: Any) -> str:
+    """Convert a DataFrame cell value to a clean string."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    return s
+
+
+def _dataframe_to_gfm_pipe_table(df: Any) -> str:
+    """Convert a DataFrame to a GFM pipe table string with spaced columns."""
+    headers = [str(c).strip() or f"Col{i}" for i, c in enumerate(df.columns)]
+    sep = ["-" * max(3, len(h)) for h in headers]
+    lines: list[str] = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(sep) + " |",
+    ]
+    for _, row in df.iterrows():
+        cells = [_cell_to_str(v) for v in row]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def _sheet_to_markdown_section(sheet_name: str, df: Any) -> str:
+    """Convert one sheet DataFrame to a clean self-contained GFM ## section.
+
+    - Drops fully-empty rows and columns so sparse xlsx sheets render cleanly
+    - Uses the first non-empty row as GFM table column headers
+    - Returns ``## SheetName\\n\\n|header|\\n|---|\\n|rows|``
+    """
+    df = df.fillna("")
+
+    # Drop completely empty rows
+    df = df[df.apply(lambda row: any(str(v).strip() for v in row), axis=1)].reset_index(drop=True)
+    # Drop completely empty columns
+    df = df.loc[:, df.apply(lambda col: any(str(v).strip() for v in col), axis=0)].reset_index(drop=True)
+
+    if df.empty:
+        return f"## {sheet_name}\n\n*(No data)*"
+
+    # Use first row as column headers; blank cells get a generic name
+    first_row = df.iloc[0]
+    headers = [str(v).strip() or f"Col{i}" for i, v in enumerate(first_row)]
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = headers
+
+    return f"## {sheet_name}\n\n{_dataframe_to_gfm_pipe_table(df)}"
+
+
+def extract_xlsx_to_markdown(
+    *,
+    xlsx_path: str,
+    output_path: str,
+    ce_output_path: Optional[str] = None,
+    ce_extraction_enabled: Optional[bool] = None,
+    lineage_context: Optional[dict[str, Any]] = None,
+) -> str:
+    """Convert xlsx directly to GFM markdown and generate CE sidecar. Returns markdown content.
+
+    Reads the workbook using pandas + openpyxl (no Docling service required), producing one
+    GFM pipe-table section per sheet.  When CE extraction is enabled the existing
+    ``_build_ce_structured_payload`` logic runs on the clean pandas-derived markdown,
+    avoiding the merged-cell and datetime artefacts that Docling introduces.
+    """
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise ImportError(
+            "pandas is required for direct xlsx extraction. "
+            "Install it with: pip install pandas openpyxl"
+        ) from exc
+
+    xlsx_file = Path(xlsx_path)
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    all_sheets: dict[str, Any] = pd.read_excel(
+        xlsx_file, sheet_name=None, header=None, dtype=str, engine="openpyxl"
+    )
+
+    sections: list[str] = []
+    for sheet_name, df in all_sheets.items():
+        sections.append(_sheet_to_markdown_section(sheet_name, df))
+
+    markdown_content = "\n\n".join(sections)
+    output_file.write_text(markdown_content, encoding="utf-8")
+
+    if _is_ce_extraction_enabled(ce_extraction_enabled):
+        resolved_ce_path = (
+            Path(ce_output_path)
+            if ce_output_path
+            else output_file.with_name(f"{output_file.stem}_ce_relations.json")
+        )
+        try:
+            written_path = _write_ce_structured_artifact(
+                markdown_content=markdown_content,
+                source_file=xlsx_file,
+                ce_output_path=resolved_ce_path,
+                lineage_context=lineage_context,
+            )
+            print(f"   ✓ CE structured artifact generated: {written_path}")
+        except Exception as exc:
+            logger.warning("CE artifact generation failed (continuing): %s", exc)
+
+    return markdown_content
 
 
 def _decode_embedded_image(data_uri: str) -> tuple[str, bytes]:
@@ -629,14 +1212,12 @@ def export_page_markdown_map(
     return page_markdown_map
 
 
-def _build_conversion_options(image_mode: str) -> dict[str, Any]:
+def _build_conversion_options(image_mode: str, *, is_spreadsheet: bool = False) -> dict[str, Any]:
     """Build Docling conversion options aligned to the requested image strategy."""
     image_export_mode = "embedded" if image_mode in {"embedded", "referenced", "descriptions"} else "placeholder"
-    return {
+    options: dict[str, Any] = {
         "to_formats": ["md"],
-        "do_ocr": True,
-        "pdf_backend": "dlparse_v4",
-        "table_mode": "accurate",
+        "do_ocr": not is_spreadsheet,
         "do_table_structure": True,
         "do_formula_enrichment": False,
         "do_picture_description": False,
@@ -647,6 +1228,10 @@ def _build_conversion_options(image_mode: str) -> dict[str, Any]:
         "include_images": image_export_mode == "embedded",
         "images_scale": 1.0,
     }
+    if not is_spreadsheet:
+        options["pdf_backend"] = "dlparse_v4"
+        options["table_mode"] = "accurate"
+    return options
 
 
 def _convert_markdown_for_selected_image_mode(
@@ -870,6 +1455,38 @@ def _convert_pdf_with_docling_sync_chunks(
     return _merge_docling_chunk_payloads(chunk_results, page_ranges)
 
 
+def _convert_document_single_shot(
+    *,
+    file_path: Path,
+    docling_url: str,
+    options: dict,
+    connect_timeout: int,
+    read_timeout: int,
+) -> dict:
+    """Convert a non-PDF document (e.g. XLSX) as a single Docling request — no page chunking."""
+    suffix = file_path.suffix.lower()
+    mime_type = XLSX_MIME_TYPES.get(suffix, "application/octet-stream")
+    try:
+        with open(file_path, "rb") as fh:
+            response = requests.post(
+                f"{docling_url}{DOCLING_CONVERT_ENDPOINT}",
+                files={"files": (file_path.name, fh, mime_type)},
+                data=_build_docling_form_data(options),
+                timeout=(connect_timeout, read_timeout),
+            )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.ConnectionError as exc:
+        _exit_with_error(
+            f"Cannot connect to Docling at {docling_url}: {exc}",
+            hints=["Make sure docling-serve is running: docker ps | grep docling-serve"],
+        )
+    except requests.exceptions.Timeout as exc:
+        _exit_with_error(f"Timeout converting document with Docling: {exc}")
+    except Exception as exc:
+        _exit_with_error(f"Error converting document: {type(exc).__name__}: {exc}")
+
+
 def _run_docling_chunked_conversion(
     *,
     pdf_file: Path,
@@ -928,7 +1545,10 @@ def convert_pdf_with_qwen(
     output_path: str,
     image_mode: str = DEFAULT_IMAGE_MODE,
     docling_url: str = DEFAULT_DOCLING_URL,
-    vlm_options: 'VLMOptions' = None
+    vlm_options: 'VLMOptions' = None,
+    ce_output_path: Optional[str] = None,
+    ce_extraction_enabled: Optional[bool] = None,
+    lineage_context: Optional[dict[str, Any]] = None,
 ):
     """
     Convert PDF to Markdown using Docling with the configured vision model
@@ -939,6 +1559,9 @@ def convert_pdf_with_qwen(
         image_mode: Image handling mode: 'placeholder', 'embedded', 'referenced', or 'descriptions'
         docling_url: Base URL of Docling service
         vlm_options: VLM configuration options
+        ce_output_path: Optional output path for XLSX CE structured artifact JSON
+        ce_extraction_enabled: Optional override for CE extraction feature flag
+        lineage_context: Optional lineage metadata (document_id/revision/run_id)
     """
     pdf_file = Path(pdf_path)
     
@@ -954,35 +1577,46 @@ def convert_pdf_with_qwen(
             print(f"❌ Error: PDF file not found: {pdf_path}")
             sys.exit(1)
         
-        print(f"📄 Input PDF: {pdf_file.name}")
+        is_spreadsheet = pdf_file.suffix.lower() in XLSX_EXTENSIONS
+        print(f"📄 Input {'spreadsheet' if is_spreadsheet else 'PDF'}: {pdf_file.name}")
         active_model_id = vlm_options.model_id if vlm_options else get_vision_model_id()
         print(f"🎯 Using VLM: {active_model_id}")
         print(f"🖼️  Image mode: {image_mode}")
         print(f"🔗 Docling API: {docling_url}{DOCLING_CONVERT_ENDPOINT}")
-        print("\n⏳ Converting PDF (this may take a few minutes for first run)...")
+        print(f"\n⏳ Converting {'spreadsheet' if is_spreadsheet else 'PDF'} (this may take a few minutes for first run)...")
 
         if image_mode == "descriptions" and not DOCLING_AVAILABLE_LOCALLY:
             logger.info(
                 "Local Docling serializer extras are unavailable, but description mode will proceed via the Docling service and Qwen image description generation."
             )
         
-        pages_per_chunk = int(os.getenv("DOCLING_CHUNK_PAGES", str(DEFAULT_DOCLING_CHUNK_PAGES)))
         connect_timeout = int(
             os.getenv("DOCLING_CONNECT_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CONNECT_TIMEOUT_SECONDS))
         )
         read_timeout = int(os.getenv("DOCLING_CHUNK_READ_TIMEOUT_SECONDS", str(DEFAULT_DOCLING_CHUNK_READ_TIMEOUT_SECONDS)))
-        options = _build_conversion_options(image_mode)
+        options = _build_conversion_options(image_mode, is_spreadsheet=is_spreadsheet)
 
-        # Use bounded synchronous page-range chunks so large PDFs do not hang on a
-        # single giant response body.
-        result = _run_docling_chunked_conversion(
-            pdf_file=pdf_file,
-            docling_url=docling_url,
-            options=options,
-            pages_per_chunk=pages_per_chunk,
-            connect_timeout=connect_timeout,
-            read_timeout=read_timeout,
-        )
+        if is_spreadsheet:
+            # XLSX/XLS: send as a single request — no page chunking needed
+            result = _convert_document_single_shot(
+                file_path=pdf_file,
+                docling_url=docling_url,
+                options=options,
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
+            )
+        else:
+            pages_per_chunk = int(os.getenv("DOCLING_CHUNK_PAGES", str(DEFAULT_DOCLING_CHUNK_PAGES)))
+            # Use bounded synchronous page-range chunks so large PDFs do not hang on a
+            # single giant response body.
+            result = _run_docling_chunked_conversion(
+                pdf_file=pdf_file,
+                docling_url=docling_url,
+                options=options,
+                pages_per_chunk=pages_per_chunk,
+                connect_timeout=connect_timeout,
+                read_timeout=read_timeout,
+            )
         md_content = _extract_markdown_or_exit(result)
 
         document = result.get("document", {})
@@ -1000,6 +1634,15 @@ def convert_pdf_with_qwen(
             docling_url=docling_url,
             vlm_options=vlm_options,
         )
+        if is_spreadsheet:
+            md_content = _postprocess_spreadsheet_markdown(
+                markdown_content=md_content,
+                source_file=pdf_file,
+                output_path=output_path,
+                ce_output_path=ce_output_path,
+                ce_extraction_enabled=ce_extraction_enabled,
+                lineage_context=lineage_context,
+            )
         _finalize_markdown_output(md_content, output_path)
 
 def main():
