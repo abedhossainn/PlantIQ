@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { PIPELINE_STAGES, ALLOWED_UPLOAD_EXTENSION } from "../_constants";
+import { PIPELINE_STAGES, ALLOWED_UPLOAD_ACCEPT } from "../_constants";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -108,11 +108,11 @@ export function UploadForm({
             ) : (
               <>
                 <Upload className="h-10 w-10 text-muted-foreground/40" />
-                <p className="text-sm text-muted-foreground">Click or drag-and-drop a PDF document</p>
+                <p className="text-sm text-muted-foreground">Click or drag-and-drop a PDF or XLSX document</p>
               </>
             )}
           </div>
-          <input ref={fileRef} type="file" accept={ALLOWED_UPLOAD_EXTENSION} className="hidden" onChange={onFileChange} />
+          <input ref={fileRef} type="file" accept={ALLOWED_UPLOAD_ACCEPT} className="hidden" onChange={onFileChange} />
         </div>
 
         {/* Step 2 — Metadata */}
