@@ -58,4 +58,9 @@ export function toUIStage(backendStage: string): string {
 // A raw 100MB file plus multipart boundaries can exceed the edge cap and fail
 // in-browser with opaque HTTP/2 protocol errors.
 export const MAX_UPLOAD_BYTES = 95 * 1024 * 1024; // 95 MB safe payload
-export const ALLOWED_UPLOAD_EXTENSION = ".pdf";
+export const ALLOWED_UPLOAD_EXTENSIONS = new Set([".pdf", ".xlsx"]);
+export const ALLOWED_UPLOAD_ACCEPT = ".pdf,.xlsx";
+export function isAllowedUploadFile(filename: string): boolean {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return ALLOWED_UPLOAD_EXTENSIONS.has(ext);
+}
