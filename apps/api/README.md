@@ -334,10 +334,17 @@ The pipeline orchestration module manages document processing through the HITL (
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/documents/upload` | Upload PDF and trigger pipeline |
+| POST | `/api/v1/documents/upload` | Upload PDF or XLSX/XLS and trigger source-aware pipeline routing |
 | GET | `/api/v1/documents/{id}/status` | Get processing status |
 | POST | `/api/v1/documents/{id}/reprocess` | Trigger reprocessing |
 | GET | `/api/v1/documents/{id}/artifacts/{type}` | Download artifacts |
+
+### Source-aware routing (PDF vs XLSX)
+
+- **PDF uploads** stay on the existing stable PDF processing path.
+- **XLSX/XLS uploads** use a dedicated spreadsheet path (including structured-relation extraction and JSON-first retrieval artifacts).
+- **XLSX optimized review flow** may skip editable optimized-review and route directly to QA gates.
+- **Rollback posture:** XLSX behavior is additive and flag-gated; disabling XLSX/CE flags does not alter PDF behavior.
 
 ### Document Upload Example
 
@@ -393,6 +400,8 @@ with open("validation_report.json", "wb") as f:
 - `qa_report`: QA metrics and decision (JSON)
 - `review`: Review workspace (directory)
 - `table_figure`: Table/figure analysis (JSON)
+- `structured_relations`: XLSX structured relation artifact (JSON)
+- `retrieval_chunks`: Optimized retrieval chunks artifact (JSON)
 
 ---
 
@@ -642,9 +651,12 @@ See `.env.example` for complete list. Key categories:
 - `PIPELINE_WORK_DIR`: Working directory for pipeline artifacts
 - `PIPELINE_PYTHON_PATH`: Python interpreter for pipeline subprocess
 - `PIPELINE_TIMEOUT_SECONDS`: Maximum pipeline execution time (default: 7200)
+- `PIPELINE_XLSX_DISPATCH_ENABLED`: Enable/disable XLSX dispatch path
+- `PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED` (alias `PIPELINE_CE_EXTRACTION_ENABLED`): Enable structured relation extraction for XLSX
+- `PIPELINE_XLSX_RETRIEVAL_ENABLED` (alias `PIPELINE_CE_RETRIEVAL_ENABLED`): Enable XLSX relation-aware retrieval path
 
 **File Storage:**
-- `UPLOAD_DIR`: PDF upload directory
+- `UPLOAD_DIR`: Source upload directory (PDF/XLSX)
 - `ARTIFACTS_DIR`: Pipeline artifacts directory
 - `MAX_UPLOAD_SIZE_MB`: Maximum file size (default: 100)
 
@@ -746,7 +758,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin123"}'
 
-# Test document upload
+# Test document upload (PDF shown; XLSX/XLS also supported)
 curl -X POST http://localhost:8000/api/v1/documents/upload \
   -H "Authorization: Bearer <token>" \
   -F "file=@document.pdf" \
