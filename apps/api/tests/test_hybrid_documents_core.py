@@ -603,6 +603,114 @@ def test_optimized_chunks_endpoint_returns_editable_chunk_payload(
     assert payload["chunks"][0]["table_facts"] == ["LNG is a cryogenic fuel."]
 
 
+def test_optimized_chunks_endpoint_keeps_dedicated_xlsx_output_reviewable(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimization-complete",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+        "qa_score": None,
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(
+        work_dir / "interlocks_manifest.json",
+        {
+            "document_name": "interlocks",
+            "pdf_path": "/tmp/interlocks.xlsx",
+        },
+    )
+    _write_json(
+        work_dir / "interlocks_rag_optimized.json",
+        {
+            "document_name": "interlocks",
+            "source_type": "xlsx",
+            "retrieval_artifact_contract": {
+                "json_first": True,
+                "authoritative_source": "structured_relations",
+                "chunk_classes": ["question_heading_chunk", "row_fact_chunk", "relation_edge_chunk"],
+            },
+            "chunks": [
+                {
+                    "chunk_id": "relation_edge_rel_0001",
+                    "chunk_type": "relation_edge_chunk",
+                    "heading": "How does LSHH-2005A affect Isolation Valve Close?",
+                    "content": (
+                        "## How does LSHH-2005A affect Isolation Valve Close?\n\n"
+                        "Cause-effect relation on Sheet1: LSHH-2005A -> Isolation Valve Close."
+                    ),
+                    "source_pages": [1],
+                    "table_facts": ["LSHH-2005A trips Isolation Valve Close."],
+                    "ambiguity_flags": [],
+                }
+            ],
+        },
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+
+    response = client.get(f"/api/v1/documents/{document_id}/optimized-chunks")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_type"] == "xlsx"
+    assert payload["skip_optimized_review"] is False
+    assert payload["next_route"] is None
+    assert len(payload["chunks"]) == 1
+    assert payload["chunks"][0]["id"] == "relation_edge_rel_0001"
+    assert payload["chunks"][0]["heading"] == "How does LSHH-2005A affect Isolation Valve Close?"
+
+
+def test_optimized_chunks_endpoint_skips_legacy_xlsx_without_relation_aware_output(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimization-complete",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+        "qa_score": None,
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(
+        work_dir / "legacy_sheet_manifest.json",
+        {
+            "document_name": "legacy_sheet",
+            "pdf_path": "/tmp/legacy_sheet.xlsx",
+        },
+    )
+    (work_dir / "legacy_sheet_rag_optimized.md").write_text(
+        "## Sheet1\n\n| Cause | Effect |\n| --- | --- |\n| Legacy | Fallback |\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+
+    response = client.get(f"/api/v1/documents/{document_id}/optimized-chunks")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_type"] == "xlsx"
+    assert payload["skip_optimized_review"] is True
+    assert payload["next_route"] == f"/admin/documents/{document_id}/qa-gates"
+    assert payload["chunks"] == []
+
+
 def test_optimized_chunk_patch_updates_artifacts_and_invalidates_qa_report(
     client: TestClient,
     fake_db: FakeAsyncSession,
