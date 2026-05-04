@@ -14,7 +14,7 @@ import { ApiError, fastapiFetch, formatScopeDeniedMessage, from, getFastApiBaseU
 import { deleteDocument, getDocuments } from '../lib/api/documents';
 import { canOpenOptimizedReview, getOptimizationLifecycleLabel, isQAReadyStatus } from '../lib/document-status';
 import { downloadArtifact, fetchArtifactJson, getPipelineStatus, streamIngestionEvents, streamOptimizationLogs, uploadDocument } from '../lib/api/pipeline';
-import { getDocumentOptimizedChunks, updateOptimizedChunk } from '../lib/api/optimized-review';
+import { getDocumentOptimizedChunks, shouldSkipOptimizedReview, updateOptimizedChunk } from '../lib/api/optimized-review';
 import { ChatWebSocketClient, PipelineWebSocketClient } from '../lib/api/websocket';
 import {
   activateAdminDirectoryConfig,
@@ -1477,6 +1477,41 @@ describe('frontend hybrid API integration contracts', () => {
     );
 
     await expect(getDocumentOptimizedChunks('doc-missing')).rejects.toThrow();
+  });
+
+  it('shouldSkipOptimizedReview follows the backend flag instead of auto-skipping all xlsx responses', () => {
+    expect(
+      shouldSkipOptimizedReview({
+        document_name: 'Interlocks',
+        source_type: 'xlsx',
+        skip_optimized_review: false,
+        next_route: null,
+        review_unit: 'optimized_chunk',
+        chunks: [
+          {
+            id: 'relation_edge_rel_0001',
+            chunk_number: 1,
+            heading: 'How does LSHH-2005A affect Isolation Valve Close?',
+            markdown_content: '## How does LSHH-2005A affect Isolation Valve Close?',
+            text_preview: 'Cause-effect relation',
+            source_pages: [1],
+            table_facts: ['LSHH-2005A trips Isolation Valve Close.'],
+            ambiguity_flags: [],
+          },
+        ],
+      })
+    ).toBe(false);
+
+    expect(
+      shouldSkipOptimizedReview({
+        document_name: 'Legacy Sheet',
+        source_type: 'xlsx',
+        skip_optimized_review: true,
+        next_route: '/admin/documents/doc-legacy/qa-gates',
+        review_unit: 'optimized_chunk',
+        chunks: [],
+      })
+    ).toBe(true);
   });
 
   // ============================================================================
