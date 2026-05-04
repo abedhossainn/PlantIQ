@@ -30,6 +30,8 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 ### Core functionality
 
 1. **Quality-gated ingestion workflow**
+   - Supported uploads: **PDF and XLSX/XLS**
+   - Source-aware dispatch: PDF follows the stable path; spreadsheets follow a dedicated XLSX path
    - Upload + metadata capture
    - Extract + validate
    - Human review + correction
@@ -77,6 +79,14 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 ### Quality-gated workflow at a glance
 
 `upload → extract/validate → review → optimize → QA → publish`
+
+### Upload routing model (PDF + XLSX)
+
+- **PDF (`.pdf`)**: routed to the existing stable PDF pipeline with no XLSX behavior mixed in.
+- **XLSX/XLS (`.xlsx`, `.xls`)**: routed to a dedicated spreadsheet path.
+- **Optimized review behavior (XLSX):** spreadsheet documents may skip the editable optimized-review UI and route directly to QA gates.
+- **Retrieval artifacts (XLSX):** JSON-first structured relation artifacts are authoritative for retrieval; markdown remains review support.
+- **Feature flags / rollback:** XLSX behavior is additive and can be disabled with XLSX/CE flags without changing PDF behavior.
 
 ### Chat runtime at a glance
 
@@ -265,6 +275,7 @@ If host and container are misaligned, Stage 10 now fails fast with an explicit r
 2. **User creation/deletion must go through LDAP/AD** — PlantIQ UI intentionally has no user-provisioning capability.
 3. **Final enterprise hardening** remains in progress (governance/runtime hardening tasks).
 4. **Code-quality hardening** is active via remediation waves across backend/pipeline/frontend.
+5. **XLSX optimized-review E2E coverage gap:** focused route/flag/artifact tests are passing, but a full API+browser E2E for XLSX optimized-review redirect to QA gates is still pending.
 
 ---
 
@@ -274,4 +285,5 @@ If host and container are misaligned, Stage 10 now fails fast with an explicit r
 2. Close remaining hardening tasks on ingestion/chat critical paths.
 3. Finish outstanding code-quality remediation waves (Sonar Waves 2–4) and re-verify regressions.
 4. Finalize Beta evidence packaging and readiness for final checkpoint signoff.
+5. Add/close XLSX end-to-end coverage for optimized-review skip and QA-gates path.
 
