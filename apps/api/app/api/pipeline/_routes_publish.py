@@ -272,19 +272,22 @@ async def reprocess_document(
             detail=f"Document is {row['status']}. Pass force=true to reprocess.",
         )
 
-    pdf_path = row["file_path"]
-    if not Path(pdf_path).exists():
+    source_path = row["file_path"]
+    if not Path(source_path).exists():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Original PDF file not found on disk",
+            detail="Original source file not found on disk",
         )
 
     try:
+        source_type = PipelineService.detect_source_type(str(source_path))
         job_id = await PipelineService.trigger_pipeline(
             document_id=str(document_id),
-            pdf_path=pdf_path,
+            pdf_path=source_path,
             reviewer=str(current_user_id),
             db=db,
+            source_path=str(source_path),
+            source_type=source_type,
         )
         return ReprocessResponse(
             document_id=document_id,
