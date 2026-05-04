@@ -29,7 +29,7 @@ import {
 import {
   PIPELINE_STAGES,
   MAX_UPLOAD_BYTES,
-  ALLOWED_UPLOAD_EXTENSION,
+  isAllowedUploadFile,
   toUIStage,
 } from "./_constants";
 import { toLogLine, groupIngestionLines, type PipelineLogLine } from "./_components/IngestionLogEntry";
@@ -302,8 +302,8 @@ export default function UploadPage() {
     setUploadError(null);
     setScopeDeniedState(null);
     if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, ""));
-    if (f && !f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
-      setUploadError("Only PDF files are supported");
+    if (f && !isAllowedUploadFile(f.name)) {
+      setUploadError("Only PDF and XLSX files are supported");
       setSelectedFile(null);
       return;
     }
@@ -318,8 +318,8 @@ export default function UploadPage() {
     setUploadError(null);
     setScopeDeniedState(null);
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
-    if (!f.name.toLowerCase().endsWith(ALLOWED_UPLOAD_EXTENSION)) {
-      setUploadError("Only PDF files are supported");
+    if (!isAllowedUploadFile(f.name)) {
+      setUploadError("Only PDF and XLSX files are supported");
       setSelectedFile(null);
       return;
     }
