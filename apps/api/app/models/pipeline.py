@@ -184,6 +184,9 @@ class OptimizedChunkUpdate(BaseModel):
 class DocumentOptimizedChunksResponse(BaseModel):
     """Document-level payload for the post-optimization editor."""
     document_name: str
+    source_type: Literal["pdf", "xlsx"] = "pdf"
+    skip_optimized_review: bool = False
+    next_route: Optional[str] = None
     review_unit: Literal["optimized_chunk"] = "optimized_chunk"
     chunks: List[OptimizedChunkResponse]
 
@@ -298,5 +301,7 @@ class ArtifactType(str, Enum):
     QA_REPORT = "qa_report"
     REVIEW_WORKSPACE = "review"
     TABLE_FIGURE = "table_figure"
+    STRUCTURED_RELATIONS = "structured_relations"
     OPTIMIZATION_PREP = "optimization_prep"
     OPTIMIZED_OUTPUT = "optimized_output"
+    RETRIEVAL_CHUNKS = "retrieval_chunks"
