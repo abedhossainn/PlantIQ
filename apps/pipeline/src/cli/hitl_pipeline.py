@@ -17,6 +17,7 @@ import logging
 import sys
 import subprocess
 import os
+import re
 from time import perf_counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -271,6 +272,551 @@ PLACEHOLDER_MARKDOWN_SENTINELS = (
 # This significantly speeds up Docling PDF conversion. Images are replaced with simple [Figure N: alt-text]
 # Future enhancement: implement async/batch VLM description generation as an optional post-processing step
 DOCLING_IMAGE_MODE = "placeholder"
+CE_EXTRACTION_FLAG_ENV = "PIPELINE_CE_EXTRACTION_ENABLED"
+CE_RETRIEVAL_FLAG_ENV = "PIPELINE_CE_RETRIEVAL_ENABLED"
+_UUID_SEGMENT_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_feature_flag_enabled(env_name: str, *, default: bool = False) -> bool:
+    """Resolve bool feature flags from environment with conservative defaults."""
+    raw_value = os.getenv(env_name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_ce_extraction_enabled() -> bool:
+    """Return whether CE structured extraction is enabled (default OFF)."""
+    return _is_feature_flag_enabled(CE_EXTRACTION_FLAG_ENV, default=False)
+
+
+def _is_ce_retrieval_enabled() -> bool:
+    """Return whether CE retrieval route is enabled (default OFF scaffold)."""
+    return _is_feature_flag_enabled(CE_RETRIEVAL_FLAG_ENV, default=False)
+
+
+def _resolve_source_type(*, source_path: str, explicit_source_type: Optional[str] = None) -> str:
+    """Resolve canonical pipeline source type for the current document."""
+    if explicit_source_type in {"pdf", "xlsx"}:
+        return str(explicit_source_type)
+    return "xlsx" if Path(source_path).suffix.lower() in {".xlsx", ".xls"} else "pdf"
+
+
+def _infer_document_id_from_markdown_path(markdown_path: Path) -> Optional[str]:
+    """Infer UUID-like document id from path segments when available."""
+    for segment in reversed(markdown_path.parts):
+        if _UUID_SEGMENT_RE.fullmatch(segment):
+            return segment
+    return None
+
+
+def _resolve_ce_artifact_path(markdown_path: Path) -> Path:
+    """Return CE structured artifact path associated with canonical markdown."""
+    return markdown_path.with_name(f"{markdown_path.stem}_ce_relations.json")
+
+
+def _build_xlsx_page_markdown_map(markdown_path: str) -> Dict[int, str]:
+    """Map page numbers to their full ## sheet section in the xlsx markdown.
+
+    The xlsx extractor writes one ``## SheetName`` section per sheet.  This
+    function splits on those headings and returns a 1-based page → section map
+    so that ``validate_page_against_markdown`` uses the complete GFM table
+    (including header and separator rows) rather than an anchor-based slice.
+    """
+    content = Path(markdown_path).read_text(encoding="utf-8")
+    parts = re.split(r"(?=^## )", content.strip(), flags=re.MULTILINE)
+    result: Dict[int, str] = {}
+    page_num = 1
+    for part in parts:
+        stripped = part.strip()
+        if stripped:
+            result[page_num] = stripped
+            page_num += 1
+    return result
+
+
+def _parse_xlsx_sheet_sections(markdown_content: str) -> list[dict[str, Any]]:
+    """Parse sheet sections and retain page/line boundaries for lineage-aware chunking."""
+    lines = markdown_content.splitlines()
+    sections: list[dict[str, Any]] = []
+    current: Optional[dict[str, Any]] = None
+
+    for line_number, raw_line in enumerate(lines, start=1):
+        stripped = raw_line.strip()
+        if stripped.startswith("## "):
+            if current is not None:
+                current["line_end"] = line_number - 1
+                current["markdown"] = "\n".join(
+                    lines[current["line_start"] - 1 : current["line_end"]]
+                ).strip()
+                sections.append(current)
+            current = {
+                "sheet_name": stripped[3:].strip(),
+                "page_number": len(sections) + 1,
+                "line_start": line_number,
+            }
+
+    if current is not None:
+        current["line_end"] = len(lines)
+        current["markdown"] = "\n".join(lines[current["line_start"] - 1 :]).strip()
+        sections.append(current)
+
+    if sections:
+        return sections
+
+    fallback_markdown = markdown_content.strip()
+    if not fallback_markdown:
+        return []
+    return [
+        {
+            "sheet_name": "Sheet1",
+            "page_number": 1,
+            "line_start": 1,
+            "line_end": max(len(lines), 1),
+            "markdown": fallback_markdown,
+        }
+    ]
+
+
+def _sheet_section_for_line(
+    line_number: Optional[int], sheet_sections: list[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    """Return the sheet section containing the given line number."""
+    if not sheet_sections:
+        return None
+    if line_number is None:
+        return sheet_sections[0]
+
+    for section in sheet_sections:
+        if int(section["line_start"]) <= int(line_number) <= int(section["line_end"]):
+            return section
+    return sheet_sections[0]
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        cleaned = str(value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        ordered.append(cleaned)
+    return ordered
+
+
+def _load_xlsx_structured_relations_artifact(
+    optimization_prep: Optional[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Load the authoritative XLSX structured relations artifact when present."""
+    artifact_path = str(
+        ((optimization_prep or {}).get("ce_structured_artifact") or {}).get("artifact_path") or ""
+    ).strip()
+    if not artifact_path:
+        return None
+
+    path = Path(artifact_path)
+    if not path.exists() or not path.is_file():
+        return None
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _build_xlsx_sheet_lookup(
+    *,
+    optimization_prep: Optional[dict[str, Any]],
+    sheet_sections: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve sheet-level page numbers and extracted table facts."""
+    lookup: dict[str, dict[str, Any]] = {}
+    for section in sheet_sections:
+        lookup[str(section["sheet_name"]).lower()] = {
+            "sheet_name": section["sheet_name"],
+            "page_number": int(section["page_number"]),
+            "markdown": section.get("markdown") or "",
+            "table_facts": [],
+        }
+
+    for page in (optimization_prep or {}).get("pages") or []:
+        headings = page.get("heading_candidates") or []
+        table_facts = [str(fact).strip() for fact in (page.get("table_facts") or []) if str(fact).strip()]
+        for heading in headings:
+            key = str(heading).strip().lower()
+            if not key:
+                continue
+            sheet_entry = lookup.setdefault(
+                key,
+                {
+                    "sheet_name": str(heading).strip(),
+                    "page_number": int(page.get("page_number") or len(lookup) + 1),
+                    "markdown": str(page.get("authoritative_markdown") or ""),
+                    "table_facts": [],
+                },
+            )
+            if not sheet_entry.get("markdown"):
+                sheet_entry["markdown"] = str(page.get("authoritative_markdown") or "")
+            sheet_entry["page_number"] = int(sheet_entry.get("page_number") or page.get("page_number") or 1)
+            sheet_entry["table_facts"] = _dedupe_preserving_order(
+                list(sheet_entry.get("table_facts") or []) + table_facts
+            )
+
+    return lookup
+
+
+def _build_xlsx_chunk_payload(
+    *,
+    chunk_id: str,
+    chunk_type: str,
+    heading: str,
+    text: str,
+    sheet_name: str,
+    source_pages: list[int],
+    row_refs: list[int],
+    entity_refs: list[str],
+    relation_refs: list[str],
+    source_lineage: dict[str, Any],
+    retrieval_hints: dict[str, Any],
+    table_facts: Optional[list[str]] = None,
+    ambiguity_flags: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Build one XLSX retrieval chunk with compatibility aliases for existing consumers."""
+    normalized_text = text.strip()
+    return {
+        "chunk_id": chunk_id,
+        "id": chunk_id,
+        "chunk_type": chunk_type,
+        "heading": heading,
+        "title": heading,
+        "text": normalized_text,
+        "content": normalized_text,
+        "sheet_name": sheet_name,
+        "source_pages": source_pages,
+        "row_refs": row_refs,
+        "entity_refs": entity_refs,
+        "relation_refs": relation_refs,
+        "source_lineage": source_lineage,
+        "retrieval_hints": retrieval_hints,
+        "table_facts": table_facts or [],
+        "ambiguity_flags": ambiguity_flags or [],
+    }
+
+
+def _build_xlsx_relation_optimized_output(
+    markdown_content: str,
+    doc_name: str,
+    optimization_prep: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build JSON-first XLSX retrieval output from structured relations + reviewed headings."""
+    structured_payload = _load_xlsx_structured_relations_artifact(optimization_prep)
+    sheet_sections = _parse_xlsx_sheet_sections(markdown_content)
+    sheet_lookup = _build_xlsx_sheet_lookup(
+        optimization_prep=optimization_prep,
+        sheet_sections=sheet_sections,
+    )
+    source_lineage = dict((structured_payload or {}).get("source_lineage") or {})
+    warnings: list[str] = list((structured_payload or {}).get("warnings") or [])
+    chunks: list[dict[str, Any]] = []
+
+    for section in sheet_sections:
+        sheet_name = str(section["sheet_name"])
+        lookup_entry = sheet_lookup.get(sheet_name.lower(), {})
+        page_number = int(lookup_entry.get("page_number") or section["page_number"])
+        section_relations = [
+            relation
+            for relation in (structured_payload or {}).get("relations") or []
+            if str((relation.get("origin") or {}).get("sheet") or sheet_name).strip().lower()
+            == sheet_name.lower()
+        ]
+        chunks.append(
+            _build_xlsx_chunk_payload(
+                chunk_id=f"question_heading_{page_number:03d}",
+                chunk_type="question_heading_chunk",
+                heading=f"What data does the {sheet_name} sheet contain?",
+                text=(
+                    f"What data does the {sheet_name} sheet contain? "
+                    f"This sheet contributes {len(section_relations)} structured relations and "
+                    f"{len(lookup_entry.get('table_facts') or [])} extracted table facts for retrieval."
+                ),
+                sheet_name=sheet_name,
+                source_pages=[page_number],
+                row_refs=[],
+                entity_refs=[],
+                relation_refs=[
+                    str(relation.get("relation_id") or "")
+                    for relation in section_relations
+                    if relation.get("relation_id")
+                ],
+                source_lineage=source_lineage,
+                retrieval_hints={
+                    "keywords": _dedupe_preserving_order(
+                        [sheet_name]
+                        + list(lookup_entry.get("table_facts") or [])
+                        + [str(relation.get("marker_semantic") or "") for relation in section_relations]
+                    ),
+                    "heading_aliases": [sheet_name],
+                    "marker_semantics": _dedupe_preserving_order(
+                        [str(relation.get("marker_semantic") or "") for relation in section_relations]
+                    ),
+                },
+                table_facts=list(lookup_entry.get("table_facts") or []),
+            )
+        )
+
+    if structured_payload:
+        causes_by_id = {
+            str(cause.get("cause_id") or ""): cause
+            for cause in structured_payload.get("causes") or []
+        }
+        effects_by_id = {
+            str(effect.get("effect_id") or ""): effect
+            for effect in structured_payload.get("effects") or []
+        }
+
+        relations_by_cause: dict[str, list[dict[str, Any]]] = {}
+        for relation in structured_payload.get("relations") or []:
+            relations_by_cause.setdefault(str(relation.get("cause_id") or ""), []).append(relation)
+
+        for cause_id, cause in causes_by_id.items():
+            related_relations = relations_by_cause.get(cause_id, [])
+            cause_origin = cause.get("origin") or {}
+            cause_line = int(cause_origin.get("line_number") or 0)
+            sheet_section = _sheet_section_for_line(cause_line, sheet_sections)
+            sheet_name = str((cause_origin.get("sheet") or (sheet_section or {}).get("sheet_name") or "Sheet1")).strip()
+            page_number = int(
+                (cause_origin.get("page_number") or 0)
+                or ((sheet_section or {}).get("page_number") or 1)
+            )
+            related_effects = [
+                effects_by_id.get(str(relation.get("effect_id") or ""), {})
+                for relation in related_relations
+            ]
+            effect_summaries = [
+                f"{effect.get('effect_label')} ({relation.get('marker_semantic')})"
+                for relation, effect in zip(related_relations, related_effects)
+                if effect.get("effect_label")
+            ]
+            cause_text = " ".join(
+                part
+                for part in [
+                    f"Cause {cause.get('cause_ref') or cause_id}",
+                    str(cause.get("cause_tag") or "").strip(),
+                    str(cause.get("cause_description") or "").strip(),
+                ]
+                if str(part).strip()
+            )
+            row_fact_text = cause_text
+            if effect_summaries:
+                row_fact_text += f". Related effects: {'; '.join(effect_summaries)}."
+
+            chunks.append(
+                _build_xlsx_chunk_payload(
+                    chunk_id=f"row_fact_{cause_id}",
+                    chunk_type="row_fact_chunk",
+                    heading=f"What does {cause.get('cause_ref') or cause_id} indicate?",
+                    text=row_fact_text,
+                    sheet_name=sheet_name,
+                    source_pages=[page_number],
+                    row_refs=[cause_line] if cause_line else [],
+                    entity_refs=_dedupe_preserving_order(
+                        [cause_id]
+                        + [
+                            str(effect.get("effect_id") or "")
+                            for effect in related_effects
+                            if effect.get("effect_id")
+                        ]
+                    ),
+                    relation_refs=[
+                        str(relation.get("relation_id") or "")
+                        for relation in related_relations
+                        if relation.get("relation_id")
+                    ],
+                    source_lineage=source_lineage,
+                    retrieval_hints={
+                        "keywords": _dedupe_preserving_order(
+                            [
+                                str(cause.get("cause_ref") or ""),
+                                str(cause.get("cause_tag") or ""),
+                                str(cause.get("cause_description") or ""),
+                            ]
+                            + [str(effect.get("effect_label") or "") for effect in related_effects]
+                        ),
+                        "heading_aliases": [sheet_name, str(cause.get("cause_ref") or cause_id)],
+                        "marker_semantics": _dedupe_preserving_order(
+                            [str(relation.get("marker_semantic") or "") for relation in related_relations]
+                        ),
+                    },
+                )
+            )
+
+        for relation in structured_payload.get("relations") or []:
+            relation_origin = relation.get("origin") or {}
+            relation_line = int(relation_origin.get("line_number") or 0)
+            sheet_section = _sheet_section_for_line(relation_line, sheet_sections)
+            sheet_name = str((relation_origin.get("sheet") or (sheet_section or {}).get("sheet_name") or "Sheet1")).strip()
+            page_number = int(
+                (relation_origin.get("page_number") or 0)
+                or ((sheet_section or {}).get("page_number") or 1)
+            )
+            cause = causes_by_id.get(str(relation.get("cause_id") or ""), {})
+            effect = effects_by_id.get(str(relation.get("effect_id") or ""), {})
+            cause_label = str(cause.get("cause_description") or cause.get("cause_ref") or relation.get("cause_id") or "Unknown cause")
+            effect_label = str(effect.get("effect_label") or relation.get("effect_id") or "Unknown effect")
+            marker = str(relation.get("marker") or "")
+            marker_description = str(relation.get("marker_description") or relation.get("marker_semantic") or "")
+
+            chunks.append(
+                _build_xlsx_chunk_payload(
+                    chunk_id=f"relation_edge_{relation.get('relation_id')}",
+                    chunk_type="relation_edge_chunk",
+                    heading=f"How does {cause_label} affect {effect_label}?",
+                    text=(
+                        f"Cause-effect relation on {sheet_name}: {cause_label} -> {effect_label}. "
+                        f"Marker {marker or '?'} means {marker_description}."
+                    ),
+                    sheet_name=sheet_name,
+                    source_pages=[page_number],
+                    row_refs=[relation_line] if relation_line else [],
+                    entity_refs=_dedupe_preserving_order(
+                        [str(relation.get("cause_id") or ""), str(relation.get("effect_id") or "")]
+                    ),
+                    relation_refs=[str(relation.get("relation_id") or "")],
+                    source_lineage=source_lineage,
+                    retrieval_hints={
+                        "keywords": _dedupe_preserving_order(
+                            [cause_label, effect_label, marker, marker_description, sheet_name]
+                        ),
+                        "heading_aliases": [sheet_name, effect_label],
+                        "marker_semantics": _dedupe_preserving_order(
+                            [str(relation.get("marker_semantic") or "")]
+                        ),
+                    },
+                )
+            )
+    else:
+        warnings.append(
+            "Structured relations artifact missing; XLSX retrieval output fell back to sheet-heading chunks only."
+        )
+
+    return {
+        "document_name": doc_name,
+        "source_type": "xlsx",
+        "markdown": markdown_content,
+        "chunks": chunks,
+        "skip_reformatting": True,
+        "structured_relations_artifact_path": str(
+            ((optimization_prep or {}).get("ce_structured_artifact") or {}).get("artifact_path") or ""
+        ).strip() or None,
+        "retrieval_artifact_contract": {
+            "json_first": True,
+            "authoritative_source": "structured_relations" if structured_payload else "sheet_headings_fallback",
+            "chunk_classes": ["question_heading_chunk", "row_fact_chunk", "relation_edge_chunk"],
+        },
+        "warnings": warnings,
+    }
+
+
+def _extract_xlsx_table_facts(section_markdown: str, sheet_name: str) -> list[str]:
+    """Extract column headers and row count from a GFM table as table_facts strings."""
+    lines = section_markdown.splitlines()
+    header_line: Optional[str] = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.count("|") >= 2:
+            header_line = stripped
+            break
+
+    if not header_line:
+        return [f"Sheet: {sheet_name}"]
+
+    columns = [col.strip() for col in header_line.split("|") if col.strip()]
+    facts: list[str] = []
+    if columns:
+        # Filter out generic auto-generated column names (Col0, Col1, …)
+        real_columns = [c for c in columns if not re.match(r"^Col\d+$", c)]
+        display_columns = real_columns if real_columns else columns
+        facts.append(f"Columns: {', '.join(display_columns)}")
+
+    data_rows = 0
+    past_separator = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if not stripped.replace("|", "").replace("-", "").replace(":", "").replace(" ", ""):
+            past_separator = True
+            continue
+        if past_separator:
+            data_rows += 1
+
+    if data_rows > 0:
+        facts.append(f"Contains {data_rows} data rows")
+
+    return facts
+
+
+def _build_xlsx_rag_chunks(
+    markdown_content: str,
+    doc_name: str,
+    optimization_prep: Optional[Dict[str, Any]] = None,
+) -> list[Dict[str, Any]]:
+    """Build RAG-optimized chunks from xlsx GFM markdown (rule-based, no LLM).
+
+    Each ``## SheetName`` section becomes one retrieval chunk with:
+    - A question-format heading ("What data does the <sheet> sheet contain?")
+    - Full table content with an appended source citation
+    - ``table_facts`` listing column headers and row count
+    - ``source_pages`` mapped from the optimization-prep page index
+    - Empty ``ambiguity_flags``
+
+    This replaces the LLM reformatting stage for spreadsheet documents so that
+    RAG retrieval gets structured, semantically annotated chunks rather than raw
+    GFM table text.
+    """
+    # Build sheet-name → page-number lookup from optimization_prep when available.
+    page_num_by_heading: Dict[str, int] = {}
+    if optimization_prep:
+        for page in (optimization_prep.get("pages") or []):
+            page_num = int(page.get("page_number") or 0)
+            for heading in (page.get("heading_candidates") or []):
+                page_num_by_heading[str(heading).lower().strip()] = page_num
+
+    parts = re.split(r"(?=^## )", markdown_content.strip(), flags=re.MULTILINE)
+    chunks: list[Dict[str, Any]] = []
+    chunk_index = 1
+
+    for part in parts:
+        section = part.strip()
+        if not section:
+            continue
+
+        lines = section.splitlines()
+        heading_line = lines[0].strip() if lines else ""
+        sheet_name = re.sub(r"^#+\s*", "", heading_line).strip()
+        if not sheet_name:
+            continue
+
+        source_page = page_num_by_heading.get(sheet_name.lower(), chunk_index)
+        citation = f"\n\n[Source: {doc_name}, Sheet {chunk_index}]"
+        content_with_citation = section + citation
+
+        chunks.append(
+            {
+                "heading": f"What data does the {sheet_name} sheet contain?",
+                "content": content_with_citation,
+                "source_pages": [source_page],
+                "table_facts": _extract_xlsx_table_facts(section, sheet_name),
+                "ambiguity_flags": [],
+            }
+        )
+        chunk_index += 1
+
+    return chunks
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:
@@ -387,7 +933,9 @@ def _build_authoritative_markdown(current_pages: list[dict[str, Any]]) -> str:
     ).strip()
 
 
-def _build_segment_payload(current_pages: list[dict[str, Any]], segment_index: int) -> dict[str, Any]:
+def _build_segment_payload(
+    current_pages: list[dict[str, Any]], segment_index: int, source_type: str = "pdf"
+) -> dict[str, Any]:
     """Build one optimization segment payload from grouped pages."""
     page_numbers = _collect_page_numbers(current_pages)
     title_candidates = _collect_title_candidates(current_pages)
@@ -405,6 +953,7 @@ def _build_segment_payload(current_pages: list[dict[str, Any]], segment_index: i
         "reviewer_notes": _collect_dict_field_values(current_pages, "reviewer_notes"),
         "pages": current_pages.copy(),
         "authoritative_markdown": _build_authoritative_markdown(current_pages),
+        "skip_reformatting": False,
     }
 
 
@@ -431,6 +980,7 @@ def _should_flush_segment(
 def _build_optimization_segments(
     structured_pages: list[dict[str, Any]],
     *,
+    source_type: str = "pdf",
     target_chars: int = 18_000,
     min_chars_before_split: int = 6_000,
     max_pages_per_segment: int = 4,
@@ -460,7 +1010,7 @@ def _build_optimization_segments(
             target_chars=target_chars,
             min_chars_before_split=min_chars_before_split,
         ):
-            segments.append(_build_segment_payload(current_pages, len(segments) + 1))
+            segments.append(_build_segment_payload(current_pages, len(segments) + 1, source_type))
             current_pages = []
             current_chars = 0
 
@@ -468,7 +1018,7 @@ def _build_optimization_segments(
         current_chars += page_chars
 
     if current_pages:
-        segments.append(_build_segment_payload(current_pages, len(segments) + 1))
+        segments.append(_build_segment_payload(current_pages, len(segments) + 1, source_type))
 
     return segments
 
@@ -604,11 +1154,38 @@ def _build_source_artifacts_payload(
     validation_report: dict[str, Any],
     document_name: str,
     table_figure_report: dict[str, Any],
+    ce_structured_artifact: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "page_review_manifest": str(page_manifest_path),
         "validation_report": validation_report.get("document_name") or document_name,
         "table_figure_report_present": bool(table_figure_report),
+        "ce_structured_artifact_present": bool(ce_structured_artifact),
+        "ce_structured_artifact_path": (ce_structured_artifact or {}).get("artifact_path"),
+    }
+
+
+def _build_ce_retrieval_extension(ce_structured_artifact: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Build additive CE retrieval extension metadata for downstream routing."""
+    ce_structured_artifact = ce_structured_artifact or {}
+    relation_count = int(ce_structured_artifact.get("relations_count") or 0)
+    artifact_available = bool(ce_structured_artifact.get("artifact_path")) and relation_count > 0
+    ce_retrieval_enabled = _is_ce_retrieval_enabled()
+
+    return {
+        "ce_retrieval": {
+            "enabled": ce_retrieval_enabled,
+            "artifact_available": artifact_available,
+            "artifact_path": ce_structured_artifact.get("artifact_path"),
+            "artifact_schema_version": ce_structured_artifact.get("schema_version"),
+            "route": "ce_relations" if ce_retrieval_enabled and artifact_available else "markdown_default",
+            "diagnostics": {
+                "causes_count": int(ce_structured_artifact.get("causes_count") or 0),
+                "effects_count": int(ce_structured_artifact.get("effects_count") or 0),
+                "relations_count": relation_count,
+                "fallback_reason": None if (ce_retrieval_enabled and artifact_available) else "ce_route_disabled_or_artifact_unavailable",
+            },
+        }
     }
 
 
@@ -619,6 +1196,8 @@ def build_optimization_prep(
     review_dir: str,
     validation_report: dict[str, Any],
     table_figure_report: Optional[dict[str, Any]] = None,
+    ce_structured_artifact: Optional[dict[str, Any]] = None,
+    source_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create the structured optimization-prep artifact from reviewed page assets."""
     review_root = Path(review_dir)
@@ -637,10 +1216,14 @@ def build_optimization_prep(
         document_name=document_name,
     )
 
+    _source_suffix = Path(source_path).suffix.lower() if source_path else ""
+    _source_type = "xlsx" if _source_suffix in {".xlsx", ".xls"} else "pdf"
+
     return {
         "schema_version": "1.0",
         "document_id": document_id,
         "document_name": document_name,
+        "source_type": _source_type,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "review_workspace": str(review_root),
         "source_artifacts": _build_source_artifacts_payload(
@@ -648,12 +1231,15 @@ def build_optimization_prep(
             validation_report=validation_report,
             document_name=document_name,
             table_figure_report=table_figure_report,
+            ce_structured_artifact=ce_structured_artifact,
         ),
         "validation_summary": validation_report.get("metadata", {}),
         "pages": structured_pages,
-        "segments": _build_optimization_segments(structured_pages),
+        "segments": _build_optimization_segments(structured_pages, source_type=_source_type),
         "tables": all_tables,
         "figures": all_figures,
+        "ce_structured_artifact": ce_structured_artifact or {},
+        "retrieval_extensions": _build_ce_retrieval_extension(ce_structured_artifact),
         "unresolved_ambiguities": unresolved_ambiguities,
         "combined_markdown": "\n\n".join(
             page["authoritative_markdown"]
@@ -663,7 +1249,16 @@ def build_optimization_prep(
     }
 
 
-def _convert_pdf_to_markdown(*, pdf_path: str, output_path: str, image_mode: str, docling_url: str) -> None:
+def _convert_pdf_to_markdown(
+    *,
+    pdf_path: str,
+    output_path: str,
+    image_mode: str,
+    docling_url: str,
+    ce_output_path: Optional[str] = None,
+    ce_extraction_enabled: Optional[bool] = None,
+    lineage_context: Optional[dict[str, Any]] = None,
+) -> None:
     from ..ingestion.docling_converter import convert_pdf_with_qwen
 
     convert_pdf_with_qwen(
@@ -671,6 +1266,9 @@ def _convert_pdf_to_markdown(*, pdf_path: str, output_path: str, image_mode: str
         output_path=output_path,
         image_mode=image_mode,
         docling_url=docling_url,
+        ce_output_path=ce_output_path,
+        ce_extraction_enabled=ce_extraction_enabled,
+        lineage_context=lineage_context,
     )
 
 
@@ -783,12 +1381,47 @@ class HITLPipeline:
             return str(markdown_file)
 
         logger.info("\n" + "=" * 80)
-        logger.info("[STAGE] STAGE 0: Docling PDF -> Markdown Extraction")
+        logger.info("[STAGE] STAGE 0: Docling Document -> Markdown Extraction")
         logger.info("=" * 80)
-        logger.info(f"[INFO] Generating markdown from PDF: {Path(pdf_path).name}")
+        logger.info(f"[INFO] Generating markdown from document: {Path(pdf_path).name}")
+
+        ce_artifact_path = _resolve_ce_artifact_path(markdown_file)
+        lineage_context = {
+            "document_id": _infer_document_id_from_markdown_path(markdown_file),
+            "run_id": os.getenv("PIPELINE_RUN_ID"),
+        }
+
+        # Direct pandas extraction path for xlsx — skips Docling lifecycle entirely.
+        if Path(pdf_path).suffix.lower() in {".xlsx", ".xls"}:
+            _emit_event(
+                "progress",
+                "extraction",
+                "XLSX detected — extracting directly via pandas (no Docling required).",
+                6,
+                step="Stage 0: Document → Markdown Extraction",
+            )
+            from ..ingestion.docling_converter import extract_xlsx_to_markdown
+            extract_xlsx_to_markdown(
+                xlsx_path=pdf_path,
+                output_path=str(markdown_file),
+                ce_output_path=str(ce_artifact_path),
+                ce_extraction_enabled=_is_ce_extraction_enabled(),
+                lineage_context=lineage_context,
+            )
+            if ce_artifact_path.exists() and ce_artifact_path.is_file():
+                logger.info("[OK] CE relation artifact saved: %s", ce_artifact_path)
+            logger.info("[OK] XLSX markdown saved (pandas direct path): %s", markdown_file)
+            _emit_event(
+                "progress",
+                "extraction",
+                "XLSX extraction complete.",
+                12,
+            )
+            return str(markdown_file)
 
         docling_url = os.getenv("DOCLING_URL", "http://localhost:5001")
         temp_output = markdown_file.with_suffix(".docling.tmp.md")
+        temp_ce_artifact_path = ce_artifact_path.with_suffix(".tmp.json")
 
         lifecycle = DoclingLifecycleManager(docling_url=docling_url)
         _lifecycle_started = False
@@ -799,7 +1432,7 @@ class HITLPipeline:
                 "Starting Docling service (on-demand)…" if lifecycle.is_on_demand
                 else "Waiting for Docling service…",
                 5,
-                step="Stage 0: PDF → Markdown Extraction",
+                step="Stage 0: Document → Markdown Extraction",
                 on_demand=lifecycle.is_on_demand,
             )
             lifecycle.start()
@@ -807,7 +1440,7 @@ class HITLPipeline:
             _emit_event(
                 "lifecycle.docling.ready",
                 "extraction",
-                "Docling service is ready; starting PDF extraction.",
+                "Docling service is ready; starting document extraction.",
                 6,
                 on_demand=lifecycle.is_on_demand,
             )
@@ -816,6 +1449,9 @@ class HITLPipeline:
                 output_path=str(temp_output),
                 image_mode=DOCLING_IMAGE_MODE,
                 docling_url=docling_url,
+                ce_output_path=str(temp_ce_artifact_path),
+                ce_extraction_enabled=_is_ce_extraction_enabled(),
+                lineage_context=lineage_context,
             )
 
             generated_content = temp_output.read_text(encoding="utf-8")
@@ -825,6 +1461,9 @@ class HITLPipeline:
                 raise ValueError("Docling output still contains placeholder markdown sentinel text")
 
             markdown_file.write_text(generated_content, encoding="utf-8")
+            if temp_ce_artifact_path.exists() and temp_ce_artifact_path.is_file():
+                ce_artifact_path.write_text(temp_ce_artifact_path.read_text(encoding="utf-8"), encoding="utf-8")
+                logger.info("[OK] CE relation artifact saved: %s", ce_artifact_path)
             logger.info(f"[OK] Docling markdown saved: {markdown_file}")
             return str(markdown_file)
         finally:
@@ -839,6 +1478,7 @@ class HITLPipeline:
                     on_demand=True,
                 )
             temp_output.unlink(missing_ok=True)
+            temp_ce_artifact_path.unlink(missing_ok=True)
 
     def _run_validation_stage(
         self,
@@ -1364,7 +2004,8 @@ class HITLPipeline:
         reviewer: str,
         docling_version: str = "1.0.0",
         vlm_model: Optional[str] = None,
-        reformatter_model: Optional[str] = None
+        reformatter_model: Optional[str] = None,
+        source_type: Optional[str] = None,
     ) -> Dict:
         """
         Run complete HITL pipeline with all improvements
@@ -1377,6 +2018,10 @@ class HITLPipeline:
 
         vlm_model = vlm_model or get_vision_model_id()
         reformatter_model = reformatter_model or get_text_model_id()
+        resolved_source_type = _resolve_source_type(
+            source_path=pdf_path,
+            explicit_source_type=source_type,
+        )
 
         # GPU preflight transparency events (before any stage begins)
         # If required GPU is not available, fail immediately — CPU fallback is disabled.
@@ -1409,14 +2054,22 @@ class HITLPipeline:
         )
         _emit_event("progress", "extraction", "Stage 0b: Building per-page markdown alignment map...", 16)
         page_markdown_map = self._build_validation_page_markdown_map(pdf_path)
+        # For xlsx: bypass anchor-based matching; map each page directly to its ## sheet section.
+        if resolved_source_type == "xlsx":
+            page_markdown_map = _build_xlsx_page_markdown_map(markdown_path)
         _emit_event("progress", "extraction", "Stage 0c: Per-page markdown map ready.", 18)
         
         doc_name = Path(pdf_path).stem
         results = {"document": doc_name, "stages": {}}
+        ce_artifact_path = _resolve_ce_artifact_path(Path(markdown_path))
+        ce_artifact_exists = ce_artifact_path.exists() and ce_artifact_path.is_file()
         results["stages"]["docling_extraction"] = {
             "status": "complete",
             "output": str(markdown_path),
+            "source_type": resolved_source_type,
             "image_mode": DOCLING_IMAGE_MODE,
+            "ce_structured_artifact": str(ce_artifact_path) if ce_artifact_exists else None,
+            "ce_extraction_enabled": _is_ce_extraction_enabled(),
         }
         
         # Stage 1: Create lineage manifest
@@ -1469,11 +2122,15 @@ class HITLPipeline:
                     f"({validation_report.metadata.get('total_issues', 0)} issues found).", 38)
 
         # Second: Deep VLM comparison (optional - can be skipped for speed)
-        self._run_optional_vlm_comparison(
-            markdown_path=markdown_path,
-            pdf_path=pdf_path,
-            validation_report=validation_report,
-        )
+        # Skip for xlsx — VLM comparison requires renderable page images; xlsx has none.
+        if resolved_source_type != "xlsx":
+            self._run_optional_vlm_comparison(
+                markdown_path=markdown_path,
+                pdf_path=pdf_path,
+                validation_report=validation_report,
+            )
+        else:
+            _emit_event("progress", "validation", "VLM deep comparison skipped (xlsx — no page images).", 55)
         
         results["stages"]["validation"] = {
             "status": "complete",
@@ -1490,19 +2147,32 @@ class HITLPipeline:
         _emit_event("stage_start", "validation", "Stage 2b: VLM Image Description Generation", 55,
                     step="Stage 2b: VLM Image Description Generation")
 
-        markdown_path, markdown_content, image_stage_result, validation_report, manifest = self._run_image_description_stage(
-            doc_name=doc_name,
-            pdf_path=pdf_path,
-            markdown_path=markdown_path,
-            validation_path=validation_path,
-            validation_report=validation_report,
-            manifest=manifest,
-            manifest_path=manifest_path,
-            reviewer=reviewer,
-            page_markdown_map=page_markdown_map,
-            vlm_model=vlm_model,
-            docling_version=docling_version,
-        )
+        # Skip image description stage for xlsx — spreadsheets have no embedded images to describe.
+        if resolved_source_type == "xlsx":
+            markdown_content = self._read_markdown_content(markdown_path)
+            image_stage_result = {
+                "status": "skipped",
+                "reason": "xlsx_no_images",
+                "pages_processed": 0,
+                "pages_requested": 0,
+                "pages_succeeded": 0,
+                "pages_failed": 0,
+            }
+            _emit_event("progress", "validation", "Image description skipped (xlsx — no embedded images).", 64)
+        else:
+            markdown_path, markdown_content, image_stage_result, validation_report, manifest = self._run_image_description_stage(
+                doc_name=doc_name,
+                pdf_path=pdf_path,
+                markdown_path=markdown_path,
+                validation_path=validation_path,
+                validation_report=validation_report,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                reviewer=reviewer,
+                page_markdown_map=page_markdown_map,
+                vlm_model=vlm_model,
+                docling_version=docling_version,
+            )
 
         if image_stage_result.get("status") in {"complete", "partial"}:
             results["stages"]["validation"] = {
@@ -1680,6 +2350,7 @@ class HITLPipeline:
             "pipeline_status": "complete",
             "review_required": True,
             "workspace": str(self.work_dir),
+            "source_type": resolved_source_type,
             "next_action": "manual_review",
             "qa_decision": qa_result.decision
         }
@@ -1700,6 +2371,7 @@ class HITLPipeline:
         validation_report_path: str,
         markdown_path: Optional[str] = None,
         optimization_prep_path: Optional[str] = None,
+        source_type: Optional[str] = None,
     ) -> Dict:
         """
         Run shared text-model reformatting AFTER manual review approval
@@ -1715,7 +2387,16 @@ class HITLPipeline:
             # Load validation report
             with open(validation_report_path, 'r') as f:
                 validation_data = json.load(f)
-            
+
+            # xlsx sources must not be sent through the LLM reformatter — it can corrupt
+            # the matrix structure.  Check both the source file extension and the segment
+            # flag set at optimization-prep build time.
+            resolved_source_type = _resolve_source_type(
+                source_path=pdf_path,
+                explicit_source_type=source_type
+                or str((optimization_prep or {}).get("source_type") or "").strip()
+                or None,
+            )
             # Run reformatting
             result = reformat_with_qwen(
                 markdown_content,
@@ -1791,6 +2472,7 @@ def _handle_run_action(args, pipeline: HITLPipeline) -> int:
             args.docling_version,
             args.vlm_model,
             args.reformatter_model,
+            args.source_type,
         )
         logger.info("\n[OK] Pipeline execution complete")
 
@@ -1868,7 +2550,7 @@ def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
 
     try:
         logger.info(f"[INFO] Reformatting: {doc_name}")
-        logger.info(f"   PDF: {args.pdf}")
+        logger.info(f"   File: {args.pdf}")
         logger.info(f"   Markdown: {markdown_path}")
         logger.info(f"   Validation: {validation_path}")
 
@@ -1877,6 +2559,7 @@ def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
             args.pdf,
             validation_path,
             markdown_path=markdown_path,
+            source_type=args.source_type,
         )
 
         if result["status"] == "complete":
@@ -1900,8 +2583,9 @@ def main():
     )
     parser.add_argument("action", choices=["run", "status", "reformat"],
                        help="Action to perform")
-    parser.add_argument("--pdf", help="PDF path (for run/reformat)")
+    parser.add_argument("--pdf", help="PDF or XLSX path (for run/reformat)")
     parser.add_argument("--markdown", help="Markdown path (for run/reformat)")
+    parser.add_argument("--source-type", choices=["pdf", "xlsx"], help="Explicit source type override")
     parser.add_argument("--reviewer", default="human-reviewer", help="Reviewer name")
     parser.add_argument("--doc-name", help="Document name (for status/reformat)")
     parser.add_argument("--workspace", default="hitl_workspace", help="Workspace directory")
