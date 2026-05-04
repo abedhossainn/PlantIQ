@@ -23,6 +23,10 @@ tqdm>=4.65.0
 # Data Serialization
 pyyaml>=6.0
 
+# Spreadsheet Processing (direct XLSX extraction path)
+pandas>=1.5.0
+openpyxl>=3.0.0
+
 # Testing (for pytest in pipeline/tests/)
 pytest>=7.4.0
 pytest-cov>=4.1.0
