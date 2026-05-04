@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,6 +129,38 @@ class PipelineService(PipelineStatusMixin):
         PipelineStatus.EXTRACTING.value,
         PipelineStatus.VLM_VALIDATING.value,
     }
+
+    _source_type_extensions = {
+        "pdf": {".pdf"},
+        "xlsx": {".xlsx", ".xls"},
+    }
+
+    @classmethod
+    def detect_source_type(cls, source_path: str, source_type: Optional[str] = None) -> str:
+        """Resolve the canonical pipeline source type from explicit input or file extension."""
+        if source_type in cls._source_type_extensions:
+            return str(source_type)
+
+        suffix = Path(source_path).suffix.lower()
+        for candidate, suffixes in cls._source_type_extensions.items():
+            if suffix in suffixes:
+                return candidate
+
+        raise ValueError(f"Unsupported pipeline source type for path: {source_path}")
+
+    @classmethod
+    def _build_pipeline_subprocess_env(cls, *, source_type: str) -> dict[str, str]:
+        """Build subprocess environment with explicit source-type and XLSX feature flags."""
+        env = os.environ.copy()
+        env["PIPELINE_SOURCE_TYPE"] = source_type
+        env["PIPELINE_XLSX_DISPATCH_ENABLED"] = str(settings.PIPELINE_XLSX_DISPATCH_ENABLED).lower()
+        env["PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED"] = (
+            str(settings.PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED).lower()
+        )
+        env["PIPELINE_XLSX_RETRIEVAL_ENABLED"] = str(settings.PIPELINE_XLSX_RETRIEVAL_ENABLED).lower()
+        env["PIPELINE_CE_EXTRACTION_ENABLED"] = env["PIPELINE_XLSX_STRUCTURED_RELATIONS_ENABLED"]
+        env["PIPELINE_CE_RETRIEVAL_ENABLED"] = env["PIPELINE_XLSX_RETRIEVAL_ENABLED"]
+        return env
 
     @classmethod
     def _publish_pipeline_progress_event(
@@ -355,24 +388,35 @@ class PipelineService(PipelineStatusMixin):
         pdf_path: str,
         reviewer: str,
         db: AsyncSession,
+        *,
+        source_path: Optional[str] = None,
+        source_type: Optional[str] = None,
     ) -> str:
         """
         Trigger HITL pipeline for a document.
         
         Args:
             document_id: Document UUID
-            pdf_path: Path to uploaded PDF file
+            pdf_path: Backward-compatible path to uploaded source file
             reviewer: Reviewer username
             db: Database session
+            source_path: Explicit source path override
+            source_type: Explicit source type override (pdf|xlsx)
             
         Returns:
             Job ID for tracking
         """
         document_id = str(document_id)
-        pdf_path = str(pdf_path)
+        resolved_source_path = str(source_path or pdf_path)
+        resolved_source_type = cls.detect_source_type(resolved_source_path, source_type)
         reviewer = str(reviewer)
         job_id = str(uuid.uuid4())
-        logger.info(f"Starting pipeline for document {document_id}, job {job_id}")
+        logger.info(
+            "Starting pipeline for document %s, job %s (source_type=%s)",
+            document_id,
+            job_id,
+            resolved_source_type,
+        )
         cls._job_ids_by_document[document_id] = job_id
         
         # Update document status to extracting
@@ -397,12 +441,12 @@ class PipelineService(PipelineStatusMixin):
         )
         
         # Prepare pipeline command
-        pdf_path = str(Path(pdf_path).expanduser().resolve())
+        resolved_source_path = str(Path(resolved_source_path).expanduser().resolve())
         work_dir = Path(settings.PIPELINE_WORK_DIR).expanduser().resolve() / document_id
         work_dir.mkdir(parents=True, exist_ok=True)
         
         # Generate markdown path (pipeline will create the real Docling output)
-        markdown_path = work_dir / f"{Path(pdf_path).stem}.md"
+        markdown_path = work_dir / f"{Path(resolved_source_path).stem}.md"
         
         pipeline_script = Path(settings.PIPELINE_SCRIPT_PATH).resolve()
         repo_root = pipeline_script.parents[4]
@@ -412,10 +456,11 @@ class PipelineService(PipelineStatusMixin):
             "-m",
             "pipeline.src.cli.hitl_pipeline",
             "run",
-            "--pdf", pdf_path,
+            "--pdf", resolved_source_path,
             "--markdown", str(markdown_path),
             "--workspace", str(work_dir),
             "--reviewer", reviewer,
+            "--source-type", resolved_source_type,
         ]
         
         # Start subprocess asynchronously
@@ -425,6 +470,7 @@ class PipelineService(PipelineStatusMixin):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(repo_root),
+                env=cls._build_pipeline_subprocess_env(source_type=resolved_source_type),
             )
             
             cls._active_processes[job_id] = process
