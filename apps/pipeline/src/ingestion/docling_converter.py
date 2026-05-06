@@ -77,6 +77,71 @@ XLSX_HEADER_PREFIX_SCAN_COUNT = 10
 CE_EXTRACTION_FLAG_ENV = "PIPELINE_CE_EXTRACTION_ENABLED"
 CE_RETRIEVAL_FLAG_ENV = "PIPELINE_CE_RETRIEVAL_ENABLED"
 CE_SCHEMA_VERSION = "1.0"
+# Minimum character length for a cell to count as an effect description label.
+# Shorter values are likely column numbers, legend keys, or codes — not effect labels.
+CE_EFFECT_LABEL_MIN_LEN = 8
+# Default lower-bound column index for the "effect" zone in a C&E matrix.
+# Used only when data rows cannot be inspected to calibrate dynamically.
+CE_EFFECT_COLUMN_DEFAULT_BOUND = 6
+CE_CAUSE_REQUIRED_FIELDS: tuple[str, ...] = (
+    "device",
+    "description",
+    "pid_or_page",
+    "interlock_no",
+    "notes",
+)
+CE_EFFECT_REQUIRED_FIELDS: tuple[str, ...] = (
+    "description",
+    "pid_or_page",
+    "interacting_device",
+    "control_device",
+    "device_or_equip",
+)
+CE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "device": (
+        "DEVICE",
+        "TAG",
+    ),
+    "description": (
+        "DESCRIPTION",
+        "DESC",
+    ),
+    "pid_or_page": (
+        "P AND ID",
+        "P ID",
+        "PID",
+        "P ID OR PAGE",
+        "P AND ID OR PAGE",
+        "PAGE",
+        "PAGE NUMBER",
+        "P AND ID NUMBER",
+    ),
+    "interlock_no": (
+        "INTERLOCK",
+        "INTERLOCK NUMBER",
+        "INTERLOCK NO",
+    ),
+    "notes": (
+        "NOTE",
+        "NOTES",
+        "REMARK",
+        "REMARKS",
+    ),
+    "interacting_device": (
+        "INTERACTING DEVICE",
+        "INTERACT DEVICE",
+    ),
+    "control_device": (
+        "CONTROL DEVICE",
+        "CTRL DEVICE",
+    ),
+    "device_or_equip": (
+        "DEVICE OR EQUIP",
+        "DEVICE OR EQUIPMENT",
+        "DEVICE EQUIP",
+        "EQUIPMENT",
+    ),
+}
 CE_MARKER_SEMANTICS: dict[str, dict[str, str]] = {
     "X": {
         "semantic": "active_interlock",
@@ -419,36 +484,346 @@ def _is_meaningful_effect_label(value: str) -> bool:
     return True
 
 
+def _normalize_header_label(value: str) -> str:
+    """Normalize header text for tolerant matching across punctuation/case variants."""
+    text = re.sub(r"&+", " AND ", (value or "").strip().upper())
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _match_header_field(value: str, expected_fields: tuple[str, ...]) -> Optional[str]:
+    """Return the logical field key if the header value matches expected aliases."""
+    normalized = _normalize_header_label(value)
+    if not normalized:
+        return None
+
+    for field in expected_fields:
+        aliases = CE_FIELD_ALIASES.get(field, ())
+        for alias in aliases:
+            if normalized == alias:
+                return field
+            # Tolerate helper words/punctuation around the canonical label.
+            if normalized.startswith(f"{alias} ") or normalized.endswith(f" {alias}"):
+                return field
+            if f" {alias} " in f" {normalized} ":
+                return field
+    return None
+
+
+def _find_first_data_row_line(rows: list[tuple[int, list[str]]]) -> Optional[int]:
+    """Return first line number that looks like a CE matrix data row."""
+    for line_no, cells in rows:
+        if _is_ce_relation_data_row(cells):
+            return line_no
+    return None
+
+
+def _build_cause_field_column_map(
+    rows: list[tuple[int, list[str]]],
+    *,
+    effect_col_bound: int,
+    data_start_line: Optional[int],
+) -> dict[str, int]:
+    """Detect cause-side header columns for required logical fields.
+
+    Prefers header hits on rows before first data row and columns before effect zone.
+    """
+    best_hits: dict[str, tuple[int, int, int]] = {}
+    # value: (score, line_no, col_index)
+
+    for line_no, cells in rows:
+        if data_start_line is not None and line_no >= data_start_line:
+            continue
+        for col_index, value in enumerate(cells):
+            logical = _match_header_field(value, CE_CAUSE_REQUIRED_FIELDS)
+            if logical is None:
+                continue
+            score = 2 if col_index < effect_col_bound else 0
+            current = best_hits.get(logical)
+            candidate = (score, line_no, col_index)
+            if current is None or candidate > current:
+                best_hits[logical] = candidate
+
+    return {logical: hit[2] for logical, hit in best_hits.items()}
+
+
+def _build_effect_field_row_map(
+    rows: list[tuple[int, list[str]]],
+    *,
+    effect_col_bound: int,
+    data_start_line: Optional[int],
+) -> dict[str, tuple[int, int, list[str]]]:
+    """Detect header rows that carry per-effect metadata values for required fields."""
+    best_rows: dict[str, tuple[int, int, int, list[str]]] = {}
+    # value: (score, line_no, label_col, row_cells)
+
+    for line_no, cells in rows:
+        if _is_ce_relation_data_row(cells):
+            continue
+
+        is_pre_data_row = data_start_line is None or line_no < data_start_line
+        effect_side_labels = {
+            mapped
+            for idx, cell in enumerate(cells)
+            if idx >= max(0, effect_col_bound - 1)
+            for mapped in [_match_header_field(cell, CE_EFFECT_REQUIRED_FIELDS)]
+            if mapped is not None
+        }
+        for col_index, value in enumerate(cells):
+            logical = _match_header_field(value, CE_EFFECT_REQUIRED_FIELDS)
+            if logical is None:
+                continue
+
+            # Effect metadata labels should live in/near the effect zone and have
+            # non-empty values in effect columns.
+            effect_values_count = sum(
+                1
+                for j in range(max(effect_col_bound, col_index + 1), len(cells))
+                if (cells[j] or "").strip()
+            )
+            if effect_values_count == 0:
+                # Label can be left of effect zone in stacked-field layouts.
+                effect_values_count = sum(
+                    1
+                    for j in range(effect_col_bound, len(cells))
+                    if (cells[j] or "").strip()
+                )
+            if effect_values_count == 0:
+                continue
+
+            score = 0
+            score += 3 if is_pre_data_row else 1
+
+            distance_from_effect_zone = abs(col_index - effect_col_bound)
+            if distance_from_effect_zone <= 1:
+                score += 5
+            elif distance_from_effect_zone <= 3:
+                score += 4
+            elif distance_from_effect_zone <= 6:
+                score += 3
+            else:
+                score += 2
+
+            if any((cell or "").strip().upper() == "EFFECTS" for cell in cells):
+                score += 2
+            if (
+                effect_side_labels
+                and logical not in effect_side_labels
+                and col_index < max(0, effect_col_bound - 2)
+            ):
+                score -= 3
+            score += min(effect_values_count, 4)
+
+            current = best_rows.get(logical)
+            candidate = (score, line_no, col_index, cells)
+            if current is None or candidate[:3] > current[:3]:
+                best_rows[logical] = candidate
+
+    return {
+        logical: (value[1], value[2], value[3])
+        for logical, value in best_rows.items()
+    }
+
+
+def _enrich_effect_entries_with_required_fields(
+    *,
+    effects_by_col: dict[int, dict[str, Any]],
+    effect_field_rows: dict[str, tuple[int, int, list[str]]],
+) -> None:
+    """Populate additive effect required-field metadata from detected header rows."""
+    for effect_col, effect_payload in effects_by_col.items():
+        required_fields: dict[str, str] = {}
+
+        for field_name, (_, _, row_cells) in effect_field_rows.items():
+            if effect_col >= len(row_cells):
+                continue
+            field_value = (row_cells[effect_col] or "").strip()
+            if not field_value:
+                continue
+            required_fields[field_name] = field_value
+
+        if "description" not in required_fields and (effect_payload.get("effect_label") or "").strip():
+            required_fields["description"] = str(effect_payload["effect_label"]).strip()
+
+        effect_payload["required_fields"] = required_fields
+        effect_payload["effect_description"] = required_fields.get("description", "")
+        effect_payload["effect_pid_or_page"] = required_fields.get("pid_or_page", "")
+        effect_payload["effect_interacting_device"] = required_fields.get("interacting_device", "")
+        effect_payload["effect_control_device"] = required_fields.get("control_device", "")
+        effect_payload["effect_device_or_equip"] = required_fields.get("device_or_equip", "")
+
+
+def _estimate_effect_column_bound(rows: list[tuple[int, list[str]]]) -> int:
+    """Dynamically estimate the first column index belonging to the effect zone.
+
+    Scans cause data rows (rows with X/P markers and a non-empty cause prefix) to
+    find the minimum column where a marker appears.  This self-calibrates to any
+    matrix layout regardless of how many cause-side columns the document uses.
+    Returns ``CE_EFFECT_COLUMN_DEFAULT_BOUND`` when no data rows are found.
+    """
+    min_marker_col: Optional[int] = None
+    samples_checked = 0
+    for _, cells in rows:
+        if not _is_ce_relation_data_row(cells):
+            continue
+        for i, cell in enumerate(cells):
+            if (cell or "").strip().upper() in CE_MARKER_SEMANTICS:
+                if min_marker_col is None or i < min_marker_col:
+                    min_marker_col = i
+        samples_checked += 1
+        if samples_checked >= 15:
+            break
+    return min_marker_col if min_marker_col is not None else CE_EFFECT_COLUMN_DEFAULT_BOUND
+
+
+def _score_row_as_effect_header(cells: list[str], effect_col_bound: int) -> int:
+    """Score how many cells at col >= effect_col_bound look like effect description labels.
+
+    Only cells with text length >= ``CE_EFFECT_LABEL_MIN_LEN`` that pass
+    ``_is_meaningful_effect_label`` are counted.  This discriminates effect
+    description rows from legend rows (ACTION/PERMISSIVE all-blank) and from
+    P&ID-number or control-device rows (short codes, not descriptions).
+    """
+    score = 0
+    for i, cell in enumerate(cells):
+        if i < effect_col_bound:
+            continue
+        cleaned = (cell or "").strip()
+        if len(cleaned) >= CE_EFFECT_LABEL_MIN_LEN and _is_meaningful_effect_label(cleaned):
+            score += 1
+    return score
+
+
+def _build_effect_entry(
+    *,
+    col_index: int,
+    raw_value: str,
+    line_no: int,
+    effect_counter: int,
+    sheet_sections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build one effect payload dict for a given column index and label."""
+    sheet_section = _sheet_section_for_line(line_no, sheet_sections)
+    sheet_name = (sheet_section or {}).get("sheet_name") or "Sheet1"
+    path_ref = f"{sheet_name}.effects[column:{col_index}]"
+    return {
+        "effect_id": f"effect_{effect_counter:03d}",
+        "effect_label": raw_value.strip(),
+        "path_ref": path_ref,
+        "parent_path_ref": f"{sheet_name}.effects",
+        "node_type": "effect",
+        "value_type": "string",
+        "value_state": "present",
+        "path_depth": max(1, path_ref.count(".") + 1),
+        "origin": {
+            "sheet": sheet_name,
+            "page_number": (sheet_section or {}).get("page_number"),
+            "line_number": line_no,
+            "column_index": col_index,
+        },
+    }
+
+
 def _build_ce_effect_index(
     rows: list[tuple[int, list[str]]],
     *,
     sheet_sections: list[dict[str, Any]],
 ) -> dict[int, dict[str, Any]]:
-    """Build column-indexed effect metadata from ACTION/PERMISSIVE matrix header rows."""
+    """Build column-indexed effect metadata using a robust two-strategy approach.
+
+    **Strategy 1 — co-located labels (classic layout):**
+    Looks for rows where the legend entries ``ACTION`` or ``PERMISSIVE`` appear *and*
+    the same row also contains meaningful effect labels in adjacent columns.  This
+    covers matrices where the header row is a single combined row.
+
+    **Strategy 2 — scored description row (multi-row header layout):**
+    When Strategy 1 finds nothing (effect columns are blank in the legend row), this
+    strategy self-calibrates by:
+
+    1. Inspecting actual data rows (rows with X/P markers) to find the minimum column
+       index where a marker appears — that defines the start of the effect zone.
+    2. Scoring every pre-data-boundary header row by how many cells at col >=
+       effect_zone_start contain long descriptive text (>= ``CE_EFFECT_LABEL_MIN_LEN``
+       chars).  The highest-scoring row is used as the effect description row.
+
+    This makes detection robust across:
+    - Matrices with a dedicated DESCRIPTION row separate from the legend rows
+    - Matrices with varying numbers of cause-side columns
+    - Matrices that omit the ACTION/PERMISSIVE legend entirely
+    - Any document where effect labels happen to be in a different row than expected
+    """
     effects_by_col: dict[int, dict[str, Any]] = {}
     effect_counter = 1
 
+    # ── Strategy 1: classic co-located layout ──────────────────────────────────
     for line_no, cells in rows:
         if not any((cell or "").strip().upper() in {"ACTION", "PERMISSIVE"} for cell in cells):
             continue
-
         for col_index, raw_value in enumerate(cells):
             if not _is_meaningful_effect_label(raw_value):
                 continue
             if col_index in effects_by_col:
                 continue
-            sheet_section = _sheet_section_for_line(line_no, sheet_sections)
-            effects_by_col[col_index] = {
-                "effect_id": f"effect_{effect_counter:03d}",
-                "effect_label": raw_value.strip(),
-                "origin": {
-                    "sheet": (sheet_section or {}).get("sheet_name"),
-                    "page_number": (sheet_section or {}).get("page_number"),
-                    "line_number": line_no,
-                    "column_index": col_index,
-                },
-            }
+            effects_by_col[col_index] = _build_effect_entry(
+                col_index=col_index,
+                raw_value=raw_value,
+                line_no=line_no,
+                effect_counter=effect_counter,
+                sheet_sections=sheet_sections,
+            )
             effect_counter += 1
+
+    if effects_by_col:
+        return effects_by_col
+
+    # ── Strategy 2: scored description row (multi-row header layout) ───────────
+    # Step 2a: find where data rows start and derive the effect column boundary.
+    data_start_line: Optional[int] = None
+    for line_no, cells in rows:
+        if _is_ce_relation_data_row(cells):
+            data_start_line = line_no
+            break
+
+    effect_col_bound = _estimate_effect_column_bound(rows)
+
+    # Step 2b: score header rows that appear before the first data row.
+    pre_data_rows = [
+        (ln, cells)
+        for ln, cells in rows
+        if data_start_line is None or ln < data_start_line
+    ]
+
+    best_score = 0
+    best_row: Optional[tuple[int, list[str]]] = None
+    for ln, cells in pre_data_rows:
+        score = _score_row_as_effect_header(cells, effect_col_bound)
+        if score > best_score:
+            best_score = score
+            best_row = (ln, cells)
+
+    if best_row is None or best_score == 0:
+        return effects_by_col
+
+    # Step 2c: build the effect index from the best candidate row.
+    best_line_no, best_cells = best_row
+    for col_index, raw_value in enumerate(best_cells):
+        if col_index < effect_col_bound:
+            continue
+        if not _is_meaningful_effect_label(raw_value):
+            continue
+        if len((raw_value or "").strip()) < CE_EFFECT_LABEL_MIN_LEN:
+            continue
+        if col_index in effects_by_col:
+            continue
+        effects_by_col[col_index] = _build_effect_entry(
+            col_index=col_index,
+            raw_value=raw_value,
+            line_no=best_line_no,
+            effect_counter=effect_counter,
+            sheet_sections=sheet_sections,
+        )
+        effect_counter += 1
 
     return effects_by_col
 
@@ -512,10 +887,22 @@ def _sheet_section_for_line(line_no: int, sheet_sections: list[dict[str, Any]]) 
 
 
 def _is_ce_relation_data_row(cells: list[str]) -> bool:
-    """Return True for wide matrix rows likely encoding cause/effect markers."""
+    """Return True for wide matrix rows likely encoding cause/effect markers.
+
+    Rejects legend/header rows (ACTION, PERMISSIVE, EFFECTS, DESCRIPTION) by
+    requiring that the first non-empty cell is NOT one of those keywords.  This
+    prevents rows like ``| X | ACTION | ... |`` from being classified as cause rows.
+    """
     if len(cells) < XLSX_WIDE_TABLE_COLUMN_THRESHOLD:
         return False
-    if not any((cell or "").strip().upper() in {"X", "P"} for cell in cells):
+    if not any((cell or "").strip().upper() in CE_MARKER_SEMANTICS for cell in cells):
+        return False
+    # Reject rows whose first non-empty cell is a legend/header keyword.
+    _LEGEND_KEYWORDS: frozenset[str] = frozenset(
+        {"X", "P", "ACTION", "PERMISSIVE", "EFFECTS", "DESCRIPTION"}
+    )
+    first_nonempty = next(((c or "").strip().upper() for c in cells if (c or "").strip()), None)
+    if first_nonempty in _LEGEND_KEYWORDS:
         return False
     prefix = " ".join((cells[:4] if len(cells) >= 4 else cells)).strip()
     return bool(prefix)
@@ -524,11 +911,44 @@ def _is_ce_relation_data_row(cells: list[str]) -> bool:
 def _collect_candidate_table_rows(markdown_content: str) -> list[tuple[int, list[str]]]:
     """Collect non-separator markdown table rows with source line numbers."""
     candidate_rows: list[tuple[int, list[str]]] = []
+    pending_row_start: Optional[int] = None
+    pending_row_text = ""
+
+    def _flush_pending_row() -> None:
+        nonlocal pending_row_start, pending_row_text
+        if pending_row_start is None or not pending_row_text:
+            pending_row_start = None
+            pending_row_text = ""
+            return
+        cells = _split_markdown_table_row_cells(pending_row_text)
+        if cells is None or _is_markdown_separator_row(cells):
+            pending_row_start = None
+            pending_row_text = ""
+            return
+        candidate_rows.append((pending_row_start, cells))
+        pending_row_start = None
+        pending_row_text = ""
+
     for line_no, line in enumerate(markdown_content.splitlines(), start=1):
-        cells = _split_markdown_table_row_cells(line)
+        stripped = line.strip()
+
+        if pending_row_start is not None:
+            pending_row_text = f"{pending_row_text} {stripped}".strip()
+            if stripped.endswith("|"):
+                _flush_pending_row()
+            continue
+
+        if stripped.startswith("|") and stripped.count("|") >= 2 and not stripped.endswith("|"):
+            pending_row_start = line_no
+            pending_row_text = stripped
+            continue
+
+        cells = _split_markdown_table_row_cells(stripped)
         if cells is None or _is_markdown_separator_row(cells):
             continue
         candidate_rows.append((line_no, cells))
+
+    _flush_pending_row()
     return candidate_rows
 
 
@@ -539,6 +959,7 @@ def _get_or_create_cause_payload(
     cells: list[str],
     line_no: int,
     sheet_sections: list[dict[str, Any]],
+    cause_field_columns: Optional[dict[str, int]] = None,
 ) -> dict[str, Any]:
     """Return existing cause payload or create one from row prefix cells."""
     cause_payload = causes_by_key.get(cause_key)
@@ -546,13 +967,42 @@ def _get_or_create_cause_payload(
         return cause_payload
 
     sheet_section = _sheet_section_for_line(line_no, sheet_sections)
+    sheet_name = (sheet_section or {}).get("sheet_name") or "Sheet1"
+    path_ref = f"{sheet_name}.rows[line:{line_no}].cause"
+    cause_field_columns = cause_field_columns or {}
+
+    required_fields: dict[str, str] = {}
+    for field_name, col_index in cause_field_columns.items():
+        if col_index >= len(cells):
+            continue
+        value = (cells[col_index] or "").strip()
+        if value:
+            required_fields[field_name] = value
+
+    # Compatibility fallback when explicit headers are absent/partial.
+    if "device" not in required_fields and len(cells) > 1 and (cells[1] or "").strip():
+        required_fields["device"] = (cells[1] or "").strip()
+    if "description" not in required_fields and len(cells) > 2 and (cells[2] or "").strip():
+        required_fields["description"] = (cells[2] or "").strip()
+
     cause_payload = {
         "cause_id": f"cause_{len(causes_by_key) + 1:03d}",
         "cause_ref": (cells[0] if len(cells) > 0 else "").strip(),
         "cause_tag": (cells[1] if len(cells) > 1 else "").strip(),
         "cause_description": (cells[2] if len(cells) > 2 else "").strip(),
+        "required_fields": required_fields,
+        "cause_device": required_fields.get("device", ""),
+        "cause_pid_or_page": required_fields.get("pid_or_page", ""),
+        "cause_interlock_no": required_fields.get("interlock_no", ""),
+        "cause_notes": required_fields.get("notes", ""),
+        "path_ref": path_ref,
+        "parent_path_ref": f"{sheet_name}.rows[line:{line_no}]",
+        "node_type": "cause",
+        "value_type": "string",
+        "value_state": "present" if any((cells[i] if i < len(cells) else "").strip() for i in (0, 1, 2)) else "empty",
+        "path_depth": max(1, path_ref.count(".") + 1),
         "origin": {
-            "sheet": (sheet_section or {}).get("sheet_name"),
+            "sheet": sheet_name,
             "page_number": (sheet_section or {}).get("page_number"),
             "line_number": line_no,
         },
@@ -585,6 +1035,10 @@ def _build_relations_for_data_row(
             continue
 
         marker_semantics = CE_MARKER_SEMANTICS[marker]
+        sheet_name = (sheet_section or {}).get("sheet_name") or "Sheet1"
+        relation_path_ref = (
+            f"{sheet_name}.rows[line:{line_no}].effects[column:{col_index}]"
+        )
         relations.append(
             {
                 "relation_id": f"rel_{relation_counter:04d}",
@@ -594,8 +1048,14 @@ def _build_relations_for_data_row(
                 "marker_semantic": marker_semantics["semantic"],
                 "marker_description": marker_semantics["description"],
                 "confidence": "high",
+                "path_ref": relation_path_ref,
+                "parent_path_ref": f"{sheet_name}.rows[line:{line_no}]",
+                "node_type": "relation_edge",
+                "value_type": "string",
+                "value_state": "present",
+                "path_depth": max(1, relation_path_ref.count(".") + 1),
                 "origin": {
-                    "sheet": (sheet_section or {}).get("sheet_name"),
+                    "sheet": sheet_name,
                     "page_number": (sheet_section or {}).get("page_number"),
                     "line_number": line_no,
                     "column_index": col_index,
@@ -617,7 +1077,24 @@ def _build_ce_structured_payload(
     candidate_rows = _collect_candidate_table_rows(markdown_content)
     sheet_sections = _build_sheet_sections(markdown_content)
 
+    data_start_line = _find_first_data_row_line(candidate_rows)
+    effect_col_bound = _estimate_effect_column_bound(candidate_rows)
+    cause_field_columns = _build_cause_field_column_map(
+        candidate_rows,
+        effect_col_bound=effect_col_bound,
+        data_start_line=data_start_line,
+    )
+    effect_field_rows = _build_effect_field_row_map(
+        candidate_rows,
+        effect_col_bound=effect_col_bound,
+        data_start_line=data_start_line,
+    )
+
     effects_by_col = _build_ce_effect_index(candidate_rows, sheet_sections=sheet_sections)
+    _enrich_effect_entries_with_required_fields(
+        effects_by_col=effects_by_col,
+        effect_field_rows=effect_field_rows,
+    )
     effects: list[dict[str, Any]] = [effects_by_col[index] for index in sorted(effects_by_col.keys())]
 
     causes_by_key: dict[str, dict[str, Any]] = {}
@@ -637,6 +1114,7 @@ def _build_ce_structured_payload(
             cells=cells,
             line_no=line_no,
             sheet_sections=sheet_sections,
+            cause_field_columns=cause_field_columns,
         )
         relations.extend(
             _build_relations_for_data_row(
@@ -666,6 +1144,12 @@ def _build_ce_structured_payload(
             "source_type": "xlsx",
             "sheet": sheet_sections[0]["sheet_name"] if sheet_sections else None,
             "page": sheet_sections[0]["page_number"] if sheet_sections else None,
+        },
+        "path_notation": {
+            "sheet": "<sheet_name>",
+            "cause": "<sheet_name>.rows[line:<n>].cause",
+            "effect": "<sheet_name>.effects[column:<n>]",
+            "relation": "<sheet_name>.rows[line:<n>].effects[column:<n>]",
         },
         "sheets": [
             {
