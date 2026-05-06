@@ -278,6 +278,8 @@ _UUID_SEGMENT_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_XLSX_MAX_CHUNK_CONTENT_CHARS = 900
+_XLSX_MAX_FACT_CHARS = 220
 
 
 def _is_feature_flag_enabled(env_name: str, *, default: bool = False) -> bool:
@@ -316,6 +318,60 @@ def _infer_document_id_from_markdown_path(markdown_path: Path) -> Optional[str]:
 def _resolve_ce_artifact_path(markdown_path: Path) -> Path:
     """Return CE structured artifact path associated with canonical markdown."""
     return markdown_path.with_name(f"{markdown_path.stem}_ce_relations.json")
+
+
+def _get_workspace_root() -> Path:
+    """Return the repository workspace root for artifact resolution."""
+    return Path(__file__).resolve().parents[4]
+
+
+def _resolve_pipeline_artifact_path(
+    artifact_path: str | Path | None,
+    *,
+    workspace_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve artifact paths from local or container-style workspace locations."""
+    raw_path = str(artifact_path or "").strip()
+    if not raw_path:
+        return None
+
+    candidate = Path(raw_path)
+    if candidate.exists() and candidate.is_file():
+        return candidate
+
+    root = workspace_root or _get_workspace_root()
+    normalized = raw_path.replace("\\", "/")
+    workspace_prefix = "/workspace/"
+    if normalized == "/workspace":
+        normalized = ""
+    elif normalized.startswith(workspace_prefix):
+        normalized = normalized[len(workspace_prefix):]
+    elif normalized.startswith("workspace/"):
+        normalized = normalized[len("workspace/"):]
+
+    if normalized:
+        workspace_candidate = root / normalized.lstrip("/")
+        if workspace_candidate.exists() and workspace_candidate.is_file():
+            return workspace_candidate
+
+    if not candidate.is_absolute():
+        relative_candidate = root / raw_path
+        if relative_candidate.exists() and relative_candidate.is_file():
+            return relative_candidate
+
+    return None
+
+
+def _load_json_artifact(artifact_path: str | Path | None) -> dict[str, Any] | None:
+    """Load a JSON artifact from a resolved pipeline path when available."""
+    resolved_path = _resolve_pipeline_artifact_path(artifact_path)
+    if resolved_path is None:
+        return None
+
+    try:
+        return json.loads(resolved_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _build_xlsx_page_markdown_map(markdown_path: str) -> Dict[int, str]:
@@ -412,20 +468,17 @@ def _load_xlsx_structured_relations_artifact(
     optimization_prep: Optional[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """Load the authoritative XLSX structured relations artifact when present."""
-    artifact_path = str(
-        ((optimization_prep or {}).get("ce_structured_artifact") or {}).get("artifact_path") or ""
-    ).strip()
-    if not artifact_path:
-        return None
+    source_artifacts = (optimization_prep or {}).get("source_artifacts") or {}
+    artifact_candidates = [
+        source_artifacts.get("ce_structured_artifact_path"),
+        ((optimization_prep or {}).get("ce_structured_artifact") or {}).get("artifact_path"),
+    ]
 
-    path = Path(artifact_path)
-    if not path.exists() or not path.is_file():
-        return None
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    for artifact_path in artifact_candidates:
+        payload = _load_json_artifact(artifact_path)
+        if payload:
+            return payload
+    return None
 
 
 def _build_xlsx_sheet_lookup(
@@ -469,6 +522,380 @@ def _build_xlsx_sheet_lookup(
     return lookup
 
 
+def _normalize_sheet_name(sheet_name: Any) -> str:
+    """Normalize sheet names for grouping and comparisons."""
+    return re.sub(r"\s+", " ", str(sheet_name or "").strip()).lower()
+
+
+def _group_xlsx_entries_by_sheet(entries: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group CE payload entries by normalized origin sheet name."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        origin = entry.get("origin") or {}
+        key = _normalize_sheet_name(origin.get("sheet"))
+        if not key:
+            continue
+        grouped.setdefault(key, []).append(entry)
+    return grouped
+
+
+def _render_xlsx_relation_bullet(
+    relation: dict[str, Any],
+    effect_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Render one relation bullet with effect and path context."""
+    effect = effect_by_id.get(str(relation.get("effect_id") or ""), {})
+    marker = str(relation.get("marker") or "?")
+    marker_semantic = str(relation.get("marker_semantic") or "linked").replace("_", " ")
+    effect_label = str(effect.get("effect_label") or relation.get("effect_id") or "Unknown effect").strip()
+    relation_path = str(relation.get("path_ref") or "").strip()
+    effect_path = str(effect.get("path_ref") or "").strip()
+    marker_description = str(relation.get("marker_description") or "").strip()
+
+    lines = [f"  - `{marker}` {marker_semantic} → {effect_label}"]
+    if marker_description:
+        lines.append(f"    - Marker meaning: {marker_description}")
+    return lines
+
+
+def _extract_required_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return required_fields map when present and well-formed."""
+    required_fields = payload.get("required_fields")
+    if isinstance(required_fields, dict):
+        return required_fields
+    return {}
+
+
+def _resolve_review_field_value(
+    payload: dict[str, Any],
+    *,
+    required_keys: tuple[str, ...],
+    payload_keys: tuple[str, ...],
+) -> str:
+    """Resolve a non-empty review field from required_fields and top-level fallbacks."""
+    required_fields = _extract_required_fields(payload)
+
+    for key in required_keys:
+        value = str(required_fields.get(key) or "").strip()
+        if value:
+            return value
+
+    for key in payload_keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+
+    return ""
+
+
+def _build_xlsx_relation_review_markdown(
+    *,
+    sheet_name: str,
+    page_number: int,
+    causes: list[dict[str, Any]],
+    effects: list[dict[str, Any]],
+    relations: list[dict[str, Any]],
+    marker_semantics: dict[str, Any],
+) -> str:
+    """Build reviewer-friendly XLSX markdown from CE relations instead of raw tables."""
+    effect_by_id = {
+        str(effect.get("effect_id") or ""): effect
+        for effect in effects
+        if str(effect.get("effect_id") or "").strip()
+    }
+    relations_by_cause: dict[str, list[dict[str, Any]]] = {}
+    for relation in sorted(relations, key=_stable_relation_sort_key):
+        cause_id = str(relation.get("cause_id") or "").strip()
+        if not cause_id:
+            continue
+        relations_by_cause.setdefault(cause_id, []).append(relation)
+
+    lines = [
+        f"## {sheet_name}",
+        "",
+        "### Reviewer summary",
+        f"- Source page: {page_number}",
+        f"- Causes detected: {len(causes)}",
+        f"- Effects detected: {len(effects)}",
+        f"- Cause/effect relationships detected: {len(relations)}",
+    ]
+
+    if marker_semantics:
+        lines.extend(["", "### Marker semantics"])
+        for marker, semantics in sorted(marker_semantics.items()):
+            semantic_label = str((semantics or {}).get("semantic") or marker).replace("_", " ")
+            description = str((semantics or {}).get("description") or "").strip()
+            bullet = f"- `{marker}` — {semantic_label}"
+            if description:
+                bullet += f": {description}"
+            lines.append(bullet)
+
+    if effects:
+        lines.extend(["", "### Effects detected"])
+        for effect in sorted(effects, key=lambda item: (int((item.get("origin") or {}).get("column_index") or 0), str(item.get("effect_id") or ""))):
+            effect_id = str(effect.get("effect_id") or "effect").strip()
+            effect_label = str(effect.get("effect_label") or "Unknown effect").strip()
+            path_ref = str(effect.get("path_ref") or "").strip()
+            effect_line = f"- `{effect_id}` — {effect_label}"
+            lines.append(effect_line)
+
+            effect_description = _resolve_review_field_value(
+                effect,
+                required_keys=("description",),
+                payload_keys=("effect_description", "effect_label"),
+            )
+            effect_pid_or_page = _resolve_review_field_value(
+                effect,
+                required_keys=("pid_or_page",),
+                payload_keys=("effect_pid_or_page",),
+            )
+            effect_interacting_device = _resolve_review_field_value(
+                effect,
+                required_keys=("interacting_device",),
+                payload_keys=("effect_interacting_device",),
+            )
+            effect_control_device = _resolve_review_field_value(
+                effect,
+                required_keys=("control_device",),
+                payload_keys=("effect_control_device",),
+            )
+            effect_device_or_equip = _resolve_review_field_value(
+                effect,
+                required_keys=("device_or_equip",),
+                payload_keys=("effect_device_or_equip",),
+            )
+
+            if effect_description:
+                lines.append(f"  - DESCRIPTION: {effect_description}")
+            if effect_pid_or_page:
+                lines.append(f"  - P&ID # or Page #: {effect_pid_or_page}")
+            if effect_interacting_device:
+                lines.append(f"  - INTERACTING DEVICE: {effect_interacting_device}")
+            if effect_control_device:
+                lines.append(f"  - CONTROL DEVICE: {effect_control_device}")
+            if effect_device_or_equip:
+                lines.append(f"  - DEVICE or EQUIP.: {effect_device_or_equip}")
+
+    if causes:
+        lines.extend(["", "### Cause and effect relationships"])
+        for cause in sorted(causes, key=_stable_cause_sort_key):
+            cause_id = str(cause.get("cause_id") or "cause").strip()
+            cause_tag = str(cause.get("cause_tag") or "").strip()
+            cause_description = str(cause.get("cause_description") or "").strip()
+            cause_ref = str(cause.get("cause_ref") or "").strip()
+            cause_path = str(cause.get("path_ref") or "").strip()
+            heading_bits = [bit for bit in (cause_tag, cause_description, cause_ref) if bit]
+            heading_label = heading_bits[0] if heading_bits else cause_id
+
+            lines.extend(["", f"#### Cause `{cause_id}` — {heading_label}"])
+            if cause_ref:
+                lines.append(f"- Reference: `{cause_ref}`")
+            if cause_tag:
+                lines.append(f"- Tag: `{cause_tag}`")
+            if cause_description:
+                lines.append(f"- Description: {cause_description}")
+            cause_device = _resolve_review_field_value(
+                cause,
+                required_keys=("device",),
+                payload_keys=("cause_device", "cause_tag"),
+            )
+            cause_description_field = _resolve_review_field_value(
+                cause,
+                required_keys=("description",),
+                payload_keys=("cause_description",),
+            )
+            cause_pid_or_page = _resolve_review_field_value(
+                cause,
+                required_keys=("pid_or_page",),
+                payload_keys=("cause_pid_or_page",),
+            )
+            cause_interlock_no = _resolve_review_field_value(
+                cause,
+                required_keys=("interlock_no",),
+                payload_keys=("cause_interlock_no",),
+            )
+            cause_notes = _resolve_review_field_value(
+                cause,
+                required_keys=("notes",),
+                payload_keys=("cause_notes",),
+            )
+
+            if cause_device:
+                lines.append(f"- DEVICE: {cause_device}")
+            if cause_description_field:
+                lines.append(f"- DESCRIPTION: {cause_description_field}")
+            if cause_pid_or_page:
+                lines.append(f"- P&ID # or Page #: {cause_pid_or_page}")
+            if cause_interlock_no:
+                lines.append(f"- INTERLOCK #: {cause_interlock_no}")
+            if cause_notes:
+                lines.append(f"- NOTES: {cause_notes}")
+
+            cause_relations = relations_by_cause.get(cause_id, [])
+            if cause_relations:
+                lines.append("- Relationships:")
+                for relation in cause_relations:
+                    lines.extend(_render_xlsx_relation_bullet(relation, effect_by_id))
+            else:
+                lines.append("- Relationships: No explicit effect markers were detected for this cause.")
+
+    return "\n".join(lines).strip()
+
+
+def _build_xlsx_review_markdown_by_page(
+    *,
+    markdown_path: str,
+    ce_relations: Optional[dict[str, Any]],
+) -> dict[int, str]:
+    """Create page markdown overrides from CE relations for reviewer-friendly XLSX review."""
+    if not ce_relations:
+        return {}
+
+    sheet_sections = _parse_xlsx_sheet_sections(Path(markdown_path).read_text(encoding="utf-8"))
+    if not sheet_sections:
+        return {}
+
+    causes_by_sheet = _group_xlsx_entries_by_sheet(list(ce_relations.get("causes") or []))
+    effects_by_sheet = _group_xlsx_entries_by_sheet(list(ce_relations.get("effects") or []))
+    relations_by_sheet = _group_xlsx_entries_by_sheet(list(ce_relations.get("relations") or []))
+    marker_semantics = dict(ce_relations.get("marker_semantics") or {})
+
+    review_markdown_by_page: dict[int, str] = {}
+    for section in sheet_sections:
+        sheet_name = str(section.get("sheet_name") or "Sheet").strip()
+        page_number = int(section.get("page_number") or 0)
+        sheet_key = _normalize_sheet_name(sheet_name)
+        causes = causes_by_sheet.get(sheet_key, [])
+        effects = effects_by_sheet.get(sheet_key, [])
+        relations = relations_by_sheet.get(sheet_key, [])
+        if not any((causes, effects, relations)):
+            continue
+
+        review_markdown_by_page[page_number] = _build_xlsx_relation_review_markdown(
+            sheet_name=sheet_name,
+            page_number=page_number,
+            causes=causes,
+            effects=effects,
+            relations=relations,
+            marker_semantics=marker_semantics,
+        )
+
+    return review_markdown_by_page
+
+
+def _apply_xlsx_review_markdown_overrides(
+    pages: Any,
+    *,
+    markdown_path: str,
+    ce_relations: Optional[dict[str, Any]],
+) -> None:
+    """Replace raw sheet markdown with CE relation-aware review markdown when available."""
+    review_markdown_by_page = _build_xlsx_review_markdown_by_page(
+        markdown_path=markdown_path,
+        ce_relations=ce_relations,
+    )
+    if not review_markdown_by_page:
+        return
+
+    for page in getattr(pages, "pages", []):
+        page_number = int(getattr(page, "page_number", 0) or 0)
+        review_markdown = review_markdown_by_page.get(page_number)
+        if review_markdown:
+            page.markdown_content = review_markdown
+
+
+def _derive_parent_path_ref(path_ref: Optional[str]) -> Optional[str]:
+    """Derive parent path reference from a canonical path string."""
+    if not path_ref:
+        return None
+    normalized = str(path_ref).strip()
+    if not normalized:
+        return None
+    if "." in normalized:
+        return normalized.rsplit(".", 1)[0]
+    return None
+
+
+def _infer_value_type(value: Any) -> str:
+    """Infer a coarse JSON-like value type for additive metadata hints."""
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if value is None:
+        return "null"
+    return "string"
+
+
+def _resolve_path_depth(path_ref: Optional[str], explicit_depth: Optional[int] = None) -> int:
+    """Resolve path depth from explicit metadata or inferred dot-notation depth."""
+    if isinstance(explicit_depth, int) and explicit_depth > 0:
+        return explicit_depth
+    normalized = str(path_ref or "").strip()
+    if not normalized:
+        return 1
+    return max(1, normalized.count(".") + 1)
+
+
+def _extract_node_path_metadata(
+    *,
+    node_payload: Optional[dict[str, Any]],
+    default_path_ref: str,
+    default_node_type: str,
+    default_value_sample: Any,
+) -> dict[str, Any]:
+    """Extract additive nested-path metadata for XLSX chunks."""
+    node_payload = node_payload or {}
+    path_ref = str(node_payload.get("path_ref") or default_path_ref).strip() or default_path_ref
+    parent_path_ref = str(node_payload.get("parent_path_ref") or "").strip() or _derive_parent_path_ref(path_ref)
+    node_type = str(node_payload.get("node_type") or default_node_type).strip() or default_node_type
+    value_type = str(node_payload.get("value_type") or "").strip() or _infer_value_type(default_value_sample)
+
+    explicit_state = str(node_payload.get("value_state") or "").strip()
+    if explicit_state:
+        value_state = explicit_state
+    else:
+        has_value = bool(str(default_value_sample or "").strip())
+        value_state = "present" if has_value else "empty"
+
+    path_depth = _resolve_path_depth(path_ref, node_payload.get("path_depth"))
+
+    return {
+        "path_ref": path_ref,
+        "parent_path_ref": parent_path_ref,
+        "node_type": node_type,
+        "value_type": value_type,
+        "value_state": value_state,
+        "path_depth": path_depth,
+    }
+
+
+def _stable_relation_sort_key(relation: dict[str, Any]) -> tuple[str, int, int, int, str, str]:
+    """Provide deterministic ordering for relation records."""
+    origin = relation.get("origin") or {}
+    sheet = str(origin.get("sheet") or "").strip().lower()
+    page = int(origin.get("page_number") or 0)
+    line = int(origin.get("line_number") or 0)
+    column = int(origin.get("column_index") or 0)
+    relation_id = str(relation.get("relation_id") or "").strip()
+    marker = str(relation.get("marker") or "").strip()
+    return (sheet, page, line, column, relation_id, marker)
+
+
+def _stable_cause_sort_key(cause: dict[str, Any]) -> tuple[str, int, int, str]:
+    """Provide deterministic ordering for cause records."""
+    origin = cause.get("origin") or {}
+    sheet = str(origin.get("sheet") or "").strip().lower()
+    page = int(origin.get("page_number") or 0)
+    line = int(origin.get("line_number") or 0)
+    cause_id = str(cause.get("cause_id") or "").strip()
+    return (sheet, page, line, cause_id)
+
+
 def _build_xlsx_chunk_payload(
     *,
     chunk_id: str,
@@ -482,11 +909,13 @@ def _build_xlsx_chunk_payload(
     relation_refs: list[str],
     source_lineage: dict[str, Any],
     retrieval_hints: dict[str, Any],
-    table_facts: Optional[list[str]] = None,
-    ambiguity_flags: Optional[list[str]] = None,
+    chunk_lists: Optional[dict[str, list[Any]]] = None,
+    path_metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build one XLSX retrieval chunk with compatibility aliases for existing consumers."""
     normalized_text = text.strip()
+    chunk_lists = chunk_lists or {}
+    path_metadata = path_metadata or {}
     return {
         "chunk_id": chunk_id,
         "id": chunk_id,
@@ -502,222 +931,14 @@ def _build_xlsx_chunk_payload(
         "relation_refs": relation_refs,
         "source_lineage": source_lineage,
         "retrieval_hints": retrieval_hints,
-        "table_facts": table_facts or [],
-        "ambiguity_flags": ambiguity_flags or [],
-    }
-
-
-def _build_xlsx_relation_optimized_output(
-    markdown_content: str,
-    doc_name: str,
-    optimization_prep: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    """Build JSON-first XLSX retrieval output from structured relations + reviewed headings."""
-    structured_payload = _load_xlsx_structured_relations_artifact(optimization_prep)
-    sheet_sections = _parse_xlsx_sheet_sections(markdown_content)
-    sheet_lookup = _build_xlsx_sheet_lookup(
-        optimization_prep=optimization_prep,
-        sheet_sections=sheet_sections,
-    )
-    source_lineage = dict((structured_payload or {}).get("source_lineage") or {})
-    warnings: list[str] = list((structured_payload or {}).get("warnings") or [])
-    chunks: list[dict[str, Any]] = []
-
-    for section in sheet_sections:
-        sheet_name = str(section["sheet_name"])
-        lookup_entry = sheet_lookup.get(sheet_name.lower(), {})
-        page_number = int(lookup_entry.get("page_number") or section["page_number"])
-        section_relations = [
-            relation
-            for relation in (structured_payload or {}).get("relations") or []
-            if str((relation.get("origin") or {}).get("sheet") or sheet_name).strip().lower()
-            == sheet_name.lower()
-        ]
-        chunks.append(
-            _build_xlsx_chunk_payload(
-                chunk_id=f"question_heading_{page_number:03d}",
-                chunk_type="question_heading_chunk",
-                heading=f"What data does the {sheet_name} sheet contain?",
-                text=(
-                    f"What data does the {sheet_name} sheet contain? "
-                    f"This sheet contributes {len(section_relations)} structured relations and "
-                    f"{len(lookup_entry.get('table_facts') or [])} extracted table facts for retrieval."
-                ),
-                sheet_name=sheet_name,
-                source_pages=[page_number],
-                row_refs=[],
-                entity_refs=[],
-                relation_refs=[
-                    str(relation.get("relation_id") or "")
-                    for relation in section_relations
-                    if relation.get("relation_id")
-                ],
-                source_lineage=source_lineage,
-                retrieval_hints={
-                    "keywords": _dedupe_preserving_order(
-                        [sheet_name]
-                        + list(lookup_entry.get("table_facts") or [])
-                        + [str(relation.get("marker_semantic") or "") for relation in section_relations]
-                    ),
-                    "heading_aliases": [sheet_name],
-                    "marker_semantics": _dedupe_preserving_order(
-                        [str(relation.get("marker_semantic") or "") for relation in section_relations]
-                    ),
-                },
-                table_facts=list(lookup_entry.get("table_facts") or []),
-            )
-        )
-
-    if structured_payload:
-        causes_by_id = {
-            str(cause.get("cause_id") or ""): cause
-            for cause in structured_payload.get("causes") or []
-        }
-        effects_by_id = {
-            str(effect.get("effect_id") or ""): effect
-            for effect in structured_payload.get("effects") or []
-        }
-
-        relations_by_cause: dict[str, list[dict[str, Any]]] = {}
-        for relation in structured_payload.get("relations") or []:
-            relations_by_cause.setdefault(str(relation.get("cause_id") or ""), []).append(relation)
-
-        for cause_id, cause in causes_by_id.items():
-            related_relations = relations_by_cause.get(cause_id, [])
-            cause_origin = cause.get("origin") or {}
-            cause_line = int(cause_origin.get("line_number") or 0)
-            sheet_section = _sheet_section_for_line(cause_line, sheet_sections)
-            sheet_name = str((cause_origin.get("sheet") or (sheet_section or {}).get("sheet_name") or "Sheet1")).strip()
-            page_number = int(
-                (cause_origin.get("page_number") or 0)
-                or ((sheet_section or {}).get("page_number") or 1)
-            )
-            related_effects = [
-                effects_by_id.get(str(relation.get("effect_id") or ""), {})
-                for relation in related_relations
-            ]
-            effect_summaries = [
-                f"{effect.get('effect_label')} ({relation.get('marker_semantic')})"
-                for relation, effect in zip(related_relations, related_effects)
-                if effect.get("effect_label")
-            ]
-            cause_text = " ".join(
-                part
-                for part in [
-                    f"Cause {cause.get('cause_ref') or cause_id}",
-                    str(cause.get("cause_tag") or "").strip(),
-                    str(cause.get("cause_description") or "").strip(),
-                ]
-                if str(part).strip()
-            )
-            row_fact_text = cause_text
-            if effect_summaries:
-                row_fact_text += f". Related effects: {'; '.join(effect_summaries)}."
-
-            chunks.append(
-                _build_xlsx_chunk_payload(
-                    chunk_id=f"row_fact_{cause_id}",
-                    chunk_type="row_fact_chunk",
-                    heading=f"What does {cause.get('cause_ref') or cause_id} indicate?",
-                    text=row_fact_text,
-                    sheet_name=sheet_name,
-                    source_pages=[page_number],
-                    row_refs=[cause_line] if cause_line else [],
-                    entity_refs=_dedupe_preserving_order(
-                        [cause_id]
-                        + [
-                            str(effect.get("effect_id") or "")
-                            for effect in related_effects
-                            if effect.get("effect_id")
-                        ]
-                    ),
-                    relation_refs=[
-                        str(relation.get("relation_id") or "")
-                        for relation in related_relations
-                        if relation.get("relation_id")
-                    ],
-                    source_lineage=source_lineage,
-                    retrieval_hints={
-                        "keywords": _dedupe_preserving_order(
-                            [
-                                str(cause.get("cause_ref") or ""),
-                                str(cause.get("cause_tag") or ""),
-                                str(cause.get("cause_description") or ""),
-                            ]
-                            + [str(effect.get("effect_label") or "") for effect in related_effects]
-                        ),
-                        "heading_aliases": [sheet_name, str(cause.get("cause_ref") or cause_id)],
-                        "marker_semantics": _dedupe_preserving_order(
-                            [str(relation.get("marker_semantic") or "") for relation in related_relations]
-                        ),
-                    },
-                )
-            )
-
-        for relation in structured_payload.get("relations") or []:
-            relation_origin = relation.get("origin") or {}
-            relation_line = int(relation_origin.get("line_number") or 0)
-            sheet_section = _sheet_section_for_line(relation_line, sheet_sections)
-            sheet_name = str((relation_origin.get("sheet") or (sheet_section or {}).get("sheet_name") or "Sheet1")).strip()
-            page_number = int(
-                (relation_origin.get("page_number") or 0)
-                or ((sheet_section or {}).get("page_number") or 1)
-            )
-            cause = causes_by_id.get(str(relation.get("cause_id") or ""), {})
-            effect = effects_by_id.get(str(relation.get("effect_id") or ""), {})
-            cause_label = str(cause.get("cause_description") or cause.get("cause_ref") or relation.get("cause_id") or "Unknown cause")
-            effect_label = str(effect.get("effect_label") or relation.get("effect_id") or "Unknown effect")
-            marker = str(relation.get("marker") or "")
-            marker_description = str(relation.get("marker_description") or relation.get("marker_semantic") or "")
-
-            chunks.append(
-                _build_xlsx_chunk_payload(
-                    chunk_id=f"relation_edge_{relation.get('relation_id')}",
-                    chunk_type="relation_edge_chunk",
-                    heading=f"How does {cause_label} affect {effect_label}?",
-                    text=(
-                        f"Cause-effect relation on {sheet_name}: {cause_label} -> {effect_label}. "
-                        f"Marker {marker or '?'} means {marker_description}."
-                    ),
-                    sheet_name=sheet_name,
-                    source_pages=[page_number],
-                    row_refs=[relation_line] if relation_line else [],
-                    entity_refs=_dedupe_preserving_order(
-                        [str(relation.get("cause_id") or ""), str(relation.get("effect_id") or "")]
-                    ),
-                    relation_refs=[str(relation.get("relation_id") or "")],
-                    source_lineage=source_lineage,
-                    retrieval_hints={
-                        "keywords": _dedupe_preserving_order(
-                            [cause_label, effect_label, marker, marker_description, sheet_name]
-                        ),
-                        "heading_aliases": [sheet_name, effect_label],
-                        "marker_semantics": _dedupe_preserving_order(
-                            [str(relation.get("marker_semantic") or "")]
-                        ),
-                    },
-                )
-            )
-    else:
-        warnings.append(
-            "Structured relations artifact missing; XLSX retrieval output fell back to sheet-heading chunks only."
-        )
-
-    return {
-        "document_name": doc_name,
-        "source_type": "xlsx",
-        "markdown": markdown_content,
-        "chunks": chunks,
-        "skip_reformatting": True,
-        "structured_relations_artifact_path": str(
-            ((optimization_prep or {}).get("ce_structured_artifact") or {}).get("artifact_path") or ""
-        ).strip() or None,
-        "retrieval_artifact_contract": {
-            "json_first": True,
-            "authoritative_source": "structured_relations" if structured_payload else "sheet_headings_fallback",
-            "chunk_classes": ["question_heading_chunk", "row_fact_chunk", "relation_edge_chunk"],
-        },
-        "warnings": warnings,
+        "table_facts": list(chunk_lists.get("table_facts") or []),
+        "ambiguity_flags": list(chunk_lists.get("ambiguity_flags") or []),
+        "path_ref": path_metadata.get("path_ref"),
+        "parent_path_ref": path_metadata.get("parent_path_ref"),
+        "node_type": path_metadata.get("node_type"),
+        "value_type": path_metadata.get("value_type"),
+        "value_state": path_metadata.get("value_state"),
+        "path_depth": path_metadata.get("path_depth"),
     }
 
 
@@ -758,6 +979,462 @@ def _extract_xlsx_table_facts(section_markdown: str, sheet_name: str) -> list[st
         facts.append(f"Contains {data_rows} data rows")
 
     return facts
+
+
+def _dedupe_ints(values: list[Any]) -> list[int]:
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for value in values:
+        if not isinstance(value, int):
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _compact_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _truncate_text(value: Any, *, max_chars: int) -> str:
+    cleaned = _compact_text(value)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1].rstrip() + "…"
+
+
+def _extract_origin_int(entry: dict[str, Any], key: str) -> Optional[int]:
+    origin = entry.get("origin") or {}
+    value = origin.get(key)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _build_xlsx_source_citation(*, doc_name: str, sheet_name: str, page_number: int) -> str:
+    return f"[Source: {doc_name}, Sheet {sheet_name}, Page {page_number}]"
+
+
+def _build_xlsx_bounded_content(
+    *,
+    heading: str,
+    answer_lines: list[str],
+    citation: str,
+    max_chars: int = _XLSX_MAX_CHUNK_CONTENT_CHARS,
+) -> str:
+    lines = [f"## {heading}", ""]
+    lines.extend(line for line in answer_lines if str(line).strip())
+    body = "\n".join(lines).strip()
+
+    reserve = len(citation) + 2
+    if len(body) > max_chars - reserve:
+        body = body[: max(0, max_chars - reserve - 1)].rstrip() + "…"
+
+    return f"{body}\n\n{citation}".strip()
+
+
+def _get_cause_required_fields(cause: dict[str, Any]) -> dict[str, str]:
+    """Return cause required_fields with top-level key fallbacks.
+
+    Keys: device, description, pid_or_page, interlock_no, notes.
+    """
+    rf: dict[str, str] = dict(cause.get("required_fields") or {})
+    fallbacks: list[tuple[str, tuple[str, ...]]] = [
+        ("device", ("cause_device", "cause_tag")),
+        ("description", ("cause_description",)),
+        ("pid_or_page", ("cause_pid_or_page",)),
+        ("interlock_no", ("cause_interlock_no",)),
+        ("notes", ("cause_notes",)),
+    ]
+    for key, tops in fallbacks:
+        if not rf.get(key):
+            for top in tops:
+                v = _compact_text(cause.get(top))
+                if v:
+                    rf[key] = v
+                    break
+    return rf
+
+
+def _get_effect_required_fields(effect: dict[str, Any]) -> dict[str, str]:
+    """Return effect required_fields with top-level key fallbacks.
+
+    Keys: description, pid_or_page, interacting_device, control_device, device_or_equip.
+    """
+    rf: dict[str, str] = dict(effect.get("required_fields") or {})
+    fallbacks: list[tuple[str, tuple[str, ...]]] = [
+        ("description", ("effect_description", "effect_label")),
+        ("pid_or_page", ("effect_pid_or_page",)),
+        ("interacting_device", ("effect_interacting_device",)),
+        ("control_device", ("effect_control_device",)),
+        ("device_or_equip", ("effect_device_or_equip",)),
+    ]
+    for key, tops in fallbacks:
+        if not rf.get(key):
+            for top in tops:
+                v = _compact_text(effect.get(top))
+                if v:
+                    rf[key] = v
+                    break
+    return rf
+
+
+def _build_xlsx_relation_optimized_output(
+    *,
+    doc_name: str,
+    markdown_content: str,
+    optimization_prep: Optional[dict[str, Any]],
+    validation_data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build XLSX optimized output from CE relations using per-question chunk granularity."""
+    ce_relations = ((optimization_prep or {}).get("ce_relations") or {})
+    if not isinstance(ce_relations, dict):
+        return None
+
+    causes = [entry for entry in (ce_relations.get("causes") or []) if isinstance(entry, dict)]
+    effects = [entry for entry in (ce_relations.get("effects") or []) if isinstance(entry, dict)]
+    relations = [entry for entry in (ce_relations.get("relations") or []) if isinstance(entry, dict)]
+    if not any((causes, effects, relations)):
+        return None
+
+    sheet_sections = _parse_xlsx_sheet_sections(markdown_content)
+    sheet_lookup = _build_xlsx_sheet_lookup(
+        optimization_prep=optimization_prep,
+        sheet_sections=sheet_sections,
+    )
+    causes_by_sheet = _group_xlsx_entries_by_sheet(causes)
+    effects_by_sheet = _group_xlsx_entries_by_sheet(effects)
+    relations_by_sheet = _group_xlsx_entries_by_sheet(relations)
+
+    all_sheet_keys = sorted(
+        {
+            *sheet_lookup.keys(),
+            *causes_by_sheet.keys(),
+            *effects_by_sheet.keys(),
+            *relations_by_sheet.keys(),
+        }
+    )
+
+    source_lineage = dict(ce_relations.get("source_lineage") or {})
+    optimized_chunks: list[dict[str, Any]] = []
+    chunk_index = 1
+
+    for sheet_key in all_sheet_keys:
+        sheet_info = sheet_lookup.get(sheet_key) or {}
+        sheet_name = _compact_text(sheet_info.get("sheet_name")) or sheet_key or "Sheet"
+        sheet_page = int(sheet_info.get("page_number") or 1)
+
+        sheet_causes = sorted(causes_by_sheet.get(sheet_key, []), key=_stable_cause_sort_key)
+        sheet_effects = sorted(
+            effects_by_sheet.get(sheet_key, []),
+            key=lambda item: (
+                int((item.get("origin") or {}).get("column_index") or 0),
+                _compact_text(item.get("effect_id")),
+            ),
+        )
+        sheet_relations = sorted(relations_by_sheet.get(sheet_key, []), key=_stable_relation_sort_key)
+
+        effect_by_id = {
+            _compact_text(effect.get("effect_id")): effect
+            for effect in sheet_effects
+            if _compact_text(effect.get("effect_id"))
+        }
+        relations_by_cause: dict[str, list[dict[str, Any]]] = {}
+        for relation in sheet_relations:
+            cause_id = _compact_text(relation.get("cause_id"))
+            if cause_id:
+                relations_by_cause.setdefault(cause_id, []).append(relation)
+
+        for cause in sheet_causes:
+            cause_id = _compact_text(cause.get("cause_id")) or f"cause_{chunk_index:04d}"
+            cause_ref = _truncate_text(cause.get("cause_ref"), max_chars=80)
+            cause_tag = _truncate_text(cause.get("cause_tag"), max_chars=80)
+            cause_desc = _truncate_text(cause.get("cause_description"), max_chars=220)
+            cause_label = cause_tag or cause_ref or cause_id
+
+            cause_path = _compact_text(cause.get("path_ref"))
+            cause_page = _extract_origin_int(cause, "page_number") or sheet_page
+            cause_row = _extract_origin_int(cause, "line_number")
+            cause_relations = relations_by_cause.get(cause_id, [])
+
+            # Cause required fields (device, pid_or_page, interlock_no, notes).
+            c_rf = _get_cause_required_fields(cause)
+            c_device = _truncate_text(c_rf.get("device"), max_chars=80)
+            c_pid = _truncate_text(c_rf.get("pid_or_page"), max_chars=80)
+            c_interlock = _truncate_text(c_rf.get("interlock_no"), max_chars=80)
+            c_notes = _truncate_text(c_rf.get("notes"), max_chars=120)
+
+            # Compact per-effect summary (bounded to first 3 mapped relations).
+            _eff_summary_lines: list[str] = []
+            for _rel in cause_relations[:3]:
+                _eff = effect_by_id.get(_compact_text(_rel.get("effect_id")) or "", {})
+                _e_rf = _get_effect_required_fields(_eff)
+                _e_label = _truncate_text(
+                    _eff.get("effect_label") or _compact_text(_rel.get("effect_id")) or "effect", max_chars=80
+                )
+                _e_marker = _truncate_text(_rel.get("marker"), max_chars=8)
+                _e_sem = _truncate_text(
+                    str(_rel.get("marker_semantic") or "linked").replace("_", " "), max_chars=40
+                )
+                _e_pid = _truncate_text(_e_rf.get("pid_or_page"), max_chars=40)
+                _e_ctrl = _truncate_text(_e_rf.get("control_device"), max_chars=40)
+                _e_equip = _truncate_text(_e_rf.get("device_or_equip"), max_chars=40)
+                _e_parts = [f"  - Effect `{_e_label}`"]
+                if _e_marker:
+                    _e_parts.append(f"[{_e_marker}: {_e_sem}]")
+                if _e_pid:
+                    _e_parts.append(f"P&ID={_e_pid}")
+                if _e_ctrl:
+                    _e_parts.append(f"ctrl={_e_ctrl}")
+                if _e_equip:
+                    _e_parts.append(f"equip={_e_equip}")
+                _eff_summary_lines.append(" ".join(_e_parts))
+            if len(cause_relations) > 3:
+                _eff_summary_lines.append(f"  - ... and {len(cause_relations) - 3} more effect(s).")
+
+            _heading_answer_lines: list[str] = [
+                f"- Cause `{cause_id}` has {len(cause_relations)} mapped effect relation(s).",
+                f"- Reference: `{cause_ref}`" if cause_ref else "",
+                f"- Description: {cause_desc}" if cause_desc else "",
+                f"- DEVICE: {c_device}" if c_device else "",
+                f"- P&ID/Page: {c_pid}" if c_pid else "",
+                f"- INTERLOCK #: {c_interlock}" if c_interlock else "",
+                f"- NOTES: {c_notes}" if c_notes else "",
+                f"- Path: `{cause_path}`" if cause_path else "",
+            ]
+            if _eff_summary_lines:
+                _heading_answer_lines.append("- Mapped effects:")
+                _heading_answer_lines.extend(_eff_summary_lines)
+
+            heading_question = f"What does cause {cause_label} indicate on {sheet_name}?"
+            heading_content = _build_xlsx_bounded_content(
+                heading=heading_question,
+                answer_lines=_heading_answer_lines,
+                citation=_build_xlsx_source_citation(
+                    doc_name=doc_name,
+                    sheet_name=sheet_name,
+                    page_number=cause_page,
+                ),
+            )
+            optimized_chunks.append(
+                _build_xlsx_chunk_payload(
+                    chunk_id=f"question_heading_{chunk_index:04d}",
+                    chunk_type="question_heading_chunk",
+                    heading=heading_question,
+                    text=heading_content,
+                    sheet_name=sheet_name,
+                    source_pages=[cause_page],
+                    row_refs=_dedupe_ints([cause_row]),
+                    entity_refs=_dedupe_preserving_order([cause_id]),
+                    relation_refs=[],
+                    source_lineage=source_lineage,
+                    retrieval_hints={
+                        "intent": "cause_summary",
+                        "question_style": True,
+                        "source": "structured_relations",
+                    },
+                    chunk_lists={
+                        "table_facts": [
+                            _truncate_text(
+                                f"Cause {cause_label} maps to {len(cause_relations)} effect relation(s).",
+                                max_chars=_XLSX_MAX_FACT_CHARS,
+                            )
+                        ],
+                        "ambiguity_flags": [],
+                    },
+                    path_metadata=_extract_node_path_metadata(
+                        node_payload=cause,
+                        default_path_ref=cause_path or f"{sheet_name}.rows.cause",
+                        default_node_type="cause_node",
+                        default_value_sample=cause_desc or cause_tag or cause_ref,
+                    ),
+                )
+            )
+            chunk_index += 1
+
+            fact_question = f"What fact is recorded for cause {cause_label}?"
+            fact_content = _build_xlsx_bounded_content(
+                heading=fact_question,
+                answer_lines=[
+                    f"- Cause ID: `{cause_id}`",
+                    f"- Cause tag: `{cause_tag}`" if cause_tag else "",
+                    f"- Cause reference: `{cause_ref}`" if cause_ref else "",
+                    f"- Description: {cause_desc}" if cause_desc else "",
+                    f"- DEVICE: {c_device}" if c_device else "",
+                    f"- P&ID/Page: {c_pid}" if c_pid else "",
+                    f"- INTERLOCK #: {c_interlock}" if c_interlock else "",
+                    f"- NOTES: {c_notes}" if c_notes else "",
+                    f"- Path: `{cause_path}`" if cause_path else "",
+                ],
+                citation=_build_xlsx_source_citation(
+                    doc_name=doc_name,
+                    sheet_name=sheet_name,
+                    page_number=cause_page,
+                ),
+            )
+            optimized_chunks.append(
+                _build_xlsx_chunk_payload(
+                    chunk_id=f"row_fact_{chunk_index:04d}",
+                    chunk_type="row_fact_chunk",
+                    heading=fact_question,
+                    text=fact_content,
+                    sheet_name=sheet_name,
+                    source_pages=[cause_page],
+                    row_refs=_dedupe_ints([cause_row]),
+                    entity_refs=_dedupe_preserving_order([cause_id]),
+                    relation_refs=[],
+                    source_lineage=source_lineage,
+                    retrieval_hints={
+                        "intent": "cause_fact",
+                        "question_style": True,
+                        "source": "structured_relations",
+                    },
+                    chunk_lists={
+                        "table_facts": [
+                            _truncate_text(
+                                f"Cause {cause_label}: {cause_desc or cause_ref or cause_id}",
+                                max_chars=_XLSX_MAX_FACT_CHARS,
+                            )
+                        ],
+                        "ambiguity_flags": [],
+                    },
+                    path_metadata=_extract_node_path_metadata(
+                        node_payload=cause,
+                        default_path_ref=cause_path or f"{sheet_name}.rows.cause",
+                        default_node_type="cause_node",
+                        default_value_sample=cause_desc or cause_tag or cause_ref,
+                    ),
+                )
+            )
+            chunk_index += 1
+
+            for relation in cause_relations:
+                relation_id = _compact_text(relation.get("relation_id")) or f"rel_{chunk_index:04d}"
+                marker = _truncate_text(relation.get("marker"), max_chars=16)
+                marker_semantic = _truncate_text(
+                    str(relation.get("marker_semantic") or "linked").replace("_", " "),
+                    max_chars=80,
+                )
+                marker_description = _truncate_text(relation.get("marker_description"), max_chars=160)
+                relation_path = _compact_text(relation.get("path_ref"))
+                relation_page = _extract_origin_int(relation, "page_number") or cause_page
+                relation_row = _extract_origin_int(relation, "line_number")
+
+                effect = effect_by_id.get(_compact_text(relation.get("effect_id")) or "", {})
+                effect_id = _compact_text(effect.get("effect_id") or relation.get("effect_id")) or "effect"
+                effect_label = _truncate_text(effect.get("effect_label") or effect_id, max_chars=160)
+                effect_path = _compact_text(effect.get("path_ref"))
+                effect_row = _extract_origin_int(effect, "line_number")
+
+                # Effect required fields for enriched relation context.
+                e_rf = _get_effect_required_fields(effect)
+                e_desc = _truncate_text(e_rf.get("description"), max_chars=160)
+                e_pid = _truncate_text(e_rf.get("pid_or_page"), max_chars=80)
+                e_int_dev = _truncate_text(e_rf.get("interacting_device"), max_chars=80)
+                e_ctrl_dev = _truncate_text(e_rf.get("control_device"), max_chars=80)
+                e_equip = _truncate_text(e_rf.get("device_or_equip"), max_chars=80)
+
+                relation_question = f"How does {cause_label} affect {effect_label}?"
+                relation_content = _build_xlsx_bounded_content(
+                    heading=relation_question,
+                    answer_lines=[
+                        f"- Cause `{cause_id}` triggers effect `{effect_id}`.",
+                        f"- Marker: `{marker}` ({marker_semantic})." if marker else f"- Relation semantic: {marker_semantic}.",
+                        f"- Marker meaning: {marker_description}" if marker_description else "",
+                        "- **Cause context:**",
+                        f"  - DEVICE: {c_device}" if c_device else "",
+                        f"  - P&ID/Page: {c_pid}" if c_pid else "",
+                        f"  - INTERLOCK #: {c_interlock}" if c_interlock else "",
+                        f"  - NOTES: {c_notes}" if c_notes else "",
+                        "- **Effect context:**",
+                        f"  - Description: {e_desc}" if e_desc else "",
+                        f"  - P&ID/Page: {e_pid}" if e_pid else "",
+                        f"  - Interacting device: {e_int_dev}" if e_int_dev else "",
+                        f"  - Control device: {e_ctrl_dev}" if e_ctrl_dev else "",
+                        f"  - Device or equip: {e_equip}" if e_equip else "",
+                        f"- Cause path: `{cause_path}`" if cause_path else "",
+                        f"- Effect path: `{effect_path}`" if effect_path else "",
+                        f"- Relation path: `{relation_path}`" if relation_path else "",
+                    ],
+                    citation=_build_xlsx_source_citation(
+                        doc_name=doc_name,
+                        sheet_name=sheet_name,
+                        page_number=relation_page,
+                    ),
+                )
+                optimized_chunks.append(
+                    _build_xlsx_chunk_payload(
+                        chunk_id=f"relation_edge_{relation_id}",
+                        chunk_type="relation_edge_chunk",
+                        heading=relation_question,
+                        text=relation_content,
+                        sheet_name=sheet_name,
+                        source_pages=[relation_page],
+                        row_refs=_dedupe_ints([cause_row, relation_row, effect_row]),
+                        entity_refs=_dedupe_preserving_order([cause_id, effect_id]),
+                        relation_refs=_dedupe_preserving_order([relation_id]),
+                        source_lineage=source_lineage,
+                        retrieval_hints={
+                            "intent": "cause_effect_relation",
+                            "question_style": True,
+                            "marker": marker,
+                            "marker_semantic": marker_semantic,
+                            "source": "structured_relations",
+                        },
+                        chunk_lists={
+                            "table_facts": [
+                                _truncate_text(
+                                    f"{cause_label} {marker or ''} {effect_label}".strip(),
+                                    max_chars=_XLSX_MAX_FACT_CHARS,
+                                ),
+                                *(
+                                    [_truncate_text(f"P&ID {c_pid}: {cause_label}", max_chars=_XLSX_MAX_FACT_CHARS)]
+                                    if c_pid else []
+                                ),
+                                *(
+                                    [_truncate_text(f"Interlock {c_interlock}: {cause_label}", max_chars=_XLSX_MAX_FACT_CHARS)]
+                                    if c_interlock else []
+                                ),
+                            ],
+                            "ambiguity_flags": [],
+                        },
+                        path_metadata=_extract_node_path_metadata(
+                            node_payload=relation,
+                            default_path_ref=relation_path or f"{sheet_name}.rows.relations",
+                            default_node_type="relation_node",
+                            default_value_sample=marker or marker_semantic,
+                        ),
+                    )
+                )
+                chunk_index += 1
+
+    if not optimized_chunks:
+        return None
+
+    markdown_sections = [f"# {doc_name}"]
+    for chunk in optimized_chunks:
+        section = str(chunk.get("content") or "").strip()
+        if section:
+            markdown_sections.append(section)
+
+    return {
+        "document_name": doc_name,
+        "source_type": "xlsx",
+        "input_contract": {
+            "primary_source": "optimization_prep",
+            "document_name": doc_name,
+        },
+        "retrieval_artifact_contract": {
+            "json_first": True,
+            "authoritative_source": "structured_relations",
+            "chunk_classes": ["question_heading_chunk", "row_fact_chunk", "relation_edge_chunk"],
+        },
+        "chunks": optimized_chunks,
+        "markdown": "\n\n".join(markdown_sections).strip() + "\n",
+        "validation_summary": dict(validation_data.get("metadata") or {}),
+    }
 
 
 def _build_xlsx_rag_chunks(
@@ -817,6 +1494,19 @@ def _build_xlsx_rag_chunks(
         chunk_index += 1
 
     return chunks
+
+
+def _inject_ce_relations_into_optimization_prep(
+    optimization_prep: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Load and attach CE relations payload for downstream Stage 10 prompt context."""
+    if not optimization_prep:
+        return optimization_prep
+
+    ce_relations = _load_xlsx_structured_relations_artifact(optimization_prep)
+    if ce_relations:
+        optimization_prep["ce_relations"] = ce_relations
+    return optimization_prep
 
 
 def _load_json_file(path: Path) -> dict[str, Any]:
@@ -977,6 +1667,121 @@ def _should_flush_segment(
     return exceeds_page_budget or exceeds_char_budget or natural_heading_break
 
 
+_XLSX_CE_CAUSES_PER_SEGMENT = 6
+_XLSX_CE_MAX_SEGMENT_CHARS = 7_500
+
+_CAUSE_SECTION_BOUNDARY_RE = re.compile(r"\n### Cause and effect relationships\n")
+_CAUSE_ENTRY_SPLIT_RE = re.compile(r"(?=\n#### Cause `cause_)")
+_CAUSE_TAG_RE = re.compile(r"#### Cause `cause_\d+` — (.+?)[\n\r]")
+
+
+def _extract_cause_tag_from_section(cause_md: str) -> str:
+    m = _CAUSE_TAG_RE.search(cause_md)
+    return m.group(1).strip() if m else ""
+
+
+def _split_xlsx_page_by_causes(
+    page: dict[str, Any],
+    segment_index_start: int,
+    causes_per_segment: int = _XLSX_CE_CAUSES_PER_SEGMENT,
+    max_segment_chars: int = _XLSX_CE_MAX_SEGMENT_CHARS,
+) -> list[dict[str, Any]] | None:
+    """Split a large XLSX C&E page into cause-batched segments.
+
+    Returns None when the page has no cause-section boundary (no splitting needed).
+    Each returned segment contains the sheet header plus a batch of cause entries.
+    """
+    markdown = str(page.get("authoritative_markdown") or "")
+    page_number = int(page.get("page_number") or 0)
+
+    ce_match = _CAUSE_SECTION_BOUNDARY_RE.search(markdown)
+    if not ce_match:
+        return None
+
+    header_md = markdown[: ce_match.start()]
+    ce_section_header = "\n### Cause and effect relationships\n"
+    causes_text = markdown[ce_match.end():]
+
+    raw_parts = _CAUSE_ENTRY_SPLIT_RE.split(causes_text)
+    cause_sections = [p for p in raw_parts if _CAUSE_TAG_RE.search(p)]
+
+    if not cause_sections:
+        return None
+
+    batches: list[list[str]] = []
+    current_batch: list[str] = []
+    current_chars = 0
+    for cause_md in cause_sections:
+        cause_len = len(cause_md)
+        if current_batch and (
+            len(current_batch) >= causes_per_segment
+            or current_chars + cause_len > max_segment_chars
+        ):
+            batches.append(current_batch)
+            current_batch = []
+            current_chars = 0
+        current_batch.append(cause_md)
+        current_chars += cause_len
+    if current_batch:
+        batches.append(current_batch)
+
+    heading_candidates = page.get("heading_candidates") or []
+    sheet_title = str(heading_candidates[0]).strip() if heading_candidates else f"Sheet {page_number}"
+
+    segments: list[dict[str, Any]] = []
+    for batch_idx, batch in enumerate(batches):
+        batch_md = header_md + ce_section_header + "".join(batch)
+        tags = [_extract_cause_tag_from_section(c) for c in batch]
+        tags = [t for t in tags if t]
+        first_num = batch_idx * causes_per_segment + 1
+        last_num = first_num + len(batch) - 1
+        title = f"{sheet_title} (causes {first_num}\u2013{last_num})"
+        seg_index = segment_index_start + batch_idx
+        segments.append({
+            "segment_id": f"segment_{seg_index:03d}",
+            "title": title,
+            "page_numbers": [page_number],
+            "page_range": {"start": page_number, "end": page_number},
+            "heading_candidates": tags if tags else [title],
+            "table_facts": list(page.get("table_facts") or []),
+            "ambiguity_flags": list(page.get("ambiguity_flags") or []),
+            "citations": list(page.get("citations") or []),
+            "reviewer_notes": list(page.get("reviewer_notes") or []),
+            "pages": [page],
+            "authoritative_markdown": batch_md,
+            "skip_reformatting": False,
+        })
+
+    return segments
+
+
+def _build_xlsx_optimization_segments(
+    structured_pages: list[dict[str, Any]],
+    causes_per_segment: int = _XLSX_CE_CAUSES_PER_SEGMENT,
+    max_segment_chars: int = _XLSX_CE_MAX_SEGMENT_CHARS,
+) -> list[dict[str, Any]]:
+    """Build XLSX-specific optimization segments.
+
+    Each Excel sheet becomes one segment. Sheets with large C&E cause sections are
+    further split into per-cause-batch sub-segments so the LLM receives a bounded
+    number of causes and can produce per-cause Q/A chunks.
+    """
+    segments: list[dict[str, Any]] = []
+    for page in structured_pages:
+        seg_index_start = len(segments) + 1
+        cause_segs = _split_xlsx_page_by_causes(
+            page=page,
+            segment_index_start=seg_index_start,
+            causes_per_segment=causes_per_segment,
+            max_segment_chars=max_segment_chars,
+        )
+        if cause_segs:
+            segments.extend(cause_segs)
+        else:
+            segments.append(_build_segment_payload([page], seg_index_start, "xlsx"))
+    return segments
+
+
 def _build_optimization_segments(
     structured_pages: list[dict[str, Any]],
     *,
@@ -991,6 +1796,8 @@ def _build_optimization_segments(
     single request. These segments keep the model input bounded while still preserving
     page-local provenance, tables, figures, and ambiguity flags.
     """
+    if source_type == "xlsx":
+        return _build_xlsx_optimization_segments(structured_pages)
 
     segments: list[dict[str, Any]] = []
     current_pages: list[dict[str, Any]] = []
@@ -1291,6 +2098,177 @@ def _has_structurally_valid_optimized_output(result: dict[str, Any]) -> bool:
     return isinstance(markdown_content, str) and bool(markdown_content.strip())
 
 
+_XLSX_USER_VISIBLE_INTERNAL_REF_PREFIXES: tuple[str, ...] = (
+    "path",
+    "cause path",
+    "effect path",
+    "relation path",
+    "column",
+    "column index",
+    "row",
+    "row ref",
+    "line",
+    "line number",
+)
+
+
+def _is_xlsx_internal_reference_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped.startswith("-"):
+        return False
+    label = stripped[1:].strip().lower()
+    return any(label.startswith(prefix) for prefix in _XLSX_USER_VISIBLE_INTERNAL_REF_PREFIXES)
+
+
+def _sanitize_xlsx_user_visible_markdown(text: Any) -> str:
+    """Remove internal lineage/path lines from user-visible markdown content.
+
+    Internal references remain available via chunk metadata fields; only display text
+    is cleaned so users see meaningful Q/A content.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+
+    cleaned_lines: list[str] = []
+    for line in raw.splitlines():
+        if _is_xlsx_internal_reference_line(line):
+            continue
+        if "column:" in line.lower() and "path" in line.lower():
+            continue
+        cleaned_lines.append(line)
+
+    compacted: list[str] = []
+    blank_run = 0
+    for line in cleaned_lines:
+        if line.strip():
+            blank_run = 0
+            compacted.append(line)
+            continue
+        blank_run += 1
+        if blank_run <= 2:
+            compacted.append(line)
+
+    return "\n".join(compacted).strip()
+
+
+def _build_ce_id_label_map(optimization_prep: Optional[dict[str, Any]]) -> dict[str, str]:
+    """Build a mapping from cause_### / effect_### IDs to human-readable labels.
+
+    Priority:
+    - cause: cause_tag  → cause_description  → cause_id (unchanged)
+    - effect: effect_label → required_fields.description → effect_id (unchanged)
+    """
+    mapping: dict[str, str] = {}
+    ce_relations = ((optimization_prep or {}).get("ce_relations") or {})
+    if not isinstance(ce_relations, dict):
+        return mapping
+
+    for cause in (ce_relations.get("causes") or []):
+        if not isinstance(cause, dict):
+            continue
+        cause_id = str(cause.get("cause_id") or "").strip()
+        if not cause_id:
+            continue
+        label = (
+            str(cause.get("cause_tag") or "").strip()
+            or str(cause.get("cause_description") or "").strip()
+        )
+        if label:
+            mapping[cause_id] = label
+
+    for effect in (ce_relations.get("effects") or []):
+        if not isinstance(effect, dict):
+            continue
+        effect_id = str(effect.get("effect_id") or "").strip()
+        if not effect_id:
+            continue
+        label = str(effect.get("effect_label") or "").strip()
+        if not label:
+            rf = effect.get("required_fields")
+            if isinstance(rf, dict):
+                label = str(rf.get("description") or "").strip()
+        if label:
+            mapping[effect_id] = label
+
+    return mapping
+
+
+def _apply_ce_id_substitutions(text: str, id_label_map: dict[str, str]) -> str:
+    """Replace cause_### / effect_### tokens in *text* with human-readable labels.
+
+    Uses word-boundary anchors so only standalone identifiers are replaced (avoids
+    partial-word corruption).  The map is sorted longest-key-first so more specific
+    IDs are substituted before shorter prefix matches.
+    """
+    if not id_label_map or not text:
+        return text
+    for token, label in sorted(id_label_map.items(), key=lambda kv: -len(kv[0])):
+        text = re.sub(r"\b" + re.escape(token) + r"\b", label, text)
+    return text
+
+
+def _sanitize_xlsx_chunk_content_fields(
+    chunks: Any,
+    id_label_map: Optional[dict[str, str]] = None,
+) -> None:
+    if not isinstance(chunks, list):
+        return
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        for content_key in _CHUNK_CONTENT_KEYS:
+            if content_key in chunk:
+                sanitized = _sanitize_xlsx_user_visible_markdown(chunk.get(content_key))
+                if id_label_map:
+                    sanitized = _apply_ce_id_substitutions(sanitized, id_label_map)
+                chunk[content_key] = sanitized
+        # Also sanitize the heading field which is user-visible but not in _CHUNK_CONTENT_KEYS
+        if id_label_map and "heading" in chunk:
+            chunk["heading"] = _apply_ce_id_substitutions(
+                str(chunk.get("heading") or ""), id_label_map
+            )
+
+
+def _ensure_xlsx_output_contract(result: dict[str, Any], doc_name: str) -> None:
+    result["document_name"] = str(result.get("document_name") or doc_name)
+    result["source_type"] = "xlsx"
+    result.setdefault("input_contract", {})
+    if isinstance(result.get("input_contract"), dict):
+        result["input_contract"].setdefault("primary_source", "optimization_prep")
+        result["input_contract"].setdefault("document_name", doc_name)
+    result.setdefault(
+        "retrieval_artifact_contract",
+        {
+            "json_first": True,
+            "authoritative_source": "llm_reformatter_with_structured_context",
+            "chunk_classes": ["llm_chunk"],
+        },
+    )
+
+
+def _sanitize_xlsx_llm_output(
+    result: dict[str, Any],
+    doc_name: str,
+    optimization_prep: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Sanitize user-visible XLSX chunk text while preserving internal metadata.
+
+    In addition to stripping internal path/lineage lines, replaces raw cause_###
+    and effect_### tokens in user-visible fields with human-friendly labels derived
+    from the CE relations in *optimization_prep*.
+    """
+    id_label_map = _build_ce_id_label_map(optimization_prep)
+    _sanitize_xlsx_chunk_content_fields(result.get("chunks"), id_label_map=id_label_map)
+    if isinstance(result.get("markdown"), str):
+        sanitized_md = _sanitize_xlsx_user_visible_markdown(result.get("markdown"))
+        if id_label_map:
+            sanitized_md = _apply_ce_id_substitutions(sanitized_md, id_label_map)
+        result["markdown"] = sanitized_md + "\n"
+    _ensure_xlsx_output_contract(result, doc_name)
+    return result
+
+
 def _prepare_reformat_content(
     optimization_prep_path: Optional[str],
     markdown_path: Optional[str],
@@ -1312,6 +2290,8 @@ def _prepare_reformat_content(
         raise ValueError("No authoritative reviewed markdown available for optimization")
 
     return optimization_prep, markdown_content
+
+
 
 
 def _build_qa_input_dicts(
@@ -2216,6 +3196,12 @@ class HITLPipeline:
                     step="Stage 4: Building Review Workspace")
 
         pages = extract_pages_from_validation(validation_report, doc_name)
+        if resolved_source_type == "xlsx":
+            _apply_xlsx_review_markdown_overrides(
+                pages,
+                markdown_path=markdown_path,
+                ce_relations=_load_json_artifact(ce_artifact_path),
+            )
         sections = extract_sections_from_markdown(markdown_content, doc_name)
 
         review_workspace = self.work_dir / f"{doc_name}_review"
@@ -2378,26 +3364,24 @@ class HITLPipeline:
         This is Stage 10 - final AI-powered optimization
         """
         try:
-            # Import reformatter
-            from ..cli.text_reformatter import reformat_with_qwen, save_output
             optimization_prep, markdown_content = _prepare_reformat_content(
                 optimization_prep_path, markdown_path
             )
+            optimization_prep = _inject_ce_relations_into_optimization_prep(optimization_prep)
 
             # Load validation report
             with open(validation_report_path, 'r') as f:
                 validation_data = json.load(f)
 
-            # xlsx sources must not be sent through the LLM reformatter — it can corrupt
-            # the matrix structure.  Check both the source file extension and the segment
-            # flag set at optimization-prep build time.
             resolved_source_type = _resolve_source_type(
                 source_path=pdf_path,
-                explicit_source_type=source_type
-                or str((optimization_prep or {}).get("source_type") or "").strip()
-                or None,
+                explicit_source_type=source_type or (optimization_prep or {}).get("source_type"),
             )
-            # Run reformatting
+
+            # Run LLM reformatting for both PDF and XLSX. XLSX keeps internal lineage
+            # in chunk metadata while user-visible markdown is sanitized.
+            from ..cli.text_reformatter import reformat_with_qwen, save_output
+
             result = reformat_with_qwen(
                 markdown_content,
                 validation_data,
@@ -2405,6 +3389,8 @@ class HITLPipeline:
                 doc_name,
                 optimization_prep=optimization_prep,
             )
+            if resolved_source_type == "xlsx" and isinstance(result, dict):
+                result = _sanitize_xlsx_llm_output(result, doc_name, optimization_prep=optimization_prep)
             
             if not result:
                 logger.error("Reformatting returned no result")
@@ -2518,11 +3504,11 @@ def _handle_status_action(args, pipeline: HITLPipeline) -> int:
         return 1
 
 
-def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None]:
+def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None, str | None]:
     doc_name = args.doc_name or (Path(args.pdf).stem if args.pdf else None)
     if not doc_name:
         logger.error("[ERROR] --doc-name or --pdf required for reformat action")
-        return None, None, None
+        return None, None, None, None
 
     workspace = Path(args.workspace)
     validation_path = workspace / f"{doc_name}_validation.json"
@@ -2534,13 +3520,18 @@ def _resolve_reformat_inputs(args) -> tuple[str | None, str | None, str | None]:
             markdown_path = str(version_path)
         else:
             logger.error("[ERROR] --markdown required and could not auto-detect")
-            return None, None, None
+            return None, None, None, None
 
-    return doc_name, str(validation_path), markdown_path
+    optimization_prep_path = None
+    auto_prep_path = workspace / f"{doc_name}_optimization_prep.json"
+    if auto_prep_path.exists():
+        optimization_prep_path = str(auto_prep_path)
+
+    return doc_name, str(validation_path), markdown_path, optimization_prep_path
 
 
 def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
-    doc_name, validation_path, markdown_path = _resolve_reformat_inputs(args)
+    doc_name, validation_path, markdown_path, optimization_prep_path = _resolve_reformat_inputs(args)
     if not doc_name or not validation_path or not markdown_path:
         return 1
 
@@ -2553,12 +3544,15 @@ def _handle_reformat_action(args, pipeline: HITLPipeline) -> int:
         logger.info(f"   File: {args.pdf}")
         logger.info(f"   Markdown: {markdown_path}")
         logger.info(f"   Validation: {validation_path}")
+        if optimization_prep_path:
+            logger.info(f"   Optimization prep: {optimization_prep_path}")
 
         result = pipeline.run_post_approval_reformatting(
             doc_name,
             args.pdf,
             validation_path,
             markdown_path=markdown_path,
+            optimization_prep_path=optimization_prep_path,
             source_type=args.source_type,
         )
 
