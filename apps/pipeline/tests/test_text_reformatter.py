@@ -4,6 +4,7 @@ import queue
 from pathlib import Path
 
 from pipeline.src.cli.text_reformatter import (
+    _build_segment_prompt_context,
     DEFAULT_REFORMATTER_PROMPT,
     _build_generation_segments,
     _coerce_chunk,
@@ -179,3 +180,57 @@ def test_coerce_chunk_backfills_content_from_optimization_prep_page_markdown():
     assert coerced["source_pages"] == [1]
     assert "LNG is stored at cryogenic temperature." in coerced["content"]
     assert "[Source: Sample LNG Document, Page 1]" in coerced["content"]
+
+
+def test_build_segment_prompt_context_includes_filtered_ce_relations_for_xlsx_segment():
+    optimization_prep = {
+        "ce_relations": {
+            "schema_version": "1.0",
+            "path_notation": {"relation": "<sheet>.rows[line:<n>].effects[column:<n>]"},
+            "marker_semantics": {
+                "X": {"semantic": "active_interlock", "description": "Active cause/effect linkage."}
+            },
+            "sheets": [
+                {"sheet_name": "Area 200-1", "page_number": 3},
+                {"sheet_name": "Area 300-1", "page_number": 4},
+            ],
+            "causes": [
+                {"cause_id": "cause_001", "path_ref": "Area 200-1.rows[line:82].cause", "origin": {"sheet": "Area 200-1", "page_number": 3}},
+                {"cause_id": "cause_999", "path_ref": "Area 300-1.rows[line:90].cause", "origin": {"sheet": "Area 300-1", "page_number": 4}},
+            ],
+            "effects": [
+                {"effect_id": "effect_001", "path_ref": "Area 200-1.effects[column:7]", "origin": {"sheet": "Area 200-1", "page_number": 3}},
+                {"effect_id": "effect_999", "path_ref": "Area 300-1.effects[column:8]", "origin": {"sheet": "Area 300-1", "page_number": 4}},
+            ],
+            "relations": [
+                {"relation_id": "rel_0001", "cause_id": "cause_001", "effect_id": "effect_001", "path_ref": "Area 200-1.rows[line:82].effects[column:7]", "origin": {"sheet": "Area 200-1", "page_number": 3}},
+                {"relation_id": "rel_9999", "cause_id": "cause_999", "effect_id": "effect_999", "path_ref": "Area 300-1.rows[line:90].effects[column:8]", "origin": {"sheet": "Area 300-1", "page_number": 4}},
+            ],
+        }
+    }
+
+    context = _build_segment_prompt_context(
+        {
+            "segment_id": "segment_003",
+            "title": "Area 200-1",
+            "page_numbers": [3],
+            "pages": [
+                {
+                    "page_number": 3,
+                    "heading_candidates": ["Area 200-1", "Reviewer summary"],
+                    "text_preview": "Cause/effect review",
+                    "table_facts": [],
+                    "ambiguity_flags": [],
+                    "citations": [{"page_number": 3}],
+                }
+            ],
+        },
+        "Sample XLSX",
+        optimization_prep,
+    )
+
+    ce_context = context["ce_relations"]
+    assert ce_context["filtered_counts"] == {"sheets": 1, "causes": 1, "effects": 1, "relations": 1}
+    assert ce_context["relations"][0]["relation_id"] == "rel_0001"
+    assert ce_context["causes"][0]["cause_id"] == "cause_001"
+    assert ce_context["effects"][0]["effect_id"] == "effect_001"
