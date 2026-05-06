@@ -15,6 +15,23 @@ from ._filesystem import _find_optimized_artifact_paths, _load_optional_json
 from ._review import _extract_page_heading, _strip_embedded_html_comments
 
 
+_OPTIONAL_CHUNK_PASSTHROUGH_KEYS = (
+    "chunk_type",
+    "sheet_name",
+    "row_refs",
+    "entity_refs",
+    "relation_refs",
+    "source_lineage",
+    "retrieval_hints",
+    "path_ref",
+    "parent_path_ref",
+    "node_type",
+    "value_type",
+    "value_state",
+    "path_depth",
+)
+
+
 # ---------------------------------------------------------------------------
 # Page number extraction from chunk content
 # ---------------------------------------------------------------------------
@@ -83,13 +100,88 @@ def _extract_non_empty_string_list(values: list[object]) -> list[str]:
     ]
 
 
-def _coerce_optimized_chunk(chunk: dict, index: int) -> dict:
+def _build_ce_id_label_map(ce_payload: dict | None) -> dict[str, str]:
+    if not isinstance(ce_payload, dict):
+        return {}
+
+    mapping: dict[str, str] = {}
+
+    for cause in ce_payload.get("causes") or []:
+        if not isinstance(cause, dict):
+            continue
+        cause_id = str(cause.get("cause_id") or "").strip()
+        if not cause_id:
+            continue
+        cause_tag = str(cause.get("cause_tag") or "").strip()
+        cause_description = str(cause.get("cause_description") or "").strip()
+        replacement = cause_tag or cause_description
+        if replacement:
+            mapping[cause_id] = replacement
+
+    for effect in ce_payload.get("effects") or []:
+        if not isinstance(effect, dict):
+            continue
+        effect_id = str(effect.get("effect_id") or "").strip()
+        if not effect_id:
+            continue
+        required_fields = effect.get("required_fields") if isinstance(effect.get("required_fields"), dict) else {}
+        effect_label = str(effect.get("effect_label") or "").strip()
+        effect_description = str(required_fields.get("description") or "").strip()
+        replacement = effect_label or effect_description
+        if replacement:
+            mapping[effect_id] = replacement
+
+    return mapping
+
+
+def _load_ce_id_label_map(
+    *,
+    work_dir: Path,
+    document_name: str,
+    optimized_payload: dict,
+) -> dict[str, str]:
+    embedded_ce = optimized_payload.get("ce_relations")
+    embedded_map = _build_ce_id_label_map(embedded_ce if isinstance(embedded_ce, dict) else None)
+    if embedded_map:
+        return embedded_map
+
+    ce_candidates = [
+        work_dir / f"{document_name}_ce_relations.json",
+        work_dir / "ce_relations.json",
+    ]
+    for candidate in ce_candidates:
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        ce_payload = _load_optional_json(candidate)
+        ce_map = _build_ce_id_label_map(ce_payload)
+        if ce_map:
+            return ce_map
+
+    return {}
+
+
+def _apply_ce_id_substitutions(text: str, id_label_map: dict[str, str] | None) -> str:
+    if not text or not id_label_map:
+        return text
+
+    substituted = text
+    for token in sorted(id_label_map.keys(), key=len, reverse=True):
+        replacement = str(id_label_map.get(token) or "").strip()
+        if not replacement:
+            continue
+        substituted = re.sub(rf"\b{re.escape(token)}\b", replacement, substituted)
+    return substituted
+
+
+def _coerce_optimized_chunk(chunk: dict, index: int, id_label_map: dict[str, str] | None = None) -> dict:
     content = _extract_chunk_markdown_content(chunk)
     heading = _extract_chunk_heading(chunk, index)
+    content = _apply_ce_id_substitutions(content, id_label_map)
+    heading = _apply_ce_id_substitutions(heading, id_label_map)
     table_facts = _extract_non_empty_string_list(chunk.get("table_facts") or chunk.get("facts") or [])
     ambiguity_flags = _extract_non_empty_string_list(chunk.get("ambiguity_flags") or chunk.get("ambiguities") or [])
 
-    return {
+    normalized_chunk = {
         "id": _optimized_chunk_id(chunk, index),
         "heading": heading,
         "markdown_content": content,
@@ -97,6 +189,21 @@ def _coerce_optimized_chunk(chunk: dict, index: int) -> dict:
         "table_facts": table_facts,
         "ambiguity_flags": ambiguity_flags,
     }
+
+    for key in _OPTIONAL_CHUNK_PASSTHROUGH_KEYS:
+        if key in chunk:
+            normalized_chunk[key] = chunk.get(key)
+
+    return normalized_chunk
+
+
+def _copy_optional_chunk_fields(chunk: dict) -> dict:
+    """Copy additive optional chunk metadata fields for persistence."""
+    copied: dict = {}
+    for key in _OPTIONAL_CHUNK_PASSTHROUGH_KEYS:
+        if key in chunk:
+            copied[key] = chunk.get(key)
+    return copied
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +333,17 @@ def _build_editable_optimized_chunks(
     optimized_json_path, optimized_markdown_path = _find_optimized_artifact_paths(work_dir)
     optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
     document_name = str(optimized_payload.get("document_name") or work_dir.name).strip() or work_dir.name
+    id_label_map = _load_ce_id_label_map(
+        work_dir=work_dir,
+        document_name=document_name,
+        optimized_payload=optimized_payload,
+    )
 
     editable_chunks: list[dict] = []
     raw_chunks = optimized_payload.get("chunks") or []
     if isinstance(raw_chunks, list) and raw_chunks:
         for index, raw_chunk in enumerate(_iter_dict_chunks(raw_chunks), start=1):
-            editable_chunks.append(_coerce_optimized_chunk(raw_chunk, index))
+            editable_chunks.append(_coerce_optimized_chunk(raw_chunk, index, id_label_map=id_label_map))
 
     if not editable_chunks and markdown_content:
         _append_chunks_from_markdown_sections(
@@ -260,16 +372,17 @@ def _save_optimized_chunks(
     json_path = optimized_json_path or (work_dir / f"{document_name}_rag_optimized.json")
     markdown_path = optimized_markdown_path or (work_dir / f"{document_name}_rag_optimized.md")
 
-    persisted_chunks = [
-        {
+    persisted_chunks = []
+    for chunk in editable_chunks:
+        persisted_chunk = {
             "heading": chunk["heading"],
             "content": chunk["markdown_content"],
             "source_pages": chunk.get("source_pages") or [],
             "table_facts": chunk.get("table_facts") or [],
             "ambiguity_flags": chunk.get("ambiguity_flags") or [],
         }
-        for chunk in editable_chunks
-    ]
+        persisted_chunk.update(_copy_optional_chunk_fields(chunk))
+        persisted_chunks.append(persisted_chunk)
 
     optimized_payload = dict(optimized_payload or {})
     optimized_payload["document_name"] = document_name
@@ -286,12 +399,18 @@ def _save_optimized_chunks(
 
 def _build_publishable_chunks(work_dir: Path) -> list[dict]:
     optimized_payload, markdown_content = _load_validated_optimized_output(work_dir)
+    document_name = str(optimized_payload.get("document_name") or work_dir.name).strip() or work_dir.name
+    id_label_map = _load_ce_id_label_map(
+        work_dir=work_dir,
+        document_name=document_name,
+        optimized_payload=optimized_payload,
+    )
 
     publishable_chunks: list[dict] = []
     raw_chunks = optimized_payload.get("chunks") or []
     if isinstance(raw_chunks, list) and raw_chunks:
         for index, raw_chunk in enumerate(_iter_dict_chunks(raw_chunks), start=1):
-            normalized_chunk = _coerce_optimized_chunk(raw_chunk, index)
+            normalized_chunk = _coerce_optimized_chunk(raw_chunk, index, id_label_map=id_label_map)
             if normalized_chunk["markdown_content"]:
                 publishable_chunks.append(normalized_chunk)
 
