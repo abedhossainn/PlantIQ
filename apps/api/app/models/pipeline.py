@@ -171,6 +171,19 @@ class OptimizedChunkResponse(BaseModel):
     source_pages: List[int] = Field(default_factory=list)
     table_facts: List[str] = Field(default_factory=list)
     ambiguity_flags: List[str] = Field(default_factory=list)
+    chunk_type: Optional[str] = None
+    sheet_name: Optional[str] = None
+    row_refs: List[int] = Field(default_factory=list)
+    entity_refs: List[str] = Field(default_factory=list)
+    relation_refs: List[str] = Field(default_factory=list)
+    source_lineage: Dict[str, Any] = Field(default_factory=dict)
+    retrieval_hints: Dict[str, Any] = Field(default_factory=dict)
+    path_ref: Optional[str] = None
+    parent_path_ref: Optional[str] = None
+    node_type: Optional[str] = None
+    value_type: Optional[str] = None
+    value_state: Optional[str] = None
+    path_depth: Optional[int] = None
 
 
 class OptimizedChunkUpdate(BaseModel):
