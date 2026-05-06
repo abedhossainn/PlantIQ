@@ -420,11 +420,170 @@ def _extract_segment_pages(segment: dict[str, Any]) -> list[dict[str, Any]]:
     return [page for page in pages if isinstance(page, dict)]
 
 
-def _build_segment_prompt_context(segment: dict[str, Any], doc_name: str) -> dict[str, Any]:
+def _normalize_segment_name(value: Any) -> str:
+    """Normalize a segment/page/sheet name for CE matching."""
+    return re.sub(r"\s+", " ", str(value or "").strip()).lower()
+
+
+def _extract_segment_sheet_names(segment: dict[str, Any]) -> set[str]:
+    """Extract primary sheet names from the segment page metadata."""
+    sheet_names: set[str] = set()
+    for page in _extract_segment_pages(segment):
+        headings = page.get("heading_candidates") or []
+        if isinstance(headings, list) and headings:
+            primary_heading = _normalize_segment_name(headings[0])
+            if primary_heading:
+                sheet_names.add(primary_heading)
+
+    title_name = _normalize_segment_name(segment.get("title"))
+    if title_name and not title_name.startswith("pages "):
+        sheet_names.add(title_name)
+    return sheet_names
+
+
+def _extract_segment_page_numbers(segment: dict[str, Any]) -> set[int]:
+    """Extract unique integer page numbers from a generation segment."""
+    page_numbers = segment.get("page_numbers") or []
+    if not isinstance(page_numbers, list):
+        return set()
+    return {page_number for page_number in page_numbers if isinstance(page_number, int)}
+
+
+def _extract_origin_page_number(entry: dict[str, Any]) -> int | None:
+    """Return the origin page number from a CE entry when present."""
+    origin = entry.get("origin") or {}
+    for key in ("page_number", "page"):
+        candidate = origin.get(key)
+        if isinstance(candidate, int):
+            return candidate
+    return None
+
+
+def _entry_matches_segment_context(
+    entry: dict[str, Any],
+    *,
+    page_numbers: set[int],
+    sheet_names: set[str],
+) -> bool:
+    """Return True when a CE entry belongs to the current generation segment."""
+    origin_page = _extract_origin_page_number(entry)
+    if page_numbers and origin_page in page_numbers:
+        return True
+
+    origin = entry.get("origin") or {}
+    origin_sheet = _normalize_segment_name(origin.get("sheet") or entry.get("sheet_name"))
+    if sheet_names and origin_sheet in sheet_names:
+        return True
+
+    path_ref = _normalize_segment_name(entry.get("path_ref"))
+    return bool(sheet_names) and any(path_ref.startswith(f"{sheet_name}.") for sheet_name in sheet_names)
+
+
+def _filter_ce_entries_for_segment(
+    entries: Any,
+    *,
+    page_numbers: set[int],
+    sheet_names: set[str],
+) -> list[dict[str, Any]]:
+    """Filter CE entry lists to only the entries relevant to the current segment."""
+    if not isinstance(entries, list):
+        return []
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and _entry_matches_segment_context(entry, page_numbers=page_numbers, sheet_names=sheet_names)
+    ]
+
+
+def _build_segment_ce_relations_context(
+    segment: dict[str, Any],
+    optimization_prep: dict | None,
+) -> dict[str, Any] | None:
+    """Build bounded CE context for one segment using page/sheet-local filtering."""
+    ce_relations = (optimization_prep or {}).get("ce_relations")
+    if not isinstance(ce_relations, dict) or not ce_relations:
+        return None
+
+    page_numbers = _extract_segment_page_numbers(segment)
+    sheet_names = _extract_segment_sheet_names(segment)
+
+    filtered_relations = _filter_ce_entries_for_segment(
+        ce_relations.get("relations"),
+        page_numbers=page_numbers,
+        sheet_names=sheet_names,
+    )
+    relation_cause_ids = {
+        str(relation.get("cause_id") or "").strip()
+        for relation in filtered_relations
+        if str(relation.get("cause_id") or "").strip()
+    }
+    relation_effect_ids = {
+        str(relation.get("effect_id") or "").strip()
+        for relation in filtered_relations
+        if str(relation.get("effect_id") or "").strip()
+    }
+
+    filtered_causes = [
+        cause
+        for cause in _filter_ce_entries_for_segment(
+            ce_relations.get("causes"),
+            page_numbers=page_numbers,
+            sheet_names=sheet_names,
+        )
+        if str(cause.get("cause_id") or "").strip() in relation_cause_ids
+        or not relation_cause_ids
+    ]
+    filtered_effects = [
+        effect
+        for effect in _filter_ce_entries_for_segment(
+            ce_relations.get("effects"),
+            page_numbers=page_numbers,
+            sheet_names=sheet_names,
+        )
+        if str(effect.get("effect_id") or "").strip() in relation_effect_ids
+        or not relation_effect_ids
+    ]
+    filtered_sheets = _filter_ce_entries_for_segment(
+        ce_relations.get("sheets"),
+        page_numbers=page_numbers,
+        sheet_names=sheet_names,
+    )
+
+    if not any((filtered_sheets, filtered_causes, filtered_effects, filtered_relations)):
+        return None
+
+    return {
+        "schema_version": ce_relations.get("schema_version"),
+        "segment_filter": {
+            "page_numbers": sorted(page_numbers),
+            "sheet_names": sorted(sheet_names),
+        },
+        "path_notation": ce_relations.get("path_notation") or {},
+        "marker_semantics": ce_relations.get("marker_semantics") or {},
+        "sheets": filtered_sheets,
+        "causes": filtered_causes,
+        "effects": filtered_effects,
+        "relations": filtered_relations,
+        "warnings": ce_relations.get("warnings") or [],
+        "filtered_counts": {
+            "sheets": len(filtered_sheets),
+            "causes": len(filtered_causes),
+            "effects": len(filtered_effects),
+            "relations": len(filtered_relations),
+        },
+    }
+
+
+def _build_segment_prompt_context(
+    segment: dict[str, Any],
+    doc_name: str,
+    optimization_prep: dict | None = None,
+) -> dict[str, Any]:
     segment_pages = _extract_segment_pages(segment)
     page_outline = [_build_page_outline_entry(page) for page in segment_pages]
 
-    return {
+    prompt_context = {
         "document_name": doc_name,
         "segment_id": segment.get("segment_id") or _DEFAULT_SEGMENT_ID,
         "segment_title": segment.get("title") or "Document Segment",
@@ -435,6 +594,10 @@ def _build_segment_prompt_context(segment: dict[str, Any], doc_name: str) -> dic
         "citations": segment.get("citations") or [],
         "page_outline": page_outline,
     }
+    ce_context = _build_segment_ce_relations_context(segment, optimization_prep)
+    if ce_context:
+        prompt_context["ce_relations"] = ce_context
+    return prompt_context
 
 
 def _build_reformatter_messages(
@@ -442,13 +605,18 @@ def _build_reformatter_messages(
     doc_name: str,
     system_prompt: str,
     segment: dict[str, Any],
+    optimization_prep: dict | None = None,
     validation_payload: str,
     total_segments: int,
     segment_index: int,
 ) -> list[dict[str, str]]:
     segment_title = str(segment.get("title") or f"Segment {segment_index}")
     segment_markdown = str(segment.get("authoritative_markdown") or "")
-    segment_context = json.dumps(_build_segment_prompt_context(segment, doc_name), indent=2, ensure_ascii=False)
+    segment_context = json.dumps(
+        _build_segment_prompt_context(segment, doc_name, optimization_prep),
+        indent=2,
+        ensure_ascii=False,
+    )
 
     user_message = f"""Apply RAG optimization guidelines to this markdown segment.
 
@@ -1109,6 +1277,7 @@ def _generate_segment_payloads(
     doc_name: str,
     validation_payload: str,
     trimmed_validation: dict,
+    trimmed_prep: dict | None = None,
     generation_segments: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Generate and parse one response payload per optimization segment."""
@@ -1131,6 +1300,7 @@ def _generate_segment_payloads(
             doc_name=doc_name,
             system_prompt=system_prompt,
             segment=segment,
+            optimization_prep=trimmed_prep,
             validation_payload=validation_payload,
             total_segments=total_segments,
             segment_index=segment_index,
@@ -1204,6 +1374,7 @@ def _build_generation_response(
         doc_name=doc_name,
         validation_payload=validation_payload,
         trimmed_validation=trimmed_validation,
+        trimmed_prep=trimmed_prep,
         generation_segments=generation_segments,
     )
     merged_payload = _merge_segment_payloads(
