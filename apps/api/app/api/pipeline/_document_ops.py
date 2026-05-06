@@ -445,11 +445,17 @@ async def _execute_optimization_stage(
 
         _load_validated_optimized_output(work_root)
 
-        duration_seconds = int(time.monotonic() - started_monotonic)
+        duration_seconds_exact = max(time.monotonic() - started_monotonic, 0.0)
+        if duration_seconds_exact < 1.0:
+            duration_label = f"<1s ({int(round(duration_seconds_exact * 1000))}ms)"
+        else:
+            duration_label = f"{duration_seconds_exact:.1f}s"
+
+        optimization_mode = "deterministic-xlsx" if Path(pdf_path).suffix.lower() in {".xlsx", ".xls"} else "llm-pdf"
         _emit_optimization_log(
             document_id,
             "INFO",
-            f"Optimization completed in {duration_seconds}s",
+            f"Optimization completed in {duration_label} (mode={optimization_mode})",
         )
 
         _emit_optimization_log(document_id, "INFO", "Stage 4: Artifact Export")
