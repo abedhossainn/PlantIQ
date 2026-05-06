@@ -86,6 +86,8 @@ As of **April 2026 (Beta checkpoint)**, the project is focused on two core capab
 - **XLSX/XLS (`.xlsx`, `.xls`)**: routed to a dedicated spreadsheet path.
 - **Optimized review behavior (XLSX):** spreadsheet documents may skip the editable optimized-review UI and route directly to QA gates.
 - **Retrieval artifacts (XLSX):** JSON-first structured relation artifacts are authoritative for retrieval; markdown remains review support.
+- **Stage 10 (LLM reformatter) bypass for XLSX:** XLSX sources are hard-routed to JSON-first relation output in Stage 10 and do not invoke the LLM text reformatter. The LLM reformatter continues to run for PDF sources unchanged.
+- **Additive chunk metadata (XLSX):** Optimized XLSX chunks carry optional lineage/path fields (`path_ref`, `parent_path_ref`, `node_type`, `value_type`, `value_state`, `path_depth`). These fields are additive and backward-compatible; existing consumers that do not read them are unaffected.
 - **Feature flags / rollback:** XLSX behavior is additive and can be disabled with XLSX/CE flags without changing PDF behavior.
 
 ### Chat runtime at a glance
@@ -208,7 +210,8 @@ Stage 10 text reformatting (`apps/pipeline/src/cli/text_reformatter.py`) should 
 
 - The backend container is the runtime source of truth for Stage 10 model loading.
 - The configured local checkpoint (`models/Qwen3.5-4B`, `model_type: qwen3_5`) requires a Transformers runtime that includes native Qwen3.5 classes.
-- If you run Stage 10 outside the container for local debugging, align your host environment to:
+- **XLSX sources bypass the LLM reformatter entirely in Stage 10.** `run_post_approval_reformatting()` detects `source_type=xlsx` and routes directly to JSON-first structured relation output. The LLM model is not loaded for XLSX documents.
+- If you run Stage 10 outside the container for local debugging on a **PDF** document, align your host environment to:
    - `transformers>=5.0.0,<6.0.0`
 
 Quick runtime verification:
@@ -276,6 +279,7 @@ If host and container are misaligned, Stage 10 now fails fast with an explicit r
 3. **Final enterprise hardening** remains in progress (governance/runtime hardening tasks).
 4. **Code-quality hardening** is active via remediation waves across backend/pipeline/frontend.
 5. **XLSX optimized-review E2E coverage gap:** focused route/flag/artifact tests are passing, but a full API+browser E2E for XLSX optimized-review redirect to QA gates is still pending.
+6. **XLSX nested JSON optimization integration test gap (QA: GO with caution):** the nested JSON question-chunk optimization workstream passed 59 targeted unit/integration tests and received a QA verdict of **GO with caution**. A dedicated end-to-end integration test covering the full ingest → optimize → optimized-chunks/QA path for XLSX nested JSON inputs is not yet present and should be added before wider rollout.
 
 ---
 
@@ -286,4 +290,5 @@ If host and container are misaligned, Stage 10 now fails fast with an explicit r
 3. Finish outstanding code-quality remediation waves (Sonar Waves 2–4) and re-verify regressions.
 4. Finalize Beta evidence packaging and readiness for final checkpoint signoff.
 5. Add/close XLSX end-to-end coverage for optimized-review skip and QA-gates path.
+6. Add dedicated E2E integration test for XLSX nested JSON optimization (ingest → optimize → optimized-chunks/QA) to close the outstanding QA caution flag.
 
