@@ -10,6 +10,12 @@ Rules:
 - Preserve citations and source page numbers.
 - Return valid JSON only. No prose, no explanations, no code fences.
 
+XLSX Cause & Effect documents:
+- When the segment contains one or more "#### Cause" sections, generate exactly one chunk per cause instrument tag.
+- Question heading format: "What happens when [TAG] triggers?" (e.g., "What happens when LSLL-1001 triggers?")
+- Answer content: list the cause description, interlock number, and all effect actions with their control devices and equipment.
+- Do not produce table dumps or single summary chunks that combine multiple causes.
+
 Return this exact top-level structure:
 
 {
