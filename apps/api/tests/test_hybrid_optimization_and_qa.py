@@ -55,6 +55,13 @@ def test_approve_for_optimization_generates_prep_and_triggers_optimization(
     }
     _write_json(work_dir / "sample_document_validation.json", validation_payload)
     _write_json(
+        work_dir / "sample_document_manifest.json",
+        {
+            "document_name": "sample_document",
+            "pdf_path": str(tmp_path / "sample_document.pdf"),
+        },
+    )
+    _write_json(
         work_dir / "sample_document_tables_figures.json",
         {
             "tables": [
@@ -227,6 +234,13 @@ def test_approve_for_optimization_allows_retry_from_failed(
                     },
                 }
             ],
+        },
+    )
+    _write_json(
+        work_dir / "sample_document_manifest.json",
+        {
+            "document_name": "sample_document",
+            "pdf_path": str(tmp_path / "sample_document.pdf"),
         },
     )
     _write_json(
@@ -614,6 +628,137 @@ def test_optimization_logs_return_done_when_artifacts_show_completed_but_status_
     assert response.status_code == 200
     assert 'event: done' in response.text
     assert '"status": "optimization-complete"' in response.text
+
+
+def test_optimized_chunks_endpoint_surfaces_additive_xlsx_metadata_fields(
+    client: TestClient,
+    fake_db: FakeAsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    document_id = str(uuid.uuid4())
+    fake_db.documents[document_id] = {
+        "id": document_id,
+        "status": "optimization-complete",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "notes": None,
+    }
+
+    work_dir = tmp_path / document_id
+    work_dir.mkdir(parents=True)
+    _write_json(
+        work_dir / "interlocks_manifest.json",
+        {
+            "document_name": "interlocks",
+            "pdf_path": str(tmp_path / "interlocks.xlsx"),
+        },
+    )
+    _write_json(
+        work_dir / "interlocks_rag_optimized.json",
+        {
+            "document_name": "interlocks",
+            "source_type": "xlsx",
+            "chunks": [
+                {
+                    "chunk_id": "relation_edge_rel_0001",
+                    "heading": "How does LSHH-2005A affect Isolation Valve Close?",
+                    "content": "Cause-effect relation on Sheet1: LSHH-2005A -> Isolation Valve Close.",
+                    "source_pages": [1],
+                    "table_facts": [],
+                    "ambiguity_flags": [],
+                    "chunk_type": "relation_edge_chunk",
+                    "sheet_name": "Sheet1",
+                    "row_refs": [4],
+                    "entity_refs": ["cause_001", "effect_001"],
+                    "relation_refs": ["rel_0001"],
+                    "source_lineage": {"document_id": "doc-1"},
+                    "retrieval_hints": {"keywords": ["LSHH-2005A", "Isolation Valve Close"]},
+                    "path_ref": "Sheet1.rows[line:4].effects[column:12]",
+                    "parent_path_ref": "Sheet1.rows[line:4]",
+                    "node_type": "relation_edge",
+                    "value_type": "string",
+                    "value_state": "present",
+                    "path_depth": 3,
+                }
+            ],
+        },
+    )
+
+    monkeypatch.setattr(pipeline_api.settings, "PIPELINE_WORK_DIR", str(tmp_path))
+
+    response = client.get(f"/api/v1/documents/{document_id}/optimized-chunks")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_type"] == "xlsx"
+    assert len(payload["chunks"]) == 1
+    chunk = payload["chunks"][0]
+    assert chunk["chunk_type"] == "relation_edge_chunk"
+    assert chunk["sheet_name"] == "Sheet1"
+    assert chunk["row_refs"] == [4]
+    assert chunk["entity_refs"] == ["cause_001", "effect_001"]
+    assert chunk["relation_refs"] == ["rel_0001"]
+    assert chunk["source_lineage"]["document_id"] == "doc-1"
+    assert chunk["retrieval_hints"]["keywords"]
+    assert chunk["path_ref"] == "Sheet1.rows[line:4].effects[column:12]"
+    assert chunk["parent_path_ref"] == "Sheet1.rows[line:4]"
+    assert chunk["node_type"] == "relation_edge"
+    assert chunk["value_type"] == "string"
+    assert chunk["value_state"] == "present"
+    assert chunk["path_depth"] == 3
+
+
+def test_publishable_chunks_replace_cause_effect_ids_with_ce_labels(tmp_path: Path):
+    from app.api.pipeline._chunks import _build_publishable_chunks
+
+    work_dir = tmp_path / "doc-1"
+    work_dir.mkdir(parents=True)
+
+    _write_json(
+        work_dir / "sample_doc_rag_optimized.json",
+        {
+            "document_name": "sample_doc",
+            "source_type": "xlsx",
+            "chunks": [
+                {
+                    "heading": "What is effect_007 for cause_070?",
+                    "content": "The effect of cause_070 is effect_007.",
+                    "source_pages": [1],
+                }
+            ],
+        },
+    )
+    _write_json(
+        work_dir / "sample_doc_ce_relations.json",
+        {
+            "causes": [
+                {
+                    "cause_id": "cause_070",
+                    "cause_tag": "5XU-2008-1",
+                    "cause_description": "5P202A Running feedback (Not Running)",
+                }
+            ],
+            "effects": [
+                {
+                    "effect_id": "effect_007",
+                    "effect_label": "Trip feed pump and close discharge valve",
+                }
+            ],
+            "relations": [],
+        },
+    )
+
+    chunks = _build_publishable_chunks(work_dir)
+    assert len(chunks) == 1
+    heading = chunks[0]["heading"]
+    content = chunks[0]["markdown_content"]
+    assert "cause_070" not in heading
+    assert "effect_007" not in heading
+    assert "cause_070" not in content
+    assert "effect_007" not in content
+    assert "5XU-2008-1" in heading or "5XU-2008-1" in content
+    assert "Trip feed pump and close discharge valve" in heading or "Trip feed pump and close discharge valve" in content
 
 
 def test_qa_rescore_endpoint_reads_optimized_output_and_overwrites_report(
