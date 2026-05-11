@@ -18,12 +18,13 @@ import sys
 import subprocess
 import os
 import re
+import tempfile
 from time import perf_counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
-_VLM_LOCK_PATH = "/tmp/vlm_worker.lock"
+_VLM_LOCK_PATH = str(Path.home() / ".cache" / "plantiq" / "vlm_worker.lock")
 _VLM_MIN_FREE_VRAM_BYTES = 9 * 1024 * 1024 * 1024  # 9 GiB — VLM requires ~8.5 GiB
 _VLM_GPU_INDEX = 1  # Physical GPU index used by CUDA_VISIBLE_DEVICES=1
 
@@ -65,6 +66,25 @@ from ..utils.docling_lifecycle import DoclingLifecycleManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')  # NOSONAR: Safe basic logging format
 logger = logging.getLogger(__name__)  # NOSONAR: Standard logger initialization
+
+
+def _ensure_secure_lock_path(lock_path: str) -> Path:
+    """Ensure lock directory is user-scoped and not world-writable.
+
+    Falls back to /tmp only if home/cache is unavailable; this keeps the happy
+    path in a private directory and satisfies secure-temp-file guidance.
+    """
+    lock_file = Path(lock_path)
+    lock_parent = lock_file.parent
+    try:
+        lock_parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(lock_parent, 0o700)
+        return lock_file
+    except OSError:
+        fallback_parent = Path(tempfile.gettempdir()) / f"plantiq-{os.getuid()}"
+        fallback_parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(fallback_parent, 0o700)
+        return fallback_parent / lock_file.name
 
 
 def _emit_event(
@@ -125,7 +145,7 @@ def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
         f"Checking CUDA devices... CUDA_VISIBLE_DEVICES={visible_raw!r}, "
         f"cuda_available={info['cuda_available']}, device_count={info['cuda_device_count_visible']}",
         1,
-        step="GPU Preflight",
+        step=GPU_PREFLIGHT_STEP,
         event_name="runtime.gpu.discovered",
         stage_id="preflight",
         status="probing",
@@ -148,7 +168,7 @@ def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
             f"Required GPU not available - {info['failure_reason']}. "
             f"Action: {info['recommended_action']}",
             1,
-            step="GPU Preflight",
+            step=GPU_PREFLIGHT_STEP,
             event_name="pipeline.failfast.preflight_failed",
             stage_id="preflight",
             status="failed",
@@ -184,7 +204,7 @@ def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
         "preflight",
         f"Required GPU found, using {selected_device}{remap_note}",
         2,
-        step="GPU Preflight",
+        step=GPU_PREFLIGHT_STEP,
         event_name="runtime.gpu.selected",
         stage_id="preflight",
         status="selected",
@@ -205,7 +225,7 @@ def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
         "preflight",
         f"GPU validated: {device_name} at {selected_device}",
         3,
-        step="GPU Preflight",
+        step=GPU_PREFLIGHT_STEP,
         event_name="runtime.gpu.validated",
         stage_id="preflight",
         status="validated",
@@ -220,24 +240,15 @@ def _emit_gpu_runtime_events(environ: Optional[dict] = None) -> dict:
     return info
 
 
-def _emit_model_lifecycle_event(
-    event_name: str,
-    *,
-    model_role: str,
-    model_id: str,
-    stage_id: str,
-    status: str,
-    message_user: str,
-    progress: int,
-    device: Optional[str] = None,
-    dtype: Optional[str] = None,
-    device_map: Optional[Any] = None,
-    error_code: Optional[str] = None,
-    reason_code: Optional[str] = None,
-    retryable: bool = False,
-    recommended_action: Optional[str] = None,
-) -> None:
+def _emit_model_lifecycle_event(event_name: str, **kwargs: Any) -> None:
     """Emit a model lifecycle transparency event (load_started / load_completed / load_failed)."""
+    stage_id = kwargs.pop("stage_id")
+    status = kwargs.pop("status")
+    message_user = kwargs.pop("message_user")
+    progress = kwargs.pop("progress")
+    model_role = kwargs.pop("model_role")
+    model_id = kwargs.pop("model_id")
+
     extra: dict = {
         "event_name": event_name,
         "stage_id": stage_id,
@@ -247,18 +258,26 @@ def _emit_model_lifecycle_event(
         "model_role": model_role,
         "model_id_resolved": model_id,
     }
+
+    device = kwargs.pop("device", None)
+    device_map = kwargs.pop("device_map", None)
     if device is not None:
         extra["device_map"] = device_map if device_map is not None else device
         extra["selected_device"] = device
+
+    dtype = kwargs.pop("dtype", None)
     if dtype is not None:
         extra["dtype"] = dtype
-    if error_code is not None:
-        extra["error_code"] = error_code
-        extra["reason_code"] = reason_code
-        extra["retryable"] = retryable
-    if recommended_action is not None:
-        extra["recommended_action"] = recommended_action
 
+    if "error_code" in kwargs:
+        extra["error_code"] = kwargs.pop("error_code")
+        extra["reason_code"] = kwargs.pop("reason_code", None)
+        extra["retryable"] = kwargs.pop("retryable", False)
+
+    if "recommended_action" in kwargs:
+        extra["recommended_action"] = kwargs.pop("recommended_action")
+
+    extra.update(kwargs)
     _emit_event(event_name, stage_id, message_user, progress, **extra)
 
 
@@ -274,6 +293,9 @@ PLACEHOLDER_MARKDOWN_SENTINELS = (
 DOCLING_IMAGE_MODE = "placeholder"
 CE_EXTRACTION_FLAG_ENV = "PIPELINE_CE_EXTRACTION_ENABLED"
 CE_RETRIEVAL_FLAG_ENV = "PIPELINE_CE_RETRIEVAL_ENABLED"
+GPU_PREFLIGHT_STEP = "GPU Preflight"
+XLSX_SUFFIXES = {".xlsx", ".xls"}
+MODEL_LIFECYCLE_LOAD_FAILED = "model.lifecycle.load_failed"
 _UUID_SEGMENT_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -304,7 +326,7 @@ def _resolve_source_type(*, source_path: str, explicit_source_type: Optional[str
     """Resolve canonical pipeline source type for the current document."""
     if explicit_source_type in {"pdf", "xlsx"}:
         return str(explicit_source_type)
-    return "xlsx" if Path(source_path).suffix.lower() in {".xlsx", ".xls"} else "pdf"
+    return "xlsx" if Path(source_path).suffix.lower() in XLSX_SUFFIXES else "pdf"
 
 
 def _infer_document_id_from_markdown_path(markdown_path: Path) -> Optional[str]:
@@ -548,8 +570,6 @@ def _render_xlsx_relation_bullet(
     marker = str(relation.get("marker") or "?")
     marker_semantic = str(relation.get("marker_semantic") or "linked").replace("_", " ")
     effect_label = str(effect.get("effect_label") or relation.get("effect_id") or "Unknown effect").strip()
-    relation_path = str(relation.get("path_ref") or "").strip()
-    effect_path = str(effect.get("path_ref") or "").strip()
     marker_description = str(relation.get("marker_description") or "").strip()
 
     lines = [f"  - `{marker}` {marker_semantic} → {effect_label}"]
@@ -635,7 +655,6 @@ def _build_xlsx_relation_review_markdown(
         for effect in sorted(effects, key=lambda item: (int((item.get("origin") or {}).get("column_index") or 0), str(item.get("effect_id") or ""))):
             effect_id = str(effect.get("effect_id") or "effect").strip()
             effect_label = str(effect.get("effect_label") or "Unknown effect").strip()
-            path_ref = str(effect.get("path_ref") or "").strip()
             effect_line = f"- `{effect_id}` — {effect_label}"
             lines.append(effect_line)
 
@@ -683,7 +702,6 @@ def _build_xlsx_relation_review_markdown(
             cause_tag = str(cause.get("cause_tag") or "").strip()
             cause_description = str(cause.get("cause_description") or "").strip()
             cause_ref = str(cause.get("cause_ref") or "").strip()
-            cause_path = str(cause.get("path_ref") or "").strip()
             heading_bits = [bit for bit in (cause_tag, cause_description, cause_ref) if bit]
             heading_label = heading_bits[0] if heading_bits else cause_id
 
@@ -1623,9 +1641,7 @@ def _build_authoritative_markdown(current_pages: list[dict[str, Any]]) -> str:
     ).strip()
 
 
-def _build_segment_payload(
-    current_pages: list[dict[str, Any]], segment_index: int, source_type: str = "pdf"
-) -> dict[str, Any]:
+def _build_segment_payload(current_pages: list[dict[str, Any]], segment_index: int) -> dict[str, Any]:
     """Build one optimization segment payload from grouped pages."""
     page_numbers = _collect_page_numbers(current_pages)
     title_candidates = _collect_title_candidates(current_pages)
@@ -1778,7 +1794,7 @@ def _build_xlsx_optimization_segments(
         if cause_segs:
             segments.extend(cause_segs)
         else:
-            segments.append(_build_segment_payload([page], seg_index_start, "xlsx"))
+            segments.append(_build_segment_payload([page], seg_index_start))
     return segments
 
 
@@ -1817,7 +1833,7 @@ def _build_optimization_segments(
             target_chars=target_chars,
             min_chars_before_split=min_chars_before_split,
         ):
-            segments.append(_build_segment_payload(current_pages, len(segments) + 1, source_type))
+            segments.append(_build_segment_payload(current_pages, len(segments) + 1))
             current_pages = []
             current_chars = 0
 
@@ -1825,7 +1841,7 @@ def _build_optimization_segments(
         current_chars += page_chars
 
     if current_pages:
-        segments.append(_build_segment_payload(current_pages, len(segments) + 1, source_type))
+        segments.append(_build_segment_payload(current_pages, len(segments) + 1))
 
     return segments
 
@@ -2024,7 +2040,7 @@ def build_optimization_prep(
     )
 
     _source_suffix = Path(source_path).suffix.lower() if source_path else ""
-    _source_type = "xlsx" if _source_suffix in {".xlsx", ".xls"} else "pdf"
+    _source_type = "xlsx" if _source_suffix in XLSX_SUFFIXES else "pdf"
 
     return {
         "schema_version": "1.0",
@@ -2372,7 +2388,7 @@ class HITLPipeline:
         }
 
         # Direct pandas extraction path for xlsx — skips Docling lifecycle entirely.
-        if Path(pdf_path).suffix.lower() in {".xlsx", ".xls"}:
+        if Path(pdf_path).suffix.lower() in XLSX_SUFFIXES:
             _emit_event(
                 "progress",
                 "extraction",
@@ -2714,9 +2730,10 @@ class HITLPipeline:
         # ── Layer 1: File-based VLM worker lock ──────────────────────────────────
         # Ensures only one VLM subprocess runs at a time system-wide, preventing
         # concurrent processes from exhausting GPU memory.
-        logger.info(f"[INFO] Acquiring VLM worker lock ({_VLM_LOCK_PATH})...")
+        lock_path = _ensure_secure_lock_path(_VLM_LOCK_PATH)
+        logger.info(f"[INFO] Acquiring VLM worker lock ({lock_path})...")
         _emit_event("progress", "validation", "Waiting for VLM worker slot (serializing GPU access)...", 56)
-        lock_file = open(_VLM_LOCK_PATH, "w")  # noqa: WPS515
+        lock_file = open(lock_path, "w")  # noqa: WPS515
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX)  # blocking exclusive lock
             logger.info("[INFO] VLM worker lock acquired.")
@@ -2828,7 +2845,7 @@ class HITLPipeline:
                     "pages_failed": image_loss_count,
                 }
                 _emit_model_lifecycle_event(
-                    "model.lifecycle.load_failed",
+                    MODEL_LIFECYCLE_LOAD_FAILED,
                     model_role="vision",
                     model_id=vision_model_id,
                     stage_id="validation",
@@ -2854,7 +2871,7 @@ class HITLPipeline:
                 "pages_failed": image_loss_count,
             }
             _emit_model_lifecycle_event(
-                "model.lifecycle.load_failed",
+                MODEL_LIFECYCLE_LOAD_FAILED,
                 model_role="vision",
                 model_id=vision_model_id,
                 stage_id="validation",
@@ -2879,7 +2896,7 @@ class HITLPipeline:
                 "pages_failed": image_loss_count,
             }
             _emit_model_lifecycle_event(
-                "model.lifecycle.load_failed",
+                MODEL_LIFECYCLE_LOAD_FAILED,
                 model_role="vision",
                 model_id=vision_model_id,
                 stage_id="validation",

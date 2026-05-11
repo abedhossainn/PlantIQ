@@ -89,25 +89,25 @@ td[align] {
   - [7.4 Hardware and Software Dependencies](#74-hardware-and-software-dependencies)
   - [7.5 Detailed Component Design and Build/Deploy Instructions](#75-detailed-component-design-and-builddeploy-instructions)
 - [8. Results and Discussion](#8-results-and-discussion)
-    - [8.1 Testing Strategy and SonarQube Evidence Baseline](#81-testing-strategy-and-sonarqube-evidence-baseline)
-       - [8.1.1 Project Overview Status from SonarQube (April 29, 2026)](#811-project-overview-status-from-sonarqube-april-29-2026)
-       - [8.1.2 Built-in SonarQube Quality Gate Used for Evaluation](#812-built-in-sonarqube-quality-gate-used-for-evaluation)
-       - [8.1.3 SonarQube Improvement Activity Graphs (Time Series)](#813-sonarqube-improvement-activity-graphs-time-series)
-    - [8.2 Unit Testing Results and Evidence](#82-unit-testing-results-and-evidence)
-   - [8.3 Integration Testing Results and Evidence](#83-integration-testing-results-and-evidence)
-   - [8.4 Regression Testing Results and Evidence](#84-regression-testing-results-and-evidence)
-   - [8.5 Performance and Load Testing Results](#85-performance-and-load-testing-results)
-   - [8.6 Final Deliverables Access](#86-final-deliverables-access)
-   - [8.7 Sponsor Feedback and Review](#87-sponsor-feedback-and-review)
-   - [8.8 Video Evidence](#88-video-evidence)
-   - [8.9 Known Problems, Gaps, Defects, and Future Work Plan](#89-known-problems-gaps-defects-and-future-work-plan)
+  - [8.1 Testing Strategy and SonarQube Evidence Baseline](#81-testing-strategy-and-sonarqube-evidence-baseline)
+    - [8.1.1 Project Overview Status from SonarQube (April 29 and May 9, 2026)](#811-project-overview-status-from-sonarqube-april-29-and-may-9-2026)
+    - [8.1.2 Built-in SonarQube Quality Gate Used for Evaluation](#812-built-in-sonarqube-quality-gate-used-for-evaluation)
+    - [8.1.3 SonarQube Improvement Activity Graphs (Time Series)](#813-sonarqube-improvement-activity-graphs-time-series)
+  - [8.2 Unit Testing Results and Evidence](#82-unit-testing-results-and-evidence)
+  - [8.3 Integration Testing Results and Evidence](#83-integration-testing-results-and-evidence)
+  - [8.4 Regression Testing Results and Evidence](#84-regression-testing-results-and-evidence)
+  - [8.5 Performance and Load Testing Results](#85-performance-and-load-testing-results)
+  - [8.6 Final Deliverables Access](#86-final-deliverables-access)
+  - [8.7 Sponsor Feedback and Review](#87-sponsor-feedback-and-review)
+  - [8.8 Video Evidence](#88-video-evidence)
+  - [8.9 Known Problems, Gaps, Defects, and Future Work Plan](#89-known-problems-gaps-defects-and-future-work-plan)
 - [9. Conclusion](#9-conclusion)
 - [10. Recommendations to the Sponsor](#10-recommendations-to-the-sponsor)
 - [11. Limitations of the Project or Approach](#11-limitations-of-the-project-or-approach)
-- [12. Future Works](#12-future-works)
+- [12. Future Works and Post-Pilot Enhancements](#12-future-works-and-post-pilot-enhancements)
 - [13. References](#13-references)
 - [Appendix A — Differences Between Beta and Final Checkpoints](#appendix-a--differences-between-beta-and-final-checkpoints)
-- [Appendix C — Glossary](#appendix-c--glossary)
+- [Appendix B — Glossary](#appendix-b--glossary)
 
 ---
 
@@ -118,13 +118,19 @@ td[align] {
 | AD | Active Directory |
 | ASGI | Asynchronous Server Gateway Interface |
 | BM25 | Best Match 25 (probabilistic keyword retrieval algorithm) |
+| C&E | Cause-and-Effect |
+| CAyC | Clean as You Code (SonarQube methodology for incremental quality improvement on new code) |
 | CORS | Cross-Origin Resource Sharing |
+| DAST | Dynamic Application Security Testing |
+| DCS | Distributed Control System |
 | HITL | Human-in-the-Loop |
 | JWT | JSON Web Token |
 | LDAP | Lightweight Directory Access Protocol |
 | LLM | Large Language Model |
 | NFR | Non-Functional Requirement |
+| OSBL | Outside Battery Limits (industrial designation for utility and offsite systems outside the main process boundary) |
 | OT | Operational Technology |
+| P&ID | Piping and Instrumentation Diagram |
 | PDF | Portable Document Format |
 | QA | Quality Assurance |
 | RAG | Retrieval-Augmented Generation |
@@ -140,19 +146,21 @@ td[align] {
 
 | Figure | Caption | Section |
 |---|---|---|
-| Figure 6.1 | Document Ingestion, QA Gate, and Publication Flow (Air-Gapped) | §6.2 |
-| Figure 6.2 | Chat Query, Scoped Retrieval, and Citation Grounding Flow (Air-Gapped) | §6.2 |
+| Figure 6.1 | Source-Aware Document Ingestion, QA Gate, and Publication Flow (Air-Gapped) | §6.2 |
+| Figure 6.2 | Chat Query, Hybrid Retrieval, Citation Grounding, and Feedback Flow (Air-Gapped) | §6.2 |
 | Figure 7.1 | High-Level System Architecture Diagram | §7.2 |
-| Figure 7.2 | Ingestion/QA/Publish Workflow (VLM → HITL → Optimize → QA → Publish) | §7.3 |
+| Figure 7.2 | Source-Aware Ingestion/QA/Publish Workflow (PDF/XLSX → HITL → Optimize → QA → Publish) | §7.3 |
 | Figure 7.3 | Chat Retrieval and Generation Workflow (Embedding → Retrieval → LLM → Citations) | §7.3 |
 | Figure 7.4a | Logical Database Schema (Entity-Relationship) | §7.3 |
-| Figure 7.4b | PostgreSQL ↔ Qdrant Logical Data Flow | §7.3 |
-| Figure 8.1 | Unit Test Scenario Distribution by Application Layer | §8.2 |
-| Figure 8.2 | Integration Test Scenario Distribution by Suite | §8.3 |
-| Figure 8.3 | SonarQube Regression Issue Severity Distribution | §8.4 |
-| Figure 8.4 | SonarQube Regression Issue Distribution by Code Area | §8.4 |
-| Figure 8.5 | Comprehensive Load Test Results (T3–T6) — Latency Scaling and Spike Recovery | §8.5 |
-| Figure 8.6 | 8-Hour Endurance Test Results (T7–T8) — Latency Drift and Infrastructure Health | §8.5 |
+| Figure 7.4b | PostgreSQL ↔ Qdrant Logical Data Flow (Final) | §7.3 |
+| Figure 8.1 | Composite 4-Panel SonarQube Progress Dashboard (Coverage, Issues, Ratings, Tests) | §8.1.3 |
+| Figure 8.2 | Composite 2-Panel SonarQube Progress Dashboard (Duplication Trend, Quality-Gate Timeline) | §8.1.3 |
+| Figure 8.3 | Unit Test Scenario Distribution by Application Layer | §8.2 |
+| Figure 8.4 | Integration Test Scenario Distribution by Suite | §8.3 |
+| Figure 8.5 | SonarQube Regression Issue Severity Distribution | §8.4 |
+| Figure 8.6 | SonarQube Regression Issue Distribution by Code Area | §8.4 |
+| Figure 8.7 | Comprehensive Load Test Results (T3–T6) — Latency Scaling and Spike Recovery | §8.5 |
+| Figure 8.8 | 8-Hour Endurance Test Results (T7–T8) — Latency Drift and Infrastructure Health | §8.5 |
 
 ## List of Tables
 
@@ -180,7 +188,7 @@ td[align] {
 
 PlantIQ was developed as an air-gapped Retrieval-Augmented Generation (RAG) system for Cove Point LNG, a critical energy facility operated by BHE GT&S. The project addressed a field-validated operational problem: technicians often required 30 or more minutes to locate correct troubleshooting guidance in proprietary vendor manuals during time-sensitive events. Because Operational Technology (OT) cybersecurity controls prohibited cloud AI usage and external data transmission, the solution had to operate entirely on-premises.
 
-The implemented system uses a five-stage document lifecycle: PDF ingestion, Vision Language Model (VLM)-assisted extraction and validation, human review, LLM-driven optimization, and QA-gated publication to the vector retrieval index. During the optimization stage, the reviewed document content is passed to a local text LLM which restructures it into retrieval-optimized chunks — rewriting section headings as natural-language questions so that the stored representations closely match the form of queries users ask. Chat responses are generated by a separate local language model and grounded with document-page citations so users can verify each answer against source evidence.
+The implemented system uses a source-aware five-stage document lifecycle: document ingestion (PDF/XLSX), extraction and validation, human review, optimization, and QA-gated publication to the vector retrieval index. In the PDF path, optimization is LLM-driven and restructures reviewed content into retrieval-optimized chunks (including question-style headings). In the XLSX path, optimization uses deterministic relation-aware chunking for C&E data. Chat responses are generated by a separate local language model and grounded with document-page citations so users can verify each answer against source evidence.
 
 At the Final checkpoint, all 14 defined user stories are fully implemented, representing **100%** functional completion. The post-Beta period closed the previously partial enterprise authentication gap by implementing LDAP as the identity source of truth via a full OpenLDAP dev stack, admin-managed directory configuration, real-mode LDAP bind and user listing, and secure role-only governance in the UI. Four additional capability enhancements were completed: (1) User Scope Governance — backend-enforced system/area access policies with a 403 denial UX and audit trail; (2) Answer Feedback Loop — thumbs-up/thumbs-down feedback submission with aggregated quality metrics for admin/reviewer roles; (3) Hybrid Retrieval — a BM25 lexical plus dense vector dual-branch retrieval engine with weighted Reciprocal Rank Fusion (RRF), per-result provenance, and one-branch-failure fallback; and (4) Scope Simplification — document-type axis removed from active scope enforcement, leaving system and area as the only active scope dimensions. Code coverage reached 85%+ across the backend and all targeted Sonar code-quality waves were addressed. The product is now ready for limited supervised pilot evaluation at Cove Point LNG.
 
@@ -235,11 +243,13 @@ PlantIQ differed by combining four requirements in one pipeline: full air-gapped
 
 The following functional requirements were derived from stakeholder interviews, document analysis of vendor manuals, and iterative refinement with the sponsor.
 
+During sponsor review and operational walkthroughs, the ingestion requirement was expanded beyond PDF-only handling to include spreadsheet-based Cause-and-Effect (C&E) artifacts used in troubleshooting workflows. The Final requirement set therefore treats XLSX support as a sponsor-driven core capability rather than an optional enhancement.
+
 #### Functional Requirements
 
 | FR ID | Functional Requirement | Req. Set | Priority | Final Status |
 |---|---|:---:|:---:|:---:|
-| FR-1.1 | The system shall accept PDF uploads with metadata (title, version, system/workspace) and create a tracked document record. | RS-1 | High | Implemented |
+| FR-1.1 | The system shall accept PDF and XLSX uploads with metadata (title, version, system/workspace) and create a tracked document record. | RS-1 | High | Implemented |
 | FR-1.2 | The system shall apply VLM-based content extraction and generate a categorized validation report identifying missing text, table fidelity issues, and figure description gaps. | RS-1 | High | Implemented |
 | FR-1.3 | The system shall provide a web-based review interface with page-level evidence, inline content editing, and checklist-driven review progression. | RS-1 | High | Implemented |
 | FR-1.4 | The system shall enforce approval and version locking so that only reviewed content proceeds to the RAG optimization and publication pipeline. | RS-1 | High | Implemented |
@@ -286,8 +296,10 @@ flowchart LR
     UI["Admin UI (Upload/Review/QA/Publish)"] --> API["FastAPI /api/v1/documents"]
     API --> SCOPE{"Scope\nGovernance\nCheck"}
     SCOPE -->|denied| DENY["403 Denied\n(audit logged)"]
-    SCOPE -->|allowed| UPL["Upload"] --> EXT["Extract + Validate (Docling)"] --> VLM["VLM Description (Qwen3-VL-4B)"]
-    VLM --> HR["Human Review"] --> OPT["RAG Optimization"] --> QAG{"QA Gate"}
+   SCOPE -->|allowed| UPL["Upload"] --> ROUTE{"Source Type?"}
+   ROUTE -->|PDF| EXT_PDF["Extract + Validate (Docling/PDF)"] --> VLM["VLM Description (Qwen3-VL-4B)"] --> HR["Human Review"]
+   ROUTE -->|XLSX| EXT_XLSX["Extract + Validate (Spreadsheet C&E Parser)"] --> HR
+   HR --> OPT["RAG Optimization\n(PDF: LLM path | XLSX: deterministic relation chunks)"] --> QAG{"QA Gate"}
 
     %% QA outcomes
     QAG -->|approved| APP["Approved"] --> PUB["Publish"]
@@ -300,14 +312,15 @@ flowchart LR
     %% Transaction/audit persistence
     PG[("PostgreSQL documents + status + publication + audit_logs")]
     UPL --> PG
-    EXT --> PG
+   EXT_PDF --> PG
+   EXT_XLSX --> PG
     HR --> PG
     OPT --> PG
     PUB --> PG
     DENY --> PG
 ```
 
-*Figure 6.1 — Document Ingestion, QA Gate, and Publication Flow (Air-Gapped)*
+*Figure 6.1 — Source-Aware Document Ingestion, QA Gate, and Publication Flow (Air-Gapped)*
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '32px'}}}%%
@@ -342,6 +355,7 @@ flowchart LR
 
 Key design decisions illustrated in both diagrams:
 - **Quality gate before indexing**: content only enters the retrieval index after passing human review, LLM restructuring, and a scored QA gate — ensuring retrieval operates over verified, optimized content rather than raw extractions.
+- **Source-aware ingestion routing**: upload processing branches by source type, preserving the PDF path and adding sponsor-requested XLSX handling with relation-aware extraction and optimization behavior.
 - **Query-aligned vector representations**: the optimization stage rewrites section headings as natural-language questions before embedding, so stored vectors reflect query form rather than document structure.
 - **Hybrid retrieval**: BM25 lexical and dense vector branches run in parallel; results are fused via weighted RRF with per-result provenance attribution and one-branch-failure fallback, improving recall for exact-term queries and sparse-index scenarios.
 - **Scope governance at the API boundary**: upload and chat requests are checked against backend-enforced system/area policies before any processing occurs; denied requests return a structured 403 with audit logging.
@@ -354,12 +368,14 @@ Key design decisions illustrated in both diagrams:
 
 The Final checkpoint built on the hardened Beta architecture to close the remaining enterprise integration gap and add four new capability areas. Major verified improvements during the Final period include:
 
-- **LDAP identity source of truth**: full OpenLDAP dev stack, real-mode LDAP bind and user listing, LDAP as identity SoT with role-only governance in the admin UI.
+- **LDAP identity source of truth**: full OpenLDAP dev stack, real-mode LDAP bind and user listing, LDAP as the identity source of truth with role-only governance in the admin UI.
 - **Admin-managed directory configuration**: secure admin API for persisting and activating LDAP profiles, encryption-at-rest for bind passwords, test-connection workflow, and directory settings UI.
 - **User scope governance**: backend-enforced system/area access policies, structured 403 denial contract, audit trail, and frontend denial UX with retry lock.
 - **Answer feedback loop**: append-only feedback events, quality snapshot signals, admin/reviewer metrics panel, and thumbs-up/thumbs-down UI with duplicate-submit protection.
 - **Hybrid retrieval**: BM25 lexical plus dense vector dual-branch engine, weighted-RRF fusion, per-result provenance, one-branch-failure fallback — backward-compatible with existing chat API contracts.
 - **Scope simplification**: document-type axis removed from active scope enforcement; system and area are the only active scope dimensions; backward-compatible API fields retained.
+- **Spreadsheet (XLSX) optimization hardening**: Stage 10 now uses source-aware behavior where XLSX flows follow deterministic JSON-first CE relation chunking (question/fact/relation-edge units) with bounded content guards, while PDF continues to use the existing LLM reformatter path.
+- **XLSX content-enrichment hardening**: required cause/effect fields (DEVICE, P&ID/Page, INTERLOCK, NOTES, control/interacting-device metadata) are now captured and propagated into review markdown and optimized chunk content using additive fallback extraction rules.
 - **Code coverage hardening**: backend coverage pushed to ~85%+ via targeted test-suite expansion across services, core modules, auth, and RAG helpers.
 - **Sonar code-quality remediation**: cyclomatic complexity waves, duplicate-literal cleanup, and targeted issue closure across backend and pipeline hotspots.
 
@@ -368,7 +384,7 @@ The Final checkpoint built on the hardened Beta architecture to close the remain
 ### 6.2.1 Functions Implemented at Final (Core Product Behavior)
 
 1. **Document ingestion and orchestration lifecycle**
-   - The system accepts PDF uploads with metadata, persists a document record, and starts asynchronous processing through the HITL pipeline entrypoint.
+   - The system accepts supported uploads (PDF and spreadsheet formats such as XLSX/XLS) with metadata, persists a document record, and starts asynchronous processing through the HITL pipeline entrypoint.
    - It supports lifecycle progression from upload through extraction, validation, review readiness, optimization, QA, and publication states, including guarded transitions for rerun and deletion operations.
    - **Code references:** `apps/api/app/api/pipeline/routes.py` (`POST /api/v1/documents/upload`, `POST /api/v1/documents/{id}/reprocess`, `DELETE /api/v1/documents/{id}`), `apps/api/app/services/pipeline_service.py` (`PipelineService.trigger_pipeline`, status/stage mappings), `apps/pipeline/src/cli/hitl_pipeline.py` (Human-in-the-Loop (HITL) pipeline entrypoint invoked by backend).
 
@@ -379,9 +395,10 @@ The Final checkpoint built on the hardened Beta architecture to close the remain
 
 3. **Human-in-the-loop review and optimization workflow**
    - The platform provides page-based review units, editable content updates, checklist-driven review progression, and controlled approval to the optimization stage.
-   - Once a reviewer approves a document, the optimization stage invokes the local text LLM (Qwen3-4B) to reformat the reviewed markdown into a set of structured, retrieval-optimized chunks. The LLM rewrites each section heading as a natural-language question — for example, a heading like *"Motor Control Circuit"* becomes *"What does this section explain about Motor Control Circuit?"* — so that the chunk's stored representation closely matches the form of operator queries. The LLM produces typed JSON output: each chunk contains the rewritten question heading, body content with inline source citations, a `source_pages` list for citation grounding, extracted `table_facts`, and `ambiguity_flags`. These structured chunks, not the raw reviewed markdown, are what downstream embedding and publication stages operate on.
+   - Once a reviewer approves a document, Stage 10 follows a source-aware path: **PDF** continues to use the local text LLM (Qwen3-4B) for question-oriented chunk reformatting, while **XLSX** uses deterministic JSON-first CE relation chunk generation (`question_heading_chunk`, `row_fact_chunk`, `relation_edge_chunk`) without invoking the LLM reformatter.
+   - In the XLSX path, required cause/effect fields are now propagated using additive helpers with top-level fallback support, and chunk payloads include compact mapped-effect context and relation metadata while remaining bounded by content guardrails.
    - Optimization runs as a managed long-running stage with explicit state transitions, streamed progress events, and a full log trail accessible through the backend API.
-   - **Code references:** `apps/api/app/api/pipeline/routes.py` (`GET /api/v1/documents/{id}/pages`, `PATCH /api/v1/documents/{id}/pages/{page_id}/content`, `POST /api/v1/documents/{id}/approve-for-optimization`, `GET /api/v1/documents/{id}/optimization/logs`), `apps/api/app/core/optimization_log.py` (optimization log manager/handler), `apps/pipeline/src/cli/text_reformatter.py` (`_heading_to_question`, `_build_reformatter_messages`, `_synthesize_chunks_from_optimization_prep`), `apps/pipeline/src/cli/rag_markdown_reformatter_prompt.md` (LLM system prompt).
+   - **Code references:** `apps/api/app/api/pipeline/routes.py` (`GET /api/v1/documents/{id}/pages`, `PATCH /api/v1/documents/{id}/pages/{page_id}/content`, `POST /api/v1/documents/{id}/approve-for-optimization`, `GET /api/v1/documents/{id}/optimization/logs`), `apps/api/app/core/optimization_log.py` (optimization log manager/handler), `apps/pipeline/src/cli/text_reformatter.py` (`_heading_to_question`, `_build_reformatter_messages`, `_synthesize_chunks_from_optimization_prep`), `apps/pipeline/src/cli/hitl_pipeline.py` (`_build_xlsx_relation_optimized_output`, `_build_xlsx_relation_review_markdown`, `_get_cause_required_fields`, `_get_effect_required_fields`), `apps/pipeline/src/cli/rag_markdown_reformatter_prompt.md` (LLM system prompt).
 
 4. **QA gate and publication readiness flow**
    - Optimized outputs are rescored, evaluated, and moved through explicit QA decisions before final approval.
@@ -390,13 +407,13 @@ The Final checkpoint built on the hardened Beta architecture to close the remain
 
 5. **Vector indexing and retrieval data publication**
    - Approved optimized chunks are transformed into semantic vectors via batch embedding (BAAI/bge-large-en-v1.5), previous vectors for the same document are deleted, and updated payloads are upserted into Qdrant with cosine distance metrics.
-   - Each vector is stored with rich metadata: document ID, chunk ID, page reference, workspace tag, document type, section heading, table facts, and detected ambiguity flags. This metadata enables post-retrieval filtering and source verification without requiring full vector rescans.
+   - Each vector is stored with rich metadata: document ID, chunk ID, page reference, workspace tag, document type, section heading, table facts, detected ambiguity flags, and (for XLSX relation paths) additive lineage/path and required-field context used for retrieval grounding.
    - Publication is explicitly controlled — only documents approved through the QA gate can be published, preventing drafts or failed transformations from entering the retrieval index.
    - **Code references:** `apps/api/app/api/pipeline/routes.py` (`POST /api/v1/documents/{id}/publish`, `_publish_document_to_rag`), `apps/api/app/services/embedding_service.py` (`embed_batch`), `apps/api/app/services/qdrant_service.py` (`ensure_collection`, `delete_document_chunks`, `upsert_chunks`).
 
 6. **RAG chat generation (synchronous and streaming)**
    - The chat runtime supports both complete-response and token-streaming query paths, enabling real-time UI feedback for long responses.
-   - Query handling integrates: (1) scoped retrieval to fetch top-k relevant vectors constrained by workspace/document-type filters, (2) prompt assembly combining user query + retrieved context + system guidelines, (3) response generation via local LLM (Qwen3-4B via vLLM), and (4) structured citation extraction linking response text back to source documents and page numbers.
+   - Query handling integrates: (1) scoped retrieval to fetch top-k relevant vectors constrained by workspace and system/area controls (with deprecated document-type fields ignored for active enforcement), (2) prompt assembly combining user query + retrieved context + system guidelines, (3) response generation via local LLM (Qwen3-4B via vLLM), and (4) structured citation extraction linking response text back to source documents and page numbers.
    - Citation grounding is extracted from retrieval metadata: the user sees `[Document Name, Page X]` where X is the `source_pages` field from the retrieved chunk payload. Failures to find cited sources are logged for QA analysis.
    - **Code references:** `apps/api/app/api/chat.py` (`POST /api/v1/chat/query`, `POST /api/v1/chat/stream`), `apps/api/app/services/chat_service.py` (`process_query`, `process_query_stream`, `_build_rag_prompt`, `_create_citations`, `_save_message`), `apps/api/app/services/llm_service.py` (`generate`, `generate_stream`).
 
@@ -478,6 +495,11 @@ The Final checkpoint built on the hardened Beta architecture to close the remain
     - The admin User Management page lists users sourced from LDAP with local role enrichment. Role assignment (Admin/User) and account enable/disable are the only write operations available in the UI, consistent with LDAP as the identity source of truth. The page displays a connected-domain badge derived from the active directory configuration.
     - **Code references:** `apps/web/app/admin/users/page.tsx` (API-backed user listing, role update, domain badge), `apps/web/lib/api/users.ts` (user list + role update + domain derivation helpers).
 
+12. **XLSX relation-aware review and optimized-chunk UX continuity**
+   - Spreadsheet review markdown now renders relation-aware summaries and required fields rather than low-value raw table dumps, while preserving existing markdown review compatibility and operator workflow.
+   - The optimized-review flow for XLSX preserves JSON-first retrieval authority and continues through QA/publish controls without breaking frontend/API contracts used for review and status progression.
+   - **Code references:** `apps/pipeline/src/cli/hitl_pipeline.py` (`_build_xlsx_relation_review_markdown`, CE relation context injection in Stage 10), `apps/web/lib/api/pipeline.ts` (optimization/review status contracts), `apps/web/tests/api.integration.test.ts` (optimization workflow contract coverage).
+
 ---
 
 User-story coverage at Final:
@@ -491,7 +513,7 @@ User-story coverage at Final:
 
 | User Story | Final Status | Implementation Status |
 |---|---|---|
-| **US-1.1** Upload document with metadata | **Implemented** | Delivered through upload API + admin upload UI with metadata capture and pipeline kickoff. |
+| **US-1.1** Upload PDF/XLSX document with metadata *(sponsor-requested XLSX support)* | **Implemented** | Delivered through upload API + admin upload UI with metadata capture and source-aware pipeline kickoff (PDF and XLSX). |
 | **US-1.2** VLM validation report with categorized issues | **Implemented** | Validation artifacts and categorized issue surfaces are available in review workflow and backend artifact contracts. |
 | **US-1.3** Web-based review with checklist and inline evidence | **Implemented** | Page-based review units, checklist handling, evidence thumbnails, and edit persistence are operational. |
 | **US-1.4** Approve and lock reviewed version | **Implemented** | Approval/transition controls, optimization gating, QA state transitions, and explicit publication workflow are implemented. |
@@ -510,6 +532,7 @@ User-story coverage at Final:
 
 **Delivered at Final (all sponsor priorities met):**
 - End-to-end ingestion and review pipeline (upload → validation → review → optimization → QA → publish)
+- Sponsor-requested XLSX/C&E ingestion support with source-aware optimization and relation-focused chunk generation
 - Citation-grounded chat with multi-turn conversations, bookmark support, and hybrid retrieval
 - Operational visibility through status APIs, SSE streams, and lifecycle controls
 - Full LDAP/AD identity integration with admin-managed directory configuration
@@ -734,21 +757,27 @@ Figure 7.1 shows why the system remains both governable and operationally effici
 The ingestion pipeline is intentionally staged so that **raw extracted content never becomes retrievable without review and quality control**. Each step has a distinct operational purpose:
 
 1. **Upload + metadata persistence** — the system creates a tracked document record in PostgreSQL so the file can move through review, QA, and publication with full lifecycle traceability.
-2. **VLM-assisted extraction/validation** — the document is parsed and checked for structural fidelity, especially around tables, figures, and dense engineering content where naive extraction is unreliable.
+2. **Source-aware extraction/validation** — documents are parsed and validated by source type: PDF uses Docling + VLM-assisted validation for visual fidelity, while XLSX uses structured C&E extraction/normalization for relation integrity.
 3. **Human review and correction** — a reviewer validates the extracted output page by page, correcting inaccuracies before the content is allowed to proceed further in the pipeline.
-4. **LLM-driven optimization** — the local text LLM (Qwen3-4B) reformats the approved markdown into structured retrieval chunks, rewrites section headings as natural-language questions, and attaches page citations, table facts, and ambiguity markers so the resulting chunks are optimized for downstream retrieval rather than human reading alone.
+4. **Source-aware optimization** — PDF content uses local LLM reformatting (Qwen3-4B) into retrieval-optimized question-style chunks, while XLSX content uses deterministic relation-aware chunk generation with required-field enrichment and bounded content guards.
 5. **QA scoring and controlled publication** — the optimized chunks are scored against the QA gate, and only content that passes the defined threshold is published to Qdrant and made available to the chat system.
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '20px'}}}%%
 flowchart LR
     A(["Upload"]) --> B["Store<br/>PG"]
-    B --> C["Extract<br/>VLM"]
-    C --> D["Review<br/>Artifact"]
+   B --> C{"Source<br/>Type?"}
+   C -->|PDF| D1["Extract<br/>Docling + VLM"]
+   C -->|XLSX| D2["Extract<br/>CE structured relations"]
+   D1 --> D["Review<br/>Artifact"]
+   D2 --> D
     D --> E{"HITL<br/>OK?"}
-    E -->|Y| F["Optimize<br/>LLM"]
+   E -->|Y| F{"Optimize<br/>Source-aware"}
+   F -->|PDF| F1["LLM reformatter"]
+   F -->|XLSX| F2["Deterministic relation chunking"]
     E -->|N| G(["Return"])
-    F --> H["Chunks"]
+   F1 --> H["Chunks"]
+   F2 --> H
     H --> I{"QA<br/>Pass?"}
     I -->|Y| J["Publish<br/>Qdrant"]
     I -->|N| K(["Re-review"])
@@ -764,7 +793,7 @@ Figure 7.2 makes the project’s quality-governance model explicit: PlantIQ does
 The chat runtime is designed to preserve both relevance and verifiability. Rather than sending the user query directly to an LLM, the system grounds every answer in retrieved document evidence through the following sequence:
 
 1. **Query embedding** — the user’s question is converted into an embedding using the same semantic space used for indexed chunks.
-2. **Scoped Qdrant retrieval** — candidate chunks are retrieved from Qdrant using workspace and document-type filters so the model only sees content from the user’s authorized document scope.
+2. **Scoped Qdrant retrieval** — candidate chunks are retrieved from Qdrant using workspace and system/area filters so the model only sees content from the user’s authorized document scope.
 3. **Context assembly** — the highest-value retrieved chunks are assembled into a bounded context package for generation.
 4. **Prompt generation with citation guidance** — the system prompt instructs the LLM to answer using only the retrieved evidence and to preserve citation traceability.
 5. **Local LLM generation and citation mapping** — Qwen3-4B generates the answer, and the final response is mapped back to source pages so the operator can verify each grounded claim.
@@ -792,7 +821,7 @@ flowchart LR
 
 Figure 7.3 also highlights an important runtime safeguard: if the initial retrieval pass is too weak, the system relaxes the similarity threshold before generation rather than immediately returning an empty answer. This improves robustness on sparse queries while still preserving scoped retrieval and citation grounding.
 
-#### Data Layer and Database Schema Design (Beta)
+#### Data Layer and Database Schema Design (Final)
 
 PlantIQ intentionally separated **transactional workflow state** from **semantic retrieval state**.
 
@@ -950,7 +979,7 @@ erDiagram
 
 *Figure 7.4a — Logical Database Schema (Entity-Relationship)*
 
-**Figure 7.4b — PostgreSQL ↔ Qdrant Logical Data Flow**
+**Figure 7.4b — PostgreSQL ↔ Qdrant Logical Data Flow (Final)**
 
 > This diagram illustrates how the two storage tiers collaborate at runtime. PostgreSQL owns all
 > transactional and relational state (users, conversations, documents, messages, bookmarks, scope policies,
@@ -1022,13 +1051,15 @@ Figure 7.4b clarifies the architectural rationale for the two-store design: Post
 | Relational database | PostgreSQL | v15 |
 | Vector database | Qdrant | v1.x, cosine distance, payload-filtered |
 | PDF extraction | Docling | Open source, structure-preserving |
-| VLM (visual validation) | Qwen3-VL-4B | Local inference, VRAM-optimized |
-| Embedding model | BAAI/bge-large-en-v1.5 | 1024-dim cosine embeddings |
-| LLM (chat generation) | Qwen3-4B via vLLM | Local inference, streaming |
+| VLM (visual validation) | Qwen3-VL-4B | Local inference, VRAM-optimized; native **256K** context, expandable to **1M** tokens |
+| Embedding model | BAAI/bge-large-en-v1.5 | Retrieval encoder; **512-token** max input length; 1024-dim cosine embeddings |
+| LLM (chat generation) | Qwen3-4B via vLLM | Local inference, streaming; native **32,768-token** context, extendable to **131,072** with RoPE scaling |
 | Frontend framework | Next.js 15 + React | TypeScript, Tailwind CSS, shadcn/ui |
 | Containerization | Docker + Docker Compose | Offline-capable deployment |
 | Authentication | Lightweight Directory Access Protocol (LDAP) + OpenLDAP / Active Directory | **Implemented at Final** — Full LDAP integration: real-mode service bind + user search, OpenLDAP dev stack (bitnami/openldap:2.6) in Docker Compose, admin directory configuration UI with test-connection workflow, encryption-at-rest for bind passwords, LDAP identity as source of truth |
 | Hybrid Retrieval | BM25 (sparse) + Dense (semantic) + Reciprocal Rank Fusion | **Implemented at Final** — HybridRetrievalService with concurrent dual-pass retrieval and RRF merge for improved recall/relevance balance |
+
+These model limits matter because PlantIQ uses them in different places: **Qwen3-4B** generates answers, **Qwen3-VL-4B** handles visual/document understanding during pipeline work, and **BGE** converts both stored chunks and user queries into vectors for semantic retrieval.
 
 FastAPI remains the primary orchestration framework for the backend. In addition to async request handling, it provides automatic OpenAPI-based documentation through `/docs` and `/redoc`, which has been useful for validating API contracts during Beta integration and regression testing.
 
@@ -1052,20 +1083,20 @@ Deployment includes OpenLDAP service (bitnami/openldap:2.6 in Docker Compose) fo
 
 ### 8.1 Testing Strategy and SonarQube Evidence Baseline
 
-Section 8 is organized in strict test-sequence order: **unit → integration → regression → performance/load**. All evidence referenced below comes from repository test artifacts and SonarQube exports generated through the project toolkit workflow (`python3 scripts/sonarqube_agent_toolkit.py analyze-and-export ...`).
+Section 8 is organized in strict test-sequence order: **unit → integration → regression → performance/load**. All evidence referenced below comes from repository test artifacts and SonarQube exports generated through the project SonarQube export workflow.
 
 | Test Layer | Primary Evidence Files | Scope |
 |---|---|---|
 | Unit | `apps/api/tests/*.py`, `apps/pipeline/tests/*.py`, `apps/web/tests/*.test.ts` | Service/module correctness and branch behavior |
-| Integration | `apps/api/tests/test_hybrid_integration.py`, `apps/web/tests/api.integration.test.ts`, `logs/soak_test_results.json` | Cross-service API/flow behavior |
+| Integration | `apps/api/tests/test_hybrid_documents_core.py`, `apps/api/tests/test_hybrid_lifecycle_and_guards.py`, `apps/api/tests/test_hybrid_chat_query_scope.py`, `apps/api/tests/test_hybrid_chat_stream_ws_events.py`, `apps/api/tests/test_hybrid_optimization_and_qa.py`, `apps/web/tests/api.integration.test.ts`, `logs/soak_test_results.json` | Cross-service API/flow behavior |
 | Regression | `docs/sonarqube_issues.json`, `docs/SONARQUBE_ISSUES.md` | Static quality and defect-risk trend across codebase |
 | Performance/Load | `logs/concurrency_results.json`, `logs/load_test_results.json`, `logs/endurance_results.json` | Concurrency, latency stability, and 8-hour endurance behavior |
 
 **Evidence summary:** The Section 8 test-sequence and evidence baseline are fully traceable through repository test suites, SonarQube exports, and archived performance logs.
 
-### 8.1.1 Project Overview Status from SonarQube (April 29, 2026)
+### 8.1.1 Project Overview Status from SonarQube (April 29 and May 9, 2026)
 
-A comprehensive project quality snapshot was extracted from the SonarQube server at Final checkpoint. The metrics below represent the cumulative result of all development, testing, and code-quality work through April 29, 2026.
+A comprehensive project quality snapshot was extracted from the SonarQube server at the Final checkpoint on April 29, 2026. A follow-up scan on May 9, 2026 confirmed that the key metrics remained stable following XLSX pipeline integration. The metrics below represent the cumulative result of all development, testing, and code-quality work through the Final checkpoint.
 
 **Project Overview Metrics Table**
 
@@ -1087,6 +1118,8 @@ A comprehensive project quality snapshot was extracted from the SonarQube server
 | Reliability Rating | A (1.0) | Best | No potential runtime failures detected |
 | Security Rating | A (1.0) | Best | No security hotspots or exploitable patterns |
 | Maintainability Rating (SQALE) | A (1.0) | Best | Technical debt paid down; codebase is maintainable |
+
+**Cross-reference on test counts:** The SonarQube `Unit Tests (Sonar-counted)` value above is an imported analysis-time execution metric and should not be compared one-for-one with the **133** tests reported in the targeted `Stability Validation Refresh` subset in §8.5, which serves a narrower post-checkpoint validation purpose.
 
 **Assessment Summary**
 
@@ -1129,15 +1162,15 @@ All built-in Sonar way gate conditions passed at Final checkpoint, confirming th
 
 ### 8.1.3 SonarQube Improvement Activity Graphs (Time Series)
 
-To demonstrate improvement over time (rather than only final-point quality), time-series visualizations were generated from SonarQube historical APIs (`project_analyses/search`, `measures/search_history`) and exported under `docs/capstone/metrics/`.
+To demonstrate improvement over time (rather than only final-point quality), time-series visualizations were generated from SonarQube historical APIs (`project_analyses/search`, `measures/search_history`) and exported under `docs/capstone/metrics/`. The dashboard plots use the latest Sonar snapshot per calendar day so same-day rescans do not create misleading duplicate spikes. The dataset now spans **61 analyses from April 24 through May 9, 2026**, covering **713** long-format metric observations across tracked quality dimensions. After the latest follow-up scan at **2026-05-09T01:19:05+0000**, coverage reached **86.9%**, imported tests remained at **808**, bugs/vulnerabilities remained **0**, duplication remained **0.0%**, and all security/reliability/maintainability ratings returned to **A**.
 
 ![SonarQube Progress Dashboard (4-up)](./metrics/graphs/07_progress_dashboard_4up.png)
 
-*Figure 8.1a — Composite 4-panel SonarQube progress dashboard: coverage trend, quality-issue trend, quality-ratings trend, and tests/NCLOC activity trend.*
+*Figure 8.1 — Composite 4-panel SonarQube progress dashboard (Apr 24 – May 9, 2026): coverage trend, quality-issue trend, quality-ratings trend, and tests/NCLOC activity trend. The latest scan shows 808 imported tests, 86.9% coverage, zero vulnerabilities, and all quality ratings at A; duplication remains at 0.0%.*
 
 ![SonarQube Progress Dashboard (2-up)](./metrics/graphs/08_progress_dashboard_2up.png)
 
-*Figure 8.1b — Composite 2-panel SonarQube progress dashboard: duplication trend and quality-gate activity timeline.*
+*Figure 8.2 — Composite 2-panel SonarQube progress dashboard (Apr 24 – May 9, 2026): duplication density trend plotted against a 3.0% quality-gate threshold line, showing duplication falling to 0.0% by April 28 and remaining there; and a quality-gate activity timeline showing both Failed and Passed gate events, with the latest Passed event at 2026-05-09T00:42:23+0000 followed by a later non-gate analysis record at 2026-05-09T01:19:05+0000.*
 
 ### 8.2 Unit Testing Results and Evidence
 
@@ -1160,20 +1193,20 @@ The Final repository contains **63 unit-focused test files** across the three ac
 
 ```mermaid
 pie showData
-   title Unit Test Scenario Distribution by Layer
+   title Unit Test Distribution
    "Backend API (686)" : 686
    "Pipeline (210)" : 210
    "Frontend (93)" : 93
 ```
 
-*Figure 8.1 — Unit test scenario distribution across the backend API, pipeline, and frontend layers showing 989 total local test cases. Source: repository test inventory from `apps/api/tests`, `apps/pipeline/tests`, and `apps/web/tests`. Note: SonarQube reports 148 tracked tests (git-tracked test files only); the 989 figure represents all local test cases before git-ignore filtering applied at Final checkpoint.*
+*Figure 8.3 — Unit test scenario distribution across the backend API, pipeline, and frontend layers showing 989 total local test cases. Source: repository test inventory from `apps/api/tests`, `apps/pipeline/tests`, and `apps/web/tests`. Note: SonarQube reports 148 tracked tests (git-tracked test files only); the 989 figure represents all local test cases before git-ignore filtering applied at Final checkpoint.*
 
 **Representative Unit Evidence Areas**
 
 | Unit Evidence Area | Result | Evidence References |
 |---|---|---|
 | Backend core services | High branch/path coverage on authentication, directory config, RAG helpers, and LLM/runtime services | `apps/api/tests/test_auth_service.py`, `apps/api/tests/test_directory_config_service_unit.py`, `apps/api/tests/test_rag_helpers_unit.py`, `apps/api/tests/test_llm_service.py` |
-| Pipeline module units | Pipeline validation/reformat/review helpers are covered by dedicated module-level tests | `apps/pipeline/tests/test_qa_gates.py`, `apps/pipeline/tests/test_text_reformatter.py`, `apps/pipeline/tests/test_section_review_local.py`, `apps/pipeline/tests/test_vlm_*` |
+| Pipeline module units | Pipeline validation/reformat/review helpers are covered by dedicated module-level tests | `apps/pipeline/tests/test_qa_gates.py`, `apps/pipeline/tests/test_text_reformatter.py`, `apps/pipeline/tests/test_section_review_local.py`, `apps/pipeline/tests/test_vlm_integration.py` |
 | Frontend units | UI and API-contract units validate chat/admin form behavior and typed API integration | `apps/web/tests/directory-config-form.test.ts`, `apps/web/tests/admin-users.test.ts`, `apps/web/tests/review-markdown.test.ts` |
 | Coverage baseline | Backend overall coverage sustained at **85%+** at Final | SonarQube server metrics summary (see §8.1.1 and §8.1.2) |
 
@@ -1191,13 +1224,13 @@ Integration testing verified end-to-end behavior across service boundaries (inge
 
 The integration layer targeted component-boundary behavior: API route-to-service wiring, frontend↔backend payload compatibility, retrieval/chat runtime contracts, and governance/auth pathways under realistic request flows. Tests were conducted against integrated API and web contracts with cross-module dependency paths enabled, then reinforced with soak-style workload execution to verify that passing interactions remained stable beyond single-request checks.
 
-The primary integration evidence spans **178 automated integration scenarios** across four named suites: **91** hybrid end-to-end backend scenarios, **13** chat API module scenarios, **13** WebSocket API module scenarios, and **61** frontend API integration scenarios. These automated suites were then reinforced by a **60-wave soak execution** that issued **610 total requests** and completed with **610/610 successful requests (100%)** and **0 errors**. This is important because it shows that PlantIQ’s cross-service correctness holds not only under deterministic test orchestration, but also under repeated operational traffic over time.
+The primary integration evidence spans **194 automated integration scenarios** across seven named suites: **107** split hybrid end-to-end backend scenarios, **13** chat API module scenarios, **13** WebSocket API module scenarios, and **61** frontend API integration scenarios. These automated suites were then reinforced by a **60-wave soak execution** that issued **610 total requests** and completed with **610/610 successful requests (100%)** and **0 errors**. This is important because it shows that PlantIQ’s cross-service correctness holds not only under deterministic test orchestration, but also under repeated operational traffic over time.
 
 **Integration Coverage Matrix**
 
 | Integration Evidence Source | Scenario Count / Volume | Primary Target |
 |---|---:|---|
-| `test_hybrid_integration.py` | 91 automated scenarios | Upload/review/chat/publish hybrid system behavior |
+| `apps/api/tests/test_hybrid_documents_core.py`, `apps/api/tests/test_hybrid_lifecycle_and_guards.py`, `apps/api/tests/test_hybrid_chat_query_scope.py`, `apps/api/tests/test_hybrid_chat_stream_ws_events.py`, `apps/api/tests/test_hybrid_optimization_and_qa.py` | 107 automated scenarios | Upload/review/chat/publish hybrid system behavior |
 | `test_chat_api_module.py` | 13 automated scenarios | Chat endpoint contracts and response path behavior |
 | `test_websocket_api_module.py` | 13 automated scenarios | Streaming/WebSocket control and event-path behavior |
 | `api.integration.test.ts` | 61 automated scenarios | Frontend↔backend request/response compatibility |
@@ -1205,20 +1238,20 @@ The primary integration evidence spans **178 automated integration scenarios** a
 
 ```mermaid
 pie showData
-   title Integration Test Scenario Distribution by Suite
-   "Hybrid integration (91)" : 91
+   title Integration Test Distribution
+   "Hybrid integration (107)" : 107
    "Chat API module (13)" : 13
    "WebSocket API module (13)" : 13
    "Frontend API integration (61)" : 61
 ```
 
-*Figure 8.2 — Distribution of automated integration scenarios across the four primary Section 8.3 integration suites. Sustained soak metrics are reported separately because they measure request-volume behavior rather than test-case count. Source: `apps/api/tests/test_hybrid_integration.py`, `apps/api/tests/test_chat_api_module.py`, `apps/api/tests/test_websocket_api_module.py`, and `apps/web/tests/api.integration.test.ts`.*
+*Figure 8.4 — Distribution of automated integration scenarios across the primary Section 8.3 integration suites. Sustained soak metrics are reported separately because they measure request-volume behavior rather than test-case count. Source: `apps/api/tests/test_hybrid_documents_core.py`, `apps/api/tests/test_hybrid_lifecycle_and_guards.py`, `apps/api/tests/test_hybrid_chat_query_scope.py`, `apps/api/tests/test_hybrid_chat_stream_ws_events.py`, `apps/api/tests/test_hybrid_optimization_and_qa.py`, `apps/api/tests/test_chat_api_module.py`, `apps/api/tests/test_websocket_api_module.py`, and `apps/web/tests/api.integration.test.ts`.*
 
 **Detailed Results**
 
 | Integration Flow | Result | Evidence References |
 |---|---|---|
-| API-level hybrid flow (upload/review/chat/stream/contracts) | Passing integration behavior on core runtime paths | `apps/api/tests/test_hybrid_integration.py`, `apps/api/tests/test_chat_api_module.py`, `apps/api/tests/test_websocket_api_module.py` |
+| API-level hybrid flow (upload/review/chat/stream/contracts) | Passing integration behavior on core runtime paths | `apps/api/tests/test_hybrid_documents_core.py`, `apps/api/tests/test_hybrid_lifecycle_and_guards.py`, `apps/api/tests/test_hybrid_chat_query_scope.py`, `apps/api/tests/test_hybrid_chat_stream_ws_events.py`, `apps/api/tests/test_hybrid_optimization_and_qa.py`, `apps/api/tests/test_chat_api_module.py`, `apps/api/tests/test_websocket_api_module.py` |
 | Frontend↔backend contracts | Typed endpoint and payload compatibility validated in integration suite | `apps/web/tests/api.integration.test.ts` |
 | Sustained mixed operational flow | 60-wave soak run completed with **610/610 successful requests (100%)** and **0 errors** | `logs/soak_test_results.json` |
 
@@ -1236,7 +1269,7 @@ For the exact built-in SonarQube pass/fail criteria applied during evaluation, s
 
 #### SonarQube Regression Snapshot — Exported April 23, 2026
 
-The regression layer targeted unintended behavior reintroduction after feature additions and refactors. In this report, regression control combines executable path validation (functional continuity) with SonarQube issue snapshots (structural quality drift detection). Regression evidence was assembled by rerunning critical-path test layers and exporting SonarQube issue inventories through the project toolkit (`analyze-and-export`) to produce reproducible severity distributions, rule-family concentrations, and code-area baselines from the server-backed snapshot.
+The regression layer targeted unintended behavior reintroduction after feature additions and refactors. In this report, regression control combines executable path validation (functional continuity) with SonarQube issue snapshots (structural quality drift detection). Regression evidence was assembled by rerunning critical-path test layers and exporting SonarQube issue inventories through the project SonarQube export workflow to produce reproducible severity distributions, rule-family concentrations, and code-area baselines from the server-backed snapshot.
 
 The SonarQube regression snapshot reports **132** open issues in total. By severity, the distribution is **1 BLOCKER (0.8%)**, **100 CRITICAL (75.8%)**, **20 MAJOR (15.2%)**, and **11 MINOR (8.3%)**. By dominant rule family, the current backlog is concentrated in **51 duplicate-literal (`python:S1192`) findings**, **39 cognitive-complexity (`python:S3776`) findings**, and **42 other findings combined**. This confirms that the remaining regression backlog is driven primarily by maintainability/refactor concerns rather than broad evidence of runtime instability.
 
@@ -1260,14 +1293,14 @@ The SonarQube regression snapshot reports **132** open issues in total. By sever
 
 ```mermaid
 pie showData
-   title SonarQube Regression Issue Severity Distribution
+   title Regression Issues by Severity
    "Blocker (1)" : 1
    "Critical (100)" : 100
    "Major (20)" : 20
    "Minor (11)" : 11
 ```
 
-*Figure 8.3 — SonarQube regression issue distribution by severity from the exported Final snapshot. Source: `docs/SONARQUBE_ISSUES.md` and `docs/sonarqube_issues.json`.*
+*Figure 8.5 — SonarQube regression issue distribution by severity from the exported Final snapshot. Source: `docs/SONARQUBE_ISSUES.md` and `docs/sonarqube_issues.json`.*
 
 **Code-Area Concentration**
 
@@ -1280,20 +1313,20 @@ pie showData
 
 ```mermaid
 pie showData
-   title SonarQube Regression Issue Distribution by Code Area
+   title Regression Issues by Code Area
    "API tests (60)" : 60
    "Pipeline application (44)" : 44
    "API application (26)" : 26
    "Web application/tests (2)" : 2
 ```
 
-*Figure 8.4 — SonarQube regression issue concentration by code area from the exported Final snapshot. Source: `docs/sonarqube_issues.json`.*
+*Figure 8.6 — SonarQube regression issue concentration by code area from the exported Final snapshot. Source: `docs/sonarqube_issues.json`.*
 
 **Most Affected Files**
 
 | File | Issue Count | Note |
 |---|---:|---|
-| `apps/api/tests/test_hybrid_integration.py` | 52 | Largest concentration of duplicate-literal and complexity findings in a single regression suite |
+| `apps/api/tests/` split hybrid integration area | 52 | Largest concentration of duplicate-literal and complexity findings in the hybrid integration regression surface |
 | `apps/pipeline/src/ingestion/docling_converter.py` | 9 | Pipeline conversion/refactor hotspot |
 | `apps/pipeline/src/cli/text_reformatter.py` | 7 | Optimization/reformatter hotspot |
 | `apps/pipeline/src/utils/vlm_response_parser.py` | 5 | VLM parsing hotspot |
@@ -1374,7 +1407,7 @@ Concurrent streaming connections were tested against `/api/v1/chat/stream`. All 
 
 ![T3-T5 Comprehensive Load Test Suite](../../logs/load_test_plot.png)
 
-*Figure 8.5 — Top-left (T3) — mean, p95, and p99 latency across 1→25 concurrent user ramp-up steps; Top-right (T4) — spike/recovery cycles with 100% success at all phases; Bottom-left (T5) — SSE streaming latency scaling across 1–10 concurrent streams; Bottom-right — reference panel. Source: `logs/load_test_results.json`.*
+*Figure 8.7 — Top-left (T3) — mean, p95, and p99 latency across 1→25 concurrent user ramp-up steps; Top-right (T4) — spike/recovery cycles with 100% success at all phases; Bottom-left (T5) — SSE streaming latency scaling across 1–10 concurrent streams; Bottom-right — reference panel. Source: `logs/load_test_results.json`.*
 
 #### 8-Hour Endurance Test — April 18–19, 2026 (T7: Sustained OT Pacing · T8: Infra Health Polling)
 
@@ -1440,7 +1473,7 @@ All four infrastructure endpoints remained fully available and responsive throug
 
 ![T7-T8 8-Hour Endurance Test](../../logs/endurance_plot.png)
 
-*Figure 8.6 — Top-left (T7) — mean, p95, and p99 chat latency across 16 thirty-minute checkpoint windows showing a −28.3% drift (warm-up, not degradation); Top-right (T7) — success rate held at 100% with zero error counts across all 8 hours; Bottom-left (T8) — infra endpoint latency under 60-second polling throughout the full shift, all endpoints well below the 500 ms SLA; Bottom-right (T7) — per-checkpoint request throughput averaging 195 requests per 30-minute window. Source: `logs/endurance_results.json`.*
+*Figure 8.8 — Top-left (T7) — mean, p95, and p99 chat latency across 16 thirty-minute checkpoint windows showing a −28.3% drift (warm-up, not degradation); Top-right (T7) — success rate held at 100% with zero error counts across all 8 hours; Bottom-left (T8) — infra endpoint latency under 60-second polling throughout the full shift, all endpoints well below the 500 ms SLA; Bottom-right (T7) — per-checkpoint request throughput averaging 195 requests per 30-minute window. Source: `logs/endurance_results.json`.*
 
 **Summary**
 
@@ -1448,14 +1481,14 @@ Across six test types spanning burst, ramp-up stress, spike/recovery, SSE stream
 
 **Evidence summary:** Performance readiness is evidenced by archived T1–T8 load/endurance datasets and figures, including 8-hour zero-error sustained operation.
 
-#### Week-One Supplementary Stability Validation Refresh (April 30, 2026)
+#### Stability Validation Refresh (April 30, 2026)
 
-To initiate the recommended post-checkpoint stability expansion, a targeted week-one validation pass was executed on April 30, 2026 against seven backend test modules and the full frontend API integration contract suite. The pass covered security-sensitive authentication paths, API contract behavior, scope-governance enforcement, answer-quality feedback persistence, and hybrid retrieval resilience. All 133 checks passed across three test groups in under 7 seconds of combined execution time.
+To extend the post-checkpoint stability evidence, a targeted validation refresh was executed on April 30, 2026 against seven backend test modules and the full frontend API integration contract suite. The pass covered security-sensitive authentication paths, API contract behavior, scope-governance enforcement, answer-quality feedback persistence, and hybrid retrieval resilience. All 133 checks passed across three test groups in under 7 seconds of combined execution time.
 
 **Overall test distribution — 133 automated checks**
 
 ```mermaid
-pie title Week-One Supplementary Test Distribution (133 total)
+pie title Stability Refresh Distribution
     "Security Baseline (33)" : 33
     "Backend Auth / API / Governance (39)" : 39
     "Frontend API Integration (61)" : 61
@@ -1465,11 +1498,11 @@ pie title Week-One Supplementary Test Distribution (133 total)
 
 ##### Group 1 — Security Baseline (33 passed in 0.25 s)
 
-*Files:* `apps/api/tests/test_security.py` (27 tests) · `apps/api/tests/test_security_extra.py` (6 tests)
+*Evidence basis:* two targeted backend security suites (27 primary cases + 6 supplemental edge-case cases).
 
 The security baseline suite exhaustively validates the JWT authentication layer and role-enforcement middleware that protects every backend endpoint. It is the fastest-executing group (250 ms for 33 cases) because all interactions are pure-Python unit-level assertions — no database or network I/O required.
 
-**`test_security.py` — 27 tests covering:**
+**Primary JWT and role-enforcement suite — 27 tests covering:**
 
 | Behaviour path | Tests |
 |---|---:|
@@ -1482,7 +1515,7 @@ The security baseline suite exhaustively validates the JWT authentication layer 
 | `get_token_payload` (WebSocket-aware): auth-disabled, no-credentials 401 | 2 |
 | `verify_ws_token`: auth-disabled, no token, empty-string token, valid token, unknown-role normalization, invalid-token → None | 6 |
 
-**`test_security_extra.py` — 6 tests covering:**
+**Supplemental edge-case security suite — 6 tests covering:**
 
 | Behaviour path | Tests |
 |---|---:|
@@ -1491,7 +1524,7 @@ The security baseline suite exhaustively validates the JWT authentication layer 
 | `get_token_payload`: `None` credential object → 401; invalid token string → 401 | 2 |
 | `verify_ws_token`: auth-disabled mode returns synthetic disabled-user payload | 1 |
 
-The six `test_security_extra.py` cases were added specifically to cover the edge-case branches not reachable from the happy-path scenarios in the primary file, including the `None`-credential and the auth-disabled-WebSocket code paths that represent real deployment configurations.
+The six supplemental edge-case cases were added specifically to cover the branches not reachable from the happy-path scenarios in the primary suite, including the `None`-credential and the auth-disabled-WebSocket code paths that represent real deployment configurations.
 
 ---
 
@@ -1502,7 +1535,7 @@ The six `test_security_extra.py` cases were added specifically to cover the edge
 **Breakdown within Group 2**
 
 ```mermaid
-pie title Backend Suite Breakdown — Group 2 (39 tests)
+pie title Backend Group 2 Breakdown
     "Auth API Module (9)" : 9
     "Chat API Module (13)" : 13
     "Feedback Quality (4)" : 4
@@ -1510,7 +1543,7 @@ pie title Backend Suite Breakdown — Group 2 (39 tests)
     "Hybrid Retrieval (5)" : 5
 ```
 
-**`test_auth_api_module.py` — 9 tests**
+**Auth/admin endpoint suite — 9 tests**
 
 Each test function covers a compound scenario (multiple endpoint interactions per function) to simulate realistic user journeys rather than isolated unit calls.
 
@@ -1588,12 +1621,12 @@ The 6.52 s execution time for this group reflects realistic mock latency injecte
 
 *File:* `apps/web/tests/api.integration.test.ts`
 
-This Vitest suite validates the TypeScript API client layer (`apps/web/lib/api.ts` and related utilities) without running a browser or a live backend. All HTTP interactions are intercepted via `vi.stubGlobal('fetch', …)` mocks. The 61 tests cover the complete surface of frontend↔backend API contracts — from environment URL resolution through SSE streaming, WebSocket connections, and document optimization workflows.
+This Vitest suite validates the TypeScript API client layer (`apps/web/lib/api/index.ts` and related utilities) without running a browser or a live backend. All HTTP interactions are intercepted via `vi.stubGlobal('fetch', …)` mocks. The 61 tests cover the complete surface of frontend↔backend API contracts — from environment URL resolution through SSE streaming, WebSocket connections, and document optimization workflows.
 
 **Frontend coverage areas**
 
 ```mermaid
-pie title Frontend Integration Suite — 61 Tests by Area
+pie title Frontend Integration by Area
     "Chat query / streaming SSE (9)" : 9
     "Document optimization workflow (13)" : 13
     "Conversation management (8)" : 8
@@ -1627,18 +1660,20 @@ pie title Frontend Integration Suite — 61 Tests by Area
 
 | Group | Files | Tests | Duration | Pass rate |
 |---|---|---:|---:|---:|
-| Security baseline | `test_security.py`, `test_security_extra.py` | 33 | 0.25 s | 100% |
-| Auth / API / governance / resilience | `test_auth_api_module.py`, `test_chat_api_module.py`, `test_chat_feedback_quality.py`, `test_scope_simplification.py`, `test_hybrid_retrieval_service.py` | 39 | 6.52 s | 100% |
-| Frontend API integration contracts | `api.integration.test.ts` | 61 | 0.34 s | 100% |
-| **Week-one supplementary total** | **8 files** | **133** | **~7.1 s** | **100%** |
+| Security baseline | Two targeted backend security suites | 33 | 0.25 s | 100% |
+| Auth / API / governance / resilience | Auth/admin, chat API, feedback quality, scope simplification, and hybrid retrieval suites | 39 | 6.52 s | 100% |
+| Frontend API integration contracts | `apps/web/tests/api.integration.test.ts` | 61 | 0.34 s | 100% |
+| **Stability refresh total** | **8 files** | **133** | **~7.1 s** | **100%** |
+
+**Clarification on test-count scope:** The **133** tests reported in this stability refresh represent a targeted April 30, 2026 validation subset across eight selected backend and frontend files. This total is intentionally narrower than the SonarQube `tests` metric shown elsewhere in Section 8, because SonarQube reports test cases imported from broader analysis-time execution reports (primarily backend and pipeline JUnit/generic test-execution imports) rather than this one curated validation slice. The two values therefore serve different reporting purposes and are not expected to match one-for-one.
 
 Two `DeprecationWarning` notices were raised by the backend suite (Pydantic `model_validator` usage in a legacy fixture). These are non-blocking and do not indicate test failures; the warnings are tracked for a future Pydantic v2 migration cleanup.
 
-This week-one pass confirms continued stability for security-sensitive authentication paths, frontend↔backend API contracts, scope-governance behavior, answer-feedback persistence, and hybrid retrieval graceful-degradation logic. Additional planned expansions (fault-injection/chaos testing and external DAST tooling) remain queued for the next wave.
+This validation refresh confirms continued stability for security-sensitive authentication paths, frontend↔backend API contracts, scope-governance behavior, answer-feedback persistence, and hybrid retrieval graceful-degradation logic. Additional planned expansions (fault-injection/chaos testing and external DAST tooling) remain queued for a later validation wave.
 
 #### Wave 3 Completion Results (May 1, 2026)
 
-Following the week-one supplementary refresh, the remaining Wave 3 runs were executed directly in staging-connected development environment contexts.
+Following this validation refresh, the remaining Wave 3 runs were executed directly in staging-connected development environment contexts.
 
 | Wave 3 Run | Command Target | Result | Duration | Notes |
 |---|---|---:|---:|---|
@@ -1676,6 +1711,27 @@ Root causes diagnosed and corrected in the same session:
 
 All Wave 3 execution items are closed. No outstanding staging integration gaps remain.
 
+#### Post-Final Spreadsheet Hardening Update (May 5, 2026)
+
+Following Wave 3 closure, additional post-Final hardening was completed for spreadsheet (XLSX) ingestion and optimization quality. This update improves retrieval usefulness for Cause-and-Effect (C&E) content while preserving PDF-path behavior.
+
+**Implemented hardening outcomes**
+
+- Stage 10 spreadsheet optimization now emits finer-grained per-question/per-relation chunks (`question_heading_chunk`, `row_fact_chunk`, `relation_edge_chunk`) rather than coarse page aggregates.
+- CE required-field extraction was hardened with header-aware and stacked-row handling so effect metadata (including `control_device` and `device_or_equip`) is captured more reliably.
+- Review markdown now visibly includes required cause/effect fields from both canonical `required_fields` and additive top-level fallback keys.
+- Chunk content enrichment now carries required operational context (DEVICE, P&ID/Page, INTERLOCK, NOTES, interacting/control-device metadata) while respecting existing chunk-size guardrails (`_XLSX_MAX_CHUNK_CONTENT_CHARS=900`).
+
+**Validation evidence (post-Final hardening)**
+
+| Validation Run | Result |
+|---|---:|
+| Focused enrichment coverage suite | **25 passed, 0 failed** |
+| Stacked-row + metadata extraction hardening suites | **34 passed, 0 failed** |
+| Focused required-field review markdown checks (`-k` targeted) | **2 passed, 0 failed** |
+
+**Evidence summary:** Post-Final XLSX hardening improved chunk granularity and metadata fidelity with green targeted regression evidence, while maintaining backward-compatible review and API workflow contracts.
+
 ### 8.6 Final Deliverables Access
 
 - **Public prototype URL:**  
@@ -1687,14 +1743,15 @@ All Wave 3 execution items are closed. No outstanding staging integration gaps r
 - **Final source archive:**  
    https://drive.google.com/file/d/1cuf5pbR_7IyQsdDAL5FehS2SkBEVsh32/view?usp=drive_link
 
-The current access package demonstrates that the prototype remains reachable and that the repository history is publicly reviewable. If a VM image or alternate standalone deployment artifact is required for evaluator access, that link should be added here before final submission.
+The current access package demonstrates that the prototype remains reachable and that the repository history is publicly reviewable.
 
 **Evidence summary:** Deliverable accessibility is evidenced by live prototype/API URLs, source repository history, and Final source archive publication.
 
 ### 8.7 Sponsor Feedback and Review
 
 **Reviewer:** Randy Holt, Supervisor, LNG Operations, BHE GT&S — Cove Point LNG  
-**Review Date:** April 14, 2026
+**Beta Review Date:** April 14, 2026  
+**Final Briefing Date:** May 2026
 
 Alpha sponsor feedback (March 27, 2026) confirmed that the end-to-end process worked as expected from document upload through chat response with page-grounded citations. The sponsor-identified Beta priorities were production identity integration, stronger governance controls, and improved operational readiness evidence.
 
@@ -1728,6 +1785,14 @@ Holt (2026b) summarized his three remaining requirements before he would conside
 
 ---
 
+**Final Briefing Feedback**
+
+A final project briefing was conducted with the sponsor prior to the Final checkpoint submission (Holt, 2026c). During this briefing, Holt raised an additional operational requirement that had not been captured in the Beta priority list: support for XLSX-format spreadsheets, specifically the Cause-and-Effect (C&E) matrices used by operations personnel at Cove Point LNG. He noted that C&E spreadsheets are a primary reference artifact during troubleshooting events, and that a system limited to PDF ingestion would leave a significant portion of the facility's operational documentation outside the retrieval library. He requested that the ingestion pipeline be extended to handle these spreadsheets natively, with the same quality-gated workflow applied to PDF documents.
+
+This request was implemented in full as a sponsor-driven core capability. The XLSX ingestion path follows the same five-stage quality-gated lifecycle as PDF: upload → extraction/validation → human review → optimization → QA-gated publication. Source-aware routing in Stage 10 branches XLSX documents to a deterministic relation-aware chunking engine rather than the LLM reformatter used for PDF content. The XLSX path generates three retrieval-oriented chunk types per C&E row — `question_heading_chunk`, `row_fact_chunk`, and `relation_edge_chunk` — preserving interlock relationships, device identifiers, and P&ID/page cross-references as structured payload fields. Required cause and effect fields (DEVICE, P&ID/Page, INTERLOCK, NOTES, control/interacting-device metadata) are captured and propagated through review markdown and optimized chunk content using additive fallback extraction rules. Chunk size is bounded by deterministic guards (`_XLSX_MAX_CHUNK_CONTENT_CHARS=900`, `_XLSX_MAX_FACT_CHARS=220`) to prevent oversized aggregate chunks that would degrade retrieval precision.
+
+---
+
 **Summary of Sponsor-Identified Priorities for Final Delivery**
 
 | Priority | Concern Raised | Status at Final |
@@ -1735,8 +1800,9 @@ Holt (2026b) summarized his three remaining requirements before he would conside
 | 1 | Facility-aligned user authentication integration | **Complete** — Full LDAP implementation with OpenLDAP dev stack, real-mode service bind, user search, admin directory config UI with test-connection workflow, and encryption-at-rest for bind passwords. LDAP identity is system of truth; production AD integration path validated via design and ready for facility endpoint substitution |
 | 2 | Full user access control workflow demonstrated end-to-end | **Complete** — User Management UI provides inline role assignment (Admin/User), account enable/disable, LDAP-backed user listing with domain badge, and per-user status visibility. Scope governance enforced via backend policies; access denial events are audited in `access_audit_logs`. End-to-end demonstration documented in appendix |
 | 3 | Evidence that the system handles multiple simultaneous users without degradation | **Complete** — Eight-test suite executed April 17–19, 2026; 100% success across all test types including 8-hour endurance run (3,127 chat requests, zero errors, stable latency). Results in `logs/endurance_results.json`, `logs/load_test_results.json`, and `logs/soak_test_results.json` |
+| 4 | XLSX/C&E spreadsheet ingestion support *(raised at final briefing)* | **Complete** — Source-aware XLSX ingestion path implemented with deterministic CE relation chunking (`question_heading_chunk`, `row_fact_chunk`, `relation_edge_chunk`), required-field enrichment (DEVICE, P&ID/Page, INTERLOCK, NOTES), bounded chunk sizing, and full quality-gate lifecycle parity with the PDF path. Code references: `apps/pipeline/src/cli/hitl_pipeline.py` (Stage 10 XLSX routing, `_build_xlsx_relation_optimized_output`, `_get_cause_required_fields`, `_get_effect_required_fields`) |
 
-**Evidence summary:** Sponsor-priority closure is supported by documented review outcomes and mapped implementation/load evidence for all three Final requirements.
+**Evidence summary:** Sponsor-priority closure is supported by documented review outcomes and mapped implementation/load evidence for all four Final requirements, including the XLSX ingestion capability raised at the final briefing.
 
 
 
@@ -1755,6 +1821,7 @@ Holt (2026b) summarized his three remaining requirements before he would conside
 | Concurrency ceiling (single-GPU hardware) | System is validated through 23 concurrent users with 100% success, but latency inflects beyond 20 users under heavier parallel load profiles on current RTX PRO 4000 hardware. | User experience degrades at higher concurrency even though request success remains high. | Keep operational guidance at ≤20 concurrent users for natural OT pacing; evaluate queueing/backpressure and multi-GPU serving for higher concurrency tiers. | **Post-Final optimization roadmap** | `logs/load_test_results.json` (T3–T6)<br>`logs/concurrency_results.json` (T1 burst)<br>`logs/endurance_results.json` (T7) |
 | Response quality dependence on local model/hardware tier | Answer quality and reasoning depth are constrained by the locally deployable LLM model class, which is bounded by available on-prem GPU/VRAM capacity. Higher-capacity hardware enables stronger model variants and typically improves response quality. | Environments with lower-capacity hardware may see weaker answer quality, reduced reasoning depth, or less robust handling of complex troubleshooting prompts. | Define a hardware-to-model deployment matrix (minimum/recommended/target tiers), benchmark quality across candidate local models on a fixed evaluation set, and document model-selection guidance for each hardware tier before production rollout. | **Post-Final model-quality hardening** | Benchmark/evaluation report by hardware tier (quality + latency)<br>Model selection matrix in operations runbook<br>Comparative test traces in `logs/` and evaluation artifacts |
 | VLM extraction on visually dense pages | A minority of pages with dense tables/figures still require manual reviewer correction during HITL review. | Adds reviewer time and can delay publication for highly technical manuals. | Improve table/figure extraction heuristics and add focused regression set for dense-page layouts; retain mandatory reviewer approval gate. | **Post-Final hardening** | Reviewer correction-rate tracking in review artifacts<br>QA regression results for dense-page fixtures |
+| XLSX optimization evidence closure | Post-Final XLSX relation-aware chunking and required-field enrichment are implemented and unit-verified, but final evaluator-facing evidence still needs a fresh end-to-end rerun capture in the active stack for representative sponsor spreadsheets. | Without refreshed live rerun artifacts, acceptance proof for the newest XLSX chunking changes is weaker than the implementation/test evidence. | Execute controlled reruns for representative XLSX documents in the active backend stack and archive before/after optimized artifacts plus QA outputs for submission evidence. | **Near-term evidence hardening** | `data/artifacts/hitl_workspace/*_rag_optimized.json` diffs + rerun logs + QA artifacts |
 | Retention evidence consolidation | Retention logic is implemented in code/tests, but operational signoff evidence is distributed across multiple artifacts. | Audit readiness is weaker when evidence is fragmented. | Consolidate retention policy implementation, runtime proof, and signoff records into one traceable evidence package. | **Documentation hardening (near-term)** | Single signed-off retention evidence package linked in operations docs |
 
 **Evidence summary:** Open gaps are narrowly scoped and each future-work item is paired with explicit verification artifacts or evidence-packaging targets.
@@ -1830,7 +1897,35 @@ The Final checkpoint completes the capstone project scope as outlined in the Pro
 3. **Extended Concurrency Support:** Evaluate multi-GPU scaling, request queuing strategies, or cloud-based model serving to support >20 concurrent users if facility demand exceeds single-GPU capacity.
 4. **Parallel Multi-Reviewer Workflow:** Design and implement concurrent review locking and merge conflict resolution for documents under review by multiple operators simultaneously.
 5. **Extended Document Format Support:** Expand extraction and validation coverage to additional document formats (DOCX, XLS, CAD embedded documents) and language variants beyond English.
-6. **Graph-Enhanced Retrieval:** Investigate knowledge graph capabilities (equipment-to-procedure linking, regulatory requirement traceability, failure-mode cross-reference) to augment current hybrid retrieval with entity-relationship traversal.
+6. **XLSX Evidence Hardening for Sponsor Signoff:** Run controlled end-to-end reruns on representative C&E spreadsheets and publish before/after chunk-quality evidence (granularity, required fields, QA outcomes) in the final evidence bundle.
+7. **Graph-Enhanced Retrieval:** Investigate knowledge graph capabilities (equipment-to-procedure linking, regulatory requirement traceability, failure-mode cross-reference) to augment current hybrid retrieval with entity-relationship traversal.
+
+---
+
+## 13. References
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Berkshire Hathaway Energy Gas Transmission &amp; Storage. (2026). <em>Cove Point LNG facility overview</em> [Internal stakeholder documentation].</div>
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Docling Project. (2024). <em>Docling: An open-source document conversion library</em> (Version 2.x) [Software]. IBM Research. https://github.com/docling-project/docling</div>
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., &amp; Stoica, I. (2023). Efficient memory management for large language model serving with PagedAttention. <em>Proceedings of the 29th ACM Symposium on Operating Systems Principles</em>. https://arxiv.org/abs/2309.06180</div>
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H., Lewis, M., Yih, W.-t., Rocktäschel, T., Riedel, S., &amp; Kiela, D. (2020). Retrieval-augmented generation for knowledge-intensive NLP tasks. <em>Advances in Neural Information Processing Systems, 33</em>, 9459–9474. https://arxiv.org/abs/2005.11401</div>
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Qdrant Team. (2024). <em>Qdrant vector search engine documentation</em> (Version 1.x) [Software documentation]. https://qdrant.tech/documentation/</div>
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Qwen Team. (2024). <em>Qwen2.5-VL technical report</em>. Alibaba Cloud/DAMO Academy. https://arxiv.org/abs/2502.13923</div>
+
+<p><em>Note:</em> Personal communications (e.g., Holt, 2026a; Holt, 2026b; Holt, 2026c) are cited in-text only and are not included in the APA reference list. Holt (2026a) refers to the Alpha review (March 27, 2026); Holt (2026b) refers to the Beta review (April 14, 2026); Holt (2026c) refers to the Final briefing (May 2026).</p>
+
+---
+
+### AI Assistance Disclosure
+
+GitHub Copilot (Microsoft/OpenAI, 2025–2026) was used throughout development as an AI pair-programming assistant. Copilot provided inline code suggestions, docstring generation, test scaffolding, and conversational code review across the FastAPI backend, LangChain/vLLM integration, React/TypeScript frontend, and Docker infrastructure layers. All AI-generated suggestions were reviewed, validated, and integrated by the development team; no suggestion was accepted without human evaluation and testing. Copilot did not author any requirements, architectural decisions, or written report content.
+
+<div style="margin-left: 0.5in; text-indent: -0.5in;">Microsoft. (2025). <em>GitHub Copilot</em> [AI-assisted development tool]. Microsoft Corporation. https://github.com/features/copilot</div>
+
 
 ## Appendix A — Differences Between Beta and Final Checkpoints
 
@@ -1896,12 +1991,16 @@ Final coverage: **85%+** backend test coverage across all test layers
 
 ### G) Sponsor Priorities Status (Item 12)
 
-All three sponsor-identified priorities for Final have been met:
+All four sponsor-identified priorities for Final have been met:
 
 1. Facility-aligned user authentication integration — **Complete (LDAP with OpenLDAP dev stack)**
 2. Full user access control workflow demonstrated — **Complete (User Management UI + scope enforcement)**
 3. Multi-user concurrency evidence — **Complete (100% success through 23 users, 8-hour endurance)**
-## Appendix C — Glossary
+4. XLSX/C&E spreadsheet ingestion support *(raised at Final briefing, Holt, 2026c)* — **Complete (source-aware XLSX ingestion, deterministic CE relation chunking, required-field enrichment, full quality-gate parity with PDF path)**
+
+---
+
+## Appendix B — Glossary
 
 | Term | Definition |
 |---|---|
@@ -1909,14 +2008,14 @@ All three sponsor-identified priorities for Final have been met:
 | Chunk | A discrete unit of text extracted from a document and stored in the vector index. In PlantIQ, chunks are retrieval-optimized: section headings are rewritten as natural-language questions to match query form. |
 | Citation grounding | The practice of attaching document-page references to each LLM-generated answer so operators can verify claims against source materials. |
 | Cosine similarity | A measure of the angle between two embedding vectors; used by Qdrant to rank chunks by semantic closeness to a query. |
-| Document lifecycle | The five-stage workflow: PDF ingestion → VLM extraction → HITL review → LLM optimization → QA-gated publication. |
+| Document lifecycle | The source-aware five-stage workflow: ingestion (PDF/XLSX) → extraction/validation → HITL review → optimization (PDF LLM path / XLSX deterministic relation path) → QA-gated publication. |
 | Embedding | A high-dimensional numeric vector representation of text, capturing semantic meaning. PlantIQ uses BAAI/bge-large-en-v1.5 (1024-dim). |
 | HITL validation | Human-in-the-Loop review: a human reviewer inspects and corrects the VLM-extracted content before it enters the optimization and publication stages. |
 | QA Gate | An automated quality-assurance scoring step that evaluates whether retrieval-optimized chunks meet a configurable semantic quality threshold before being published to the vector index. |
-| Qdrant payload | The metadata fields attached to each vector in Qdrant (e.g., `document_id`, `workspace`, `document_type`) used for scope-filtered retrieval. |
+| Qdrant payload | The metadata fields attached to each vector in Qdrant (e.g., `document_id`, `workspace`, `system`, `area`) used for scope-filtered retrieval (`document_type` retained only for backward compatibility). |
 | RAG | Retrieval-Augmented Generation: an AI pattern in which a language model’s response is grounded in documents retrieved from a knowledge base rather than generated purely from training data. |
 | Retrieval-optimized chunk | A chunk whose text has been restructured by the local LLM to closely match the form of user queries (e.g., section headings rewritten as questions), improving cosine similarity between query and stored representation. |
-| Scoped retrieval | Qdrant retrieval filtered by workspace and document-type payload fields, ensuring operators only see answers from documents within their authorized scope. |
+| Scoped retrieval | Qdrant retrieval filtered by workspace and system/area payload fields, ensuring operators only see answers from documents within their authorized scope. Document-type filtering was deprecated at Final; system and area are the only active scope dimensions. |
 | Soft concurrency ceiling | The empirically determined safe concurrency limit (in PlantIQ: ≥20 concurrent users) beyond which latency increases significantly without errors. |
 | BM25 | Best Match 25: a sparse retrieval algorithm that ranks documents by keyword overlap, weighted by term frequency and document length. Used in PlantIQ's hybrid retrieval as the complement to dense semantic search. |
 | RRF | Reciprocal Rank Fusion: a method for combining rankings from multiple retrieval passes (BM25 sparse + dense semantic) by computing the reciprocal of each rank and summing across passes. Improves recall/relevance balance. |
@@ -1925,28 +2024,3 @@ All three sponsor-identified priorities for Final have been met:
 | LDAP | Lightweight Directory Access Protocol: a standard for accessing centralized directory services (e.g., Active Directory). PlantIQ uses LDAP for identity binding and user search. |
 | Directory Config | An admin-editable profile containing LDAP connection parameters (host, base DN, bind DN, bind password) stored encrypted in PostgreSQL. Allows facility-specific AD endpoint substitution at deployment time. |
 | Answer Feedback | Operator quality signal (thumbs-up/thumbs-down with reason code) submitted after receiving an LLM answer. Appended to `answer_feedback` table and aggregated into `answer_quality_snapshots` for admin metrics. |
-
-
-## 13. References
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Berkshire Hathaway Energy Gas Transmission &amp; Storage. (2026). <em>Cove Point LNG facility overview</em> [Internal stakeholder documentation].</div>
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Docling Project. (2024). <em>Docling: An open-source document conversion library</em> (Version 2.x) [Software]. IBM Research. https://github.com/docling-project/docling</div>
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., &amp; Stoica, I. (2023). Efficient memory management for large language model serving with PagedAttention. <em>Proceedings of the 29th ACM Symposium on Operating Systems Principles</em>. https://arxiv.org/abs/2309.06180</div>
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., Küttler, H., Lewis, M., Yih, W.-t., Rocktäschel, T., Riedel, S., &amp; Kiela, D. (2020). Retrieval-augmented generation for knowledge-intensive NLP tasks. <em>Advances in Neural Information Processing Systems, 33</em>, 9459–9474. https://arxiv.org/abs/2005.11401</div>
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Qdrant Team. (2024). <em>Qdrant vector search engine documentation</em> (Version 1.x) [Software documentation]. https://qdrant.tech/documentation/</div>
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Qwen Team. (2024). <em>Qwen2.5-VL technical report</em>. Alibaba Cloud/DAMO Academy. https://arxiv.org/abs/2502.13923</div>
-
-<p><em>Note:</em> Personal communications (e.g., Holt, 2026a; Holt, 2026b) are cited in-text only and are not included in the APA reference list.</p>
-
----
-
-### AI Assistance Disclosure
-
-GitHub Copilot (Microsoft/OpenAI, 2025–2026) was used throughout development as an AI pair-programming assistant. Copilot provided inline code suggestions, docstring generation, test scaffolding, and conversational code review across the FastAPI backend, LangChain/vLLM integration, React/TypeScript frontend, and Docker infrastructure layers. All AI-generated suggestions were reviewed, validated, and integrated by the development team; no suggestion was accepted without human evaluation and testing. Copilot did not author any requirements, architectural decisions, or written report content.
-
-<div style="margin-left: 0.5in; text-indent: -0.5in;">Microsoft. (2025). <em>GitHub Copilot</em> [AI-assisted development tool]. Microsoft Corporation. https://github.com/features/copilot</div>

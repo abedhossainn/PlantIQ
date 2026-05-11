@@ -134,6 +134,13 @@ docs/security/
 tools/
 PROJECT_STATUS.md
 
+# Keep the capstone final report and its referenced tracked assets available
+!docs/capstone/
+!docs/capstone/Final_Report.md
+!docs/capstone/UMBC-primary-logo-RGB.png
+!docs/capstone/metrics/
+!docs/capstone/metrics/**
+
 # === Keep Essential Files ===
 !README.md
 !.env.example
@@ -211,3 +218,63 @@ apps/api/tests/test_pipeline_artifact_service_unit.py
 apps/api/tests/test_rag_helpers_unit.py
 apps/api/tests/test_security_extra.py
 apps/web/public/BHE GT&S_Logo.png
+docs/capstone/Beta_Checkpoint_Report.pdf
+docs/capstone/C&E Sample full.xlsx
+.gitignore
+docs/capstone/.~lock.C&E Sample.xlsx#
+docs/capstone/Alpha Checkpoint Guideline.md
+docs/capstone/Alpha Deliverable Checklist.md
+docs/capstone/Alpha_Checkpoint_Report_v2.md
+docs/capstone/Alpha_Checkpoint_Report.md
+docs/capstone/Appendix 2a – Capstone Consent Agreement - Discovery
+docs/capstone/Appendix 2b – Capstone Consent Agreement - Proposal
+docs/capstone/Appendix 3 – Sample Agreement Between Client and Student
+docs/capstone/Appendix 4 – Capstone Proposal Template.md
+docs/capstone/Beta Checkpoint Guideline.md
+docs/capstone/Beta Deliverable Checklist.md
+docs/capstone/Beta_Checkpoint_Report.md
+docs/capstone/C&E Sample.xlsx
+docs/capstone/Capstone_Proposal_UPDATED.md
+docs/capstone/Capstone_Proposal.md
+docs/capstone/CHECKPOINT_STRATEGY.md
+docs/capstone/COMMON Module 3 Characteristics of LNG 12 Page.pdf
+docs/capstone/COMMON Module 3 Characteristics of LNG.pdf
+docs/capstone/Final Deliverable Checklist.md
+docs/capstone/original_requirements.md
+docs/capstone/PlantIQ_Client_Project_Brief.md
+docs/capstone/Project Bacground.md
+docs/capstone/Proposal Deliverable Checklist.md
+docs/capstone/Sample_Client_Project_Brief_HeFewil.docx
+docs/capstone/SyedAbed_Hossain_lessons_learned.md
+docs/capstone/UMBC-primary-logo-CMYK.eps
+docs/capstone/User Story Template.md
+docs/capstone/diagrams/figure_6_1_air_gapped_rag_flow.svg
+docs/capstone/diagrams/figure_6_2_chat_scope_citation_flow.svg
+docs/capstone/diagrams/figure_7_1_architecture.png
+docs/capstone/diagrams/figure_7_1_high_level_architecture.svg
+docs/capstone/diagrams/figure_7_2_ingestion_qa_publish_workflow.svg
+docs/capstone/diagrams/figure_7_3_chat_retrieval_generation_workflow.svg
+docs/capstone/diagrams/figure_7_4a_er_schema.png
+docs/capstone/diagrams/figure_7_4a_logical_database_schema.svg
+docs/capstone/diagrams/figure_7_4b_data_flow.png
+docs/capstone/diagrams/figure_7_4b_postgres_qdrant_logical_data_flow.svg
+docs/capstone/diagrams/file.png
+docs/capstone/diagrams/plantiq_chat_retrieval.png
+docs/capstone/diagrams/plantiq_chat_retrieval.svg
+docs/capstone/diagrams/plantiq_ingest_pipeline.png
+docs/capstone/diagrams/plantiq_ingest_pipeline.svg
+docs/capstone/figures/figure_7_1_high_level_architecture_transparent.png
+docs/capstone/figures/figure_7_1_high_level_architecture.mmd
+docs/capstone/figures/puppeteer-config.json
+docs/capstone/metrics/graphs/01_coverage_trend.png
+docs/capstone/metrics/graphs/02_quality_issues_trend.png
+docs/capstone/metrics/graphs/03_quality_ratings_trend.png
+docs/capstone/metrics/graphs/04_tests_ncloc_trend.png
+docs/capstone/metrics/graphs/05_duplication_trend.png
+docs/capstone/metrics/graphs/06_quality_gate_activity_timeline.png
+docs/capstone/metrics/graphs/07_progress_dashboard_4up.png
+docs/capstone/metrics/graphs/08_progress_dashboard_2up.png
+docs/capstone/Final_Report.md
+docs/capstone/UMBC-primary-logo-RGB.png
+docs/capstone/metrics/graphs/07_progress_dashboard_4up.png
+docs/capstone/metrics/graphs/08_progress_dashboard_2up.png

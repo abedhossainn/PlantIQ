@@ -4,24 +4,43 @@ Database connection and session management for PlantIQ backend.
 from typing import AsyncGenerator, Optional, Dict, Any
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import text
 import os
 
 from ..core.security import get_jwt_payload
 
-# Database URL from environment - AUTHENTICATOR PASSWORD MUST BE SET VIA ENV
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://plantig_authenticator@localhost:5432/plantig"
-)
+def _resolve_database_url() -> str:
+    """Resolve a password-protected PostgreSQL URL from environment settings."""
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        parsed = make_url(database_url)
+        if parsed.password:
+            return database_url
+        raise RuntimeError(
+            "DATABASE_URL must include a password-protected PostgreSQL connection string."
+        )
 
-if "password" in DATABASE_URL.lower() or not os.getenv("DATABASE_URL"):
-    import logging
-    logging.warning(
-        "⚠️  DATABASE_URL not set or contains literal password. "
-        "Set DATABASE_URL env var with authenticator credentials from secrets."
+    db_password = os.getenv("POSTGRES_PASSWORD")
+    if not db_password:
+        raise RuntimeError(
+            "DATABASE_URL is not set and POSTGRES_PASSWORD is missing; unable to build a secure database connection string."
+        )
+
+    return str(
+        URL.create(
+            "postgresql+asyncpg",
+            username=os.getenv("POSTGRES_USER", "plantiq"),
+            password=db_password,
+            host=os.getenv("POSTGRES_HOST", "localhost"),
+            port=int(os.getenv("POSTGRES_HOST_PORT", "5433")),
+            database=os.getenv("POSTGRES_DB", "plantiq"),
+        )
     )
+
+
+DATABASE_URL = _resolve_database_url()
 
 # Create async engine
 engine = create_async_engine(
